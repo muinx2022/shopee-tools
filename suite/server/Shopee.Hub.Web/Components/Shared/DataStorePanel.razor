@@ -1,0 +1,169 @@
+@* Khối "🗄 Kho dữ liệu" trong tab ⚙ Cấu hình của 1 acc BigSeller (Fleet): tóm tắt kho Postgres per-acc + xuất
+   Excel (Excel giờ chỉ là ĐỊNH DẠNG file xuất), kèm nút vá acc lạc còn cờ excel cũ → chuyển về kho Hub.
+   Parent tick 2s re-render con MỖI TICK → guard _loadedKey: chỉ reload bản-đang-xem khi AccountId ĐỔI THẬT (giữ
+   trạng thái _status/link tải/đang-chạy qua các tick). ProductDb có thể chưa đăng ký DI (chưa cấu hình Postgres)
+   → resolve qua IServiceProvider (null = "Postgres chưa sẵn sàng"), KHÔNG crash trang. *@
+@using Microsoft.Extensions.DependencyInjection
+@inject FileStoreConfigService Config
+@inject HubOptions Opts
+@inject IServiceProvider Sp
+
+@if (_acct is null)
+{
+    <p class="hint">Tài khoản không còn trong cấu hình.</p>
+}
+else
+{
+    <div class="editcard">
+        <div class="subhead">🗄 Kho dữ liệu</div>
+
+        @{ var pg = Pg; var pgReady = pg is not null && pg.IsReady; var hub = _acct.UsesHubData; }
+
+        @if (!pgReady)
+        {
+            <p class="hint">Postgres chưa sẵn sàng — cấu hình <span class="wbname">HUB_PG_CONN</span> để bật kho sản phẩm trên Hub.</p>
+        }
+        else
+        {
+            @if (hub)
+            {
+                @if (_sheets.Count > 0)
+                {
+                    @* Cột đầu = TÊN SHOP (không phô GUID ngăn dữ liệu); ngăn không khớp shop nào → hiện khoá ngăn thô. *@
+                    <div class="tablewrap">
+                    <table class="grid sm">
+                        <thead><tr><th>Shop</th><th>Dòng</th><th>Đã sửa tên</th><th>Nhập lúc</th></tr></thead>
+                        <tbody>
+                            @foreach (var s in _sheets)
+                            {
+                                <tr>
+                                    <td>@ShopNameForSheet(s.Sheet)</td>
+                                    <td>@s.Rows.ToString("N0")</td>
+                                    <td>@s.RewrittenCount.ToString("N0")</td>
+                                    <td>@(s.ImportedAt is { } t ? t.LocalDateTime.ToString("dd/MM/yyyy HH:mm") : "—")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                    </div>
+                }
+                else
+                {
+                    <p class="hint">Kho Hub chưa có dòng nào cho tài khoản này.</p>
+                }
+
+                <div class="bar">
+                    <button class="btn" disabled="@_busy" @onclick="Export">⬇ Xuất Excel</button>
+                    @if (_exportUrl is not null)
+                    {
+                        <a class="dl" href="@_exportUrl" target="_blank">📥 @_exportName</a>
+                    }
+                </div>
+            }
+            else
+            {
+                <div class="warn">⚠ Tài khoản còn gắn cờ chế độ Excel cũ — hệ thống đã bỏ workbook, dữ liệu luôn nằm ở kho Hub (Postgres). Bấm chuyển để client dùng kho Hub.</div>
+                <div class="bar"><button class="btn primary" @onclick="SwitchToHub">→ Chuyển sang kho Hub</button></div>
+            }
+        }
+
+        @if (!string.IsNullOrEmpty(_status))
+        {
+            <div class="action" style="margin-top:10px">@_status</div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter] public string AccountId { get; set; } = "";
+    [Parameter] public EventCallback OnChanged { get; set; }
+
+    private BigSellerAccount? _acct;
+    private List<ProductSheetInfo> _sheets = new();
+    private string _status = "";
+    private string? _exportUrl, _exportName;
+    private bool _busy;
+    private string _loadedKey = "\0";   // chưa load lần nào (khác mọi AccountId thật)
+
+    private ProductDb? Pg => Sp.GetService<ProductDb>();
+
+    // Guard chống reload theo nhịp: parent re-render mỗi 2s → chỉ nạp lại khi AccountId ĐỔI THẬT (giữ status/link
+    // tải + cờ _busy khi đang chạy op dài).
+    protected override async Task OnParametersSetAsync()
+    {
+        if (AccountId == _loadedKey) return;
+        _loadedKey = AccountId;
+        _status = ""; _exportUrl = _exportName = null; _busy = false;
+        _acct = Config.BigSellerAccounts().FirstOrDefault(a => a.Id == AccountId);
+        await LoadSheetsAsync();
+    }
+
+    /// <summary>Đọc tóm tắt sheet từ kho Hub — chỉ khi acc đang hub-mode + Postgres sẵn sàng; ngược lại để rỗng.</summary>
+    private async Task LoadSheetsAsync()
+    {
+        _sheets = new();
+        var pg = Pg;
+        if (pg is null || !pg.IsReady || _acct is null || !_acct.UsesHubData) return;
+        try { _sheets = await pg.GetSheetsAsync(_acct.Id, CancellationToken.None); }
+        catch (Exception ex) { _status = "✘ Lỗi đọc kho: " + ex.Message; }
+    }
+
+    // Acc lạc còn cờ excel cũ (client cũ tạo) → lật về kho Hub. SetBigSellerDataSource có sẵn retry version-conflict.
+    private async Task SwitchToHub()
+    {
+        if (_acct is null) return;
+        Config.SetBigSellerDataSource(_acct.Id, "hub");
+        _acct = Config.BigSellerAccounts().FirstOrDefault(a => a.Id == AccountId);
+        await LoadSheetsAsync();
+        _status = "✔ Đã chuyển tài khoản sang kho Hub.";
+        await OnChanged.InvokeAsync();
+    }
+
+    // ── Xuất kho Hub ra file Excel để tải về (ghi vào {DataDir}/exports/, phục vụ qua /exports/{name}) ──
+    private async Task Export()
+    {
+        if (_acct is null || _busy) return;
+        var pg = Pg;
+        if (pg is null || !pg.IsReady) return;
+
+        _busy = true; _status = "⏳ Đang xuất Excel…"; _exportUrl = _exportName = null;
+        try
+        {
+            var titles = ShopTitleMap();   // worksheet đặt tên = TÊN SHOP (hết lộ GUID ngăn dữ liệu)
+            var (bytes, fileName) = await Task.Run(() => pg.ExportXlsxAsync(_acct.Id, null, CancellationToken.None, titles));
+            var dir = Path.Combine(Opts.DataDir, "exports");
+            Directory.CreateDirectory(dir);
+            var name = $"{Path.GetFileNameWithoutExtension(SafeName(fileName))}_{DateTime.UtcNow:yyyyMMdd_HHmmss}.xlsx";
+            await File.WriteAllBytesAsync(Path.Combine(dir, name), bytes);
+            _exportName = name;
+            _exportUrl = "/exports/" + Uri.EscapeDataString(name);
+            _status = $"✔ Đã xuất {name}.";
+        }
+        catch (Exception ex) { _status = "✘ Lỗi xuất: " + ex.Message; }
+        finally { _busy = false; }
+    }
+
+    private static string SafeName(string name)
+    {
+        var n = Path.GetFileName(name ?? "");
+        return string.IsNullOrWhiteSpace(n) ? "export.xlsx" : n;
+    }
+
+    /// <summary>Ánh xạ ShopeeDataSheet (khoá ngăn) → TÊN SHOP của acc đang xem — export đặt tên worksheet.</summary>
+    private IReadOnlyDictionary<string, string> ShopTitleMap()
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (_acct is null) return map;
+        foreach (var s in _acct.Shops)
+            if (!string.IsNullOrWhiteSpace(s.ShopeeDataSheet))
+                map[s.ShopeeDataSheet] = s.Name;
+        return map;
+    }
+
+    /// <summary>Tên shop cho 1 khoá ngăn (bảng tóm tắt hub-mode) — khớp theo ShopeeDataSheet; không có → khoá ngăn thô.</summary>
+    private string ShopNameForSheet(string sheet)
+    {
+        var s = _acct?.Shops.FirstOrDefault(x => string.Equals(x.ShopeeDataSheet, sheet, StringComparison.Ordinal));
+        return s is not null ? s.DisplayName : sheet;
+    }
+}

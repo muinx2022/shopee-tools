@@ -1,0 +1,400 @@
+@page "/orders"
+@attribute [Authorize(Policy = "Web")]
+@implements IDisposable
+@using XuLyDonShopee.Core.Services
+@using Shopee.Hub.Web.Api
+@inject HubDatabase Db
+@inject NavigationManager Nav
+
+<p class="hint m-hide">Đơn hàng client đẩy lên hub qua <code>POST /api/orders/push</code>. Lọc theo shop / trạng thái / tìm kiếm (mã đơn, người mua, tên SP, SKU) + phân trang.</p>
+
+@* Bar lọc chia làm HAI NHÓM có ngữ nghĩa — vẫn đúng 8 control như trước, không bớt gì:
+     .bar-filters  = LỌC (Shop · Trạng thái · Tìm · Có mã trả)
+     .bar-actions  = XEM & HÀNH ĐỘNG (Mỗi trang · số đơn · Hủy lọc · ⬇ ZIP phiếu · 🧩 Cột)
+   Desktop: hai nhóm cùng một hàng, nhóm hành động dạt phải (y như bar phẳng cũ).
+   Màn hẹp: mỗi nhóm thành một khối lưới 2 cột — bar phẳng 1-cột trước đây cao tới 469px trên màn 812px. *@
+<div class="bar bar-stack">
+    <div class="bar-filters">
+        <label>Shop
+            <select @bind="_shopId" @bind:after="OnFilterChanged">
+                <option value="0">— tất cả —</option>
+                @foreach (var s in _shops)
+                {
+                    <option value="@s.Id">@s.Name</option>
+                }
+            </select>
+        </label>
+        <label>Trạng thái
+            <select @bind="_status" @bind:after="OnFilterChanged">
+                <option value="">— tất cả —</option>
+                @foreach (var st in _statuses)
+                {
+                    <option value="@st">@st</option>
+                }
+            </select>
+        </label>
+        <label class="bar-wide">Tìm
+            <input class="opt-search" @bind="_search" @bind:event="oninput" @bind:after="OnSearchDebounced" placeholder="mã đơn / người mua / SP / SKU" />
+        </label>
+        @* Lọc "có mã trả": dòng "Đơn trả" trong ô Đơn đã có sẵn để đối chiếu. Trạng thái vào URL (?comatra=1) như mọi
+           view-state khác — KHÔNG trùng key với cột ẩn "tra" của ?hide=. *@
+        <label class="toggle bar-wide" title="Chỉ hiện đơn ĐÃ có mã yêu cầu trả hàng (dòng 'Đơn trả' trong ô Đơn)">
+            <input type="checkbox" checked="@_coMaTra" @onchange="OnCoMaTraChanged" />
+            Có mã trả
+        </label>
+    </div>
+
+    <div class="bar-actions">
+        <label>Mỗi trang
+            <select @bind="_pageSize" @bind:after="OnPageSizeChanged">
+                @foreach (var size in PageSizeOptions)
+                {
+                    <option value="@size">@size</option>
+                }
+            </select>
+        </label>
+        <span class="stat">@_total đơn</span>
+        <div class="btnrow">
+            <button class="btn sm" title="Hủy lọc — bỏ mọi bộ lọc, xem tất cả đơn" @onclick="ClearFilters">Hủy lọc</button>
+            @* Tải ZIP: đi thẳng endpoint (thẻ <a> tải file, KHÔNG qua circuit Blazor) với ĐÚNG bộ lọc đang xem. *@
+            <a class="btn sm" href="@ZipHref" title="Tải mọi phiếu PDF (tối đa @MaxZipSlips) của các đơn khớp bộ lọc hiện tại">⬇ ZIP phiếu</a>
+            @* Chọn cột: 10 trường phụ bật/tắt được (giờ là các DÒNG trong ô nhóm, không còn là cột riêng — key
+               giữ nguyên nên link cũ vẫn chạy). Trường ẩn đi vào URL (?hide=…) nên F5 / gửi link
+               giữ nguyên. Menu thuần Blazor: .menu-backdrop bắt click ra ngoài, Esc bắt ở @onkeydown của .menuwrap. *@
+            <span class="menuwrap" @onkeydown="OnColsKey">
+                <button class="btn sm" title="Ẩn/hiện cột phụ (Shop, Mã đơn, Trạng thái luôn hiện)"
+                        aria-haspopup="true" aria-expanded="@_colsOpen" @onclick="ToggleColsMenu">🧩 Cột ▾@(HiddenCount > 0 ? $" (ẩn {HiddenCount})" : "")</button>
+                @if (_colsOpen)
+                {
+                    <button class="menu-backdrop" title="Đóng menu" aria-label="Đóng menu chọn cột" @onclick="CloseColsMenu"></button>
+                    <div class="menu">
+                        @foreach (var c in OptionalCols)
+                        {
+                            <label class="menu-check">
+                                <input type="checkbox" checked="@Vis(c.Key)" @onchange="e => SetCol(c.Key, e.Value is true)" />
+                                @c.Label
+                            </label>
+                        }
+                        <div class="menu-sep"></div>
+                        <button class="menu-item" disabled="@(HiddenCount == 0)" @onclick="ShowAllCols">↺ Hiện tất cả</button>
+                    </div>
+                }
+            </span>
+        </div>
+    </div>
+</div>
+
+<Pagination Page="_page" TotalPages="_totalPages" TotalItems="_total" PageSize="_pageSize"
+            ItemLabel="đơn" PageChanged="GoPage" />
+
+@* Bảng gộp theo NHÓM THÔNG TIN: 13 cột phẳng cũ tràn ngang 293px ở màn 1280 và bóp cột "Sản phẩm" còn 72px
+   (chữ rơi mỗi từ một dòng). Nay 5 cột nhóm, mỗi ô là mấy dòng "nhãn: giá trị" — KHÔNG bỏ trường nào.
+   Mỗi dòng con vẫn bọc @if (Vis("<key>")) đúng key cũ của ?hide= ⇒ menu 🧩 Cột giữ nguyên 10 mục và link cũ
+   vẫn chạy. Nhóm nào KHÔNG chứa cột luôn-hiện mà mọi dòng con đều tắt thì ẩn cả cột (ShowSanPham / ShowTien). *@
+<div class="tablewrap">
+<table class="grid sm stack-sm orders-grid">
+    <thead><tr>
+        <th>Đơn</th>
+        @if (ShowSanPham) { <th>Sản phẩm</th> }
+        <th>Shop &amp; người mua</th>
+        @if (ShowTien) { <th class="oc-num">Tiền</th> }
+        <th>Trạng thái</th>
+    </tr></thead>
+    <tbody>
+    @foreach (var o in _orders)
+    {
+        // Dòng "Phân loại" / "SKU" suy từ items_json (từng sản phẩm) ⇒ đơn nhiều SP hiện đủ; không có khóa sku → lùi về o.Sku.
+        var phanLoai = PhanLoaiExtractor.TuItemsJson(o.ItemsJson);
+        var sku = PhanLoaiExtractor.SkuTuItemsJson(o.ItemsJson);
+        if (string.IsNullOrEmpty(sku)) sku = o.Sku;
+        <tr>
+            <td data-label="Đơn">
+                <div class="ocell">
+                    <div class="ocell-main mono">@o.OrderSn</div>
+                    @* title mang mã trả đầy đủ: mã này dùng để ĐỐI CHIẾU/copy, phải đọc được nguyên vẹn kể cả
+                       khi cột bị bóp. Rỗng khi không có mã → trình duyệt không hiện tooltip. *@
+                    @if (Vis("tra")) { <div class="ocell-sub" title="@o.ReturnRequestCode"><span class="ocell-k">Đơn trả:</span> <span class="mono">@(o.ReturnRequestCode ?? "—")</span></div> }
+                    @if (Vis("sync")) { <div class="ocell-sub"><span class="ocell-k">Sync:</span> @GioVietNam.DinhDang(o.SyncedAt, "MM-dd HH:mm")</div> }
+                </div>
+            </td>
+            @if (ShowSanPham)
+            {
+                <td data-label="Sản phẩm">
+                    <div class="ocell ocell-sp">
+                        @* Hậu tố "(+N)" phải có TRONG title: chuỗi hiện ra bị Trim(48) rồi còn bị clamp 2 dòng,
+                           nên dấu hiệu "đơn nhiều SP" là thứ dễ bị cắt mất nhất — mà title chỉ mang ItemSummary
+                           thô thì tooltip cũng không cứu được. *@
+                        @if (Vis("sp"))
+                        {
+                            var themSp = o.ItemCount > 1 ? $" (+{o.ItemCount - 1})" : "";
+                            <div class="ocell-main ocell-clamp" title="@(o.ItemSummary + themSp)">@Trim(o.ItemSummary)@themSp</div>
+                        }
+                        @if (Vis("sku")) { <div class="ocell-sub ocell-1l" title="@sku"><span class="ocell-k">SKU:</span> @(string.IsNullOrEmpty(sku) ? "—" : Trim(sku))</div> }
+                        @if (Vis("loai")) { <div class="ocell-sub ocell-1l" title="@phanLoai"><span class="ocell-k">Phân loại:</span> @Trim(phanLoai)</div> }
+                    </div>
+                </td>
+            }
+            <td data-label="Shop &amp; người mua">
+                <div class="ocell">
+                    <div class="ocell-main">@ShopName(o.ShopId)</div>
+                    @if (Vis("buyer")) { <div class="ocell-sub"><span class="ocell-k">Người mua:</span> @(o.BuyerUsername ?? "—")</div> }
+                </div>
+            </td>
+            @if (ShowTien)
+            {
+                <td class="oc-num" data-label="Tiền">
+                    <div class="ocell">
+                        @* Nhãn "Tổng:" CHỈ hiện ở khổ thẻ (CSS giấu nó ở desktop): trên desktop cột đã có tiêu đề
+                           "Tiền" nên nhãn thừa và phá cột số canh phải; còn trên thẻ thì nhãn nhóm ::before đã bị
+                           tắt, không có nó thì đây là một con số trần nằm giữa tên shop và pill trạng thái. *@
+                        @if (Vis("tien")) { <div class="ocell-main"><span class="ocell-k oc-tienk">Tổng:</span> @(o.TotalPriceText ?? (o.TotalPrice?.ToString("N0") ?? "—"))</div> }
+                        @if (Vis("cuoi")) { <div class="ocell-sub"><span class="ocell-k">Cuối:</span> @(o.FinalAmountText ?? (o.FinalAmount?.ToString("N0") ?? "—"))</div> }
+                    </div>
+                </td>
+            }
+            <td data-label="Trạng thái">
+                <div class="ocell">
+                    @* Link phiếu nằm CÙNG dòng với pill chứ không phải một dòng riêng: pill cao 21px trong khi
+                       dòng chữ chỉ 15px, nên chỗ trống cạnh pill là miễn phí — cho phiếu xuống dòng riêng làm
+                       mọi hàng cao thêm 5px (đo được: 79px → 84px, tụt từ 6,1 xuống 5,8 đơn/màn). *@
+                    <div class="ocell-main">
+                        <span class="pill @StatusCss(o.Status)">@(o.Status ?? "—")</span>
+                        @if (Vis("phieu") && o.SlipAt is not null)
+                        {
+                            <a class="linkbtn" href="@($"/slips/{o.ShopId}/{o.OrderSn}")" target="_blank" rel="noopener" title="Mở phiếu PDF (tab mới)">📄 Phiếu</a>
+                        }
+                    </div>
+                    @if (Vis("vc"))
+                    {
+                        var vanChuyen = (string.IsNullOrEmpty(o.Carrier) ? (o.Channel ?? "—") : o.Carrier)
+                                        + (string.IsNullOrEmpty(o.TrackingNumber) ? "" : $" · {o.TrackingNumber}");
+                        <div class="ocell-sub ocell-2l" title="@vanChuyen"><span class="ocell-k">Vận chuyển:</span> @vanChuyen</div>
+                    }
+                </div>
+            </td>
+        </tr>
+    }
+    @if (_orders.Count == 0)
+    {
+        <tr><td colspan="@ColCount" class="empty">Không có đơn nào khớp bộ lọc.</td></tr>
+    }
+    </tbody>
+</table>
+</div>
+
+@if (_totalPages > 1)
+{
+    <Pagination Page="_page" TotalPages="_totalPages" TotalItems="_total" PageSize="_pageSize"
+                ItemLabel="đơn" PageChanged="GoPage" />
+}
+
+@code {
+    private static readonly int[] PageSizeOptions = [25, 50, 100];
+
+    /// <summary>Cột PHỤ bật/tắt được — Shop / Mã đơn / Trạng thái luôn hiện nên KHÔNG có ở đây. Thứ tự trong mảng
+    /// cũng là thứ tự ghi vào URL (link sinh ra ổn định). Key đi vào query <c>?hide=</c>: ĐỔI key = link cũ hỏng.</summary>
+    private static readonly (string Key, string Label)[] OptionalCols =
+    [
+        ("buyer", "Người mua"), ("sp", "Sản phẩm"), ("sku", "SKU"), ("loai", "Phân loại"),
+        ("tra", "Đơn trả hàng"), ("tien", "Tổng tiền"), ("cuoi", "Cuối cùng"),
+        ("vc", "Vận chuyển"), ("phieu", "Phiếu"), ("sync", "Sync"),
+    ];
+
+    /// <summary>Trạng thái lọc MẶC ĐỊNH (đơn đang cần xử lý) — vắng trong URL nghĩa là giá trị này.</summary>
+    private const string DefaultStatus = "Chờ lấy hàng";
+    /// <summary>Token cho "— tất cả —" trong URL. Cần token riêng vì chuỗi rỗng bị bỏ khỏi query, mà "rỗng" ở
+    /// đây KHÁC "vắng": vắng = lọc mặc định, rỗng = xem mọi trạng thái.</summary>
+    private const string AllStatusToken = "all";
+
+    private List<Shop> _shops = new();
+    private List<string> _statuses = new();
+    private List<OrderRecord> _orders = new();
+    private Dictionary<long, string> _shopNames = new();
+
+    /// <summary>Trần số phiếu MỘT lượt tải ZIP — khớp <c>OrdersZip.MaxSlips</c> (chỉ để hiện trong tooltip).</summary>
+    private const int MaxZipSlips = OrdersZip.MaxSlips;
+
+    private long _shopId;      // 0 = tất cả
+    private string _status = DefaultStatus;   // MẶC ĐỊNH lọc đơn đang cần xử lý (đổi được sang "— tất cả —")
+    private string _search = "";
+    private bool _coMaTra;     // false = không lọc theo mã trả hàng (mặc định, vắng khỏi URL)
+    private int _pageSize = 50;
+    private int _page = 1;
+    private int _total;
+    private int _totalPages = 1;
+
+    /// <summary>Key các trường phụ ĐANG ẨN (rỗng = hiện đủ 13 trường — trạng thái mặc định, không có mặt trong URL).</summary>
+    private readonly HashSet<string> _hiddenCols = new(StringComparer.Ordinal);
+    private bool _colsOpen;
+
+    private bool Vis(string key) => !_hiddenCols.Contains(key);
+    private int HiddenCount => _hiddenCols.Count;
+
+    /// <summary>Hai nhóm KHÔNG chứa cột luôn-hiện: tắt hết dòng con thì cả cột nhóm biến mất (th lẫn td), kẻo
+    /// còn lại một cột rỗng. Ba nhóm kia (Đơn / Shop / Trạng thái) luôn có mặt.</summary>
+    private bool ShowSanPham => Vis("sp") || Vis("sku") || Vis("loai");
+    private bool ShowTien => Vis("tien") || Vis("cuoi");
+
+    /// <summary>colspan của dòng "Không có đơn nào khớp bộ lọc" — đếm theo số cột NHÓM đang hiện, KHÔNG phải
+    /// số cột phụ đang bật. Lệch chỗ này chỉ lộ khi bộ lọc ra 0 kết quả nên rất dễ trôi.</summary>
+    private int ColCount => 3 + (ShowSanPham ? 1 : 0) + (ShowTien ? 1 : 0);
+
+    protected override void OnInitialized()
+    {
+        _shops = Db.ListShops();
+        _shopNames = _shops.ToDictionary(s => s.Id, s => s.Name);
+        _statuses = Db.DistinctOrderStatuses();
+        // Đảm bảo option "Chờ lấy hàng" LUÔN có trong dropdown (kể cả khi hiện chưa có đơn nào trạng thái đó) —
+        // vì đây là filter MẶC ĐỊNH, cần hiện đúng lựa chọn đang chọn.
+        if (!_statuses.Contains(DefaultStatus)) _statuses.Insert(0, DefaultStatus);
+        // F5/deep-link: khôi phục bộ lọc + trang TRƯỚC lượt đọc đầu tiên. KHÔNG navigate ở đây (còn prerender →
+        // NavigateTo sẽ ném redirect); URL chỉ được ghi lại khi user thao tác sau đó.
+        RestoreFromUrl();
+        Load();
+    }
+
+    // ── Bộ lọc + cột đang ẩn ↔ URL query (?shop=&status=&q=&page=&hide=) — F5 / chia sẻ link giữ nguyên ──
+    private void RestoreFromUrl()
+    {
+        UrlState.Restore(Nav,
+            // Shop trong URL đã bị xoá khỏi hub → BỎ QUA (kẻo ô chọn hiện trống mà lưới lại đang lọc).
+            ("shop", v => _shopId = long.TryParse(v, out var id) && _shops.Any(s => s.Id == id) ? id : 0),
+            ("status", v => _status = v.Length == 0 ? DefaultStatus : (v == AllStatusToken ? "" : v)),
+            ("q", v => _search = v),
+            ("comatra", v => _coMaTra = v == "1"),
+            ("page", v => _page = int.TryParse(v, out var p) && p >= 1 ? p : 1),
+            ("hide", RestoreHiddenCols));
+        // Trạng thái trong URL hiện chưa có đơn nào → vẫn phải là một option, kẻo ô chọn hiện trống.
+        if (_status.Length > 0 && !_statuses.Contains(_status)) _statuses.Insert(0, _status);
+    }
+
+    // Key lạ trong URL (link cũ / gõ tay) → BỎ QUA, kẻo bảng thiếu cột mà menu không có ô nào bỏ tick được.
+    private void RestoreHiddenCols(string raw)
+    {
+        _hiddenCols.Clear();
+        foreach (var key in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            if (OptionalCols.Any(c => c.Key == key)) _hiddenCols.Add(key);
+    }
+
+    private void UpdateUrl() =>
+        UrlState.Update(Nav, replace: true,
+            ("shop", _shopId > 0 ? _shopId.ToString() : ""),
+            ("status", _status == DefaultStatus ? "" : (_status.Length == 0 ? AllStatusToken : _status)),
+            ("q", _search),
+            ("comatra", _coMaTra ? "1" : ""),
+            ("page", _page > 1 ? _page.ToString() : ""),
+            // Đi theo THỨ TỰ của OptionalCols (không theo thứ tự bấm) → cùng bộ cột luôn ra cùng một URL.
+            ("hide", string.Join(",", OptionalCols.Where(c => _hiddenCols.Contains(c.Key)).Select(c => c.Key))));
+
+    // ── Menu "🧩 Cột ▾" ──────────────────────────────────────────────────────────────────────
+    private void ToggleColsMenu() => _colsOpen = !_colsOpen;
+    private void CloseColsMenu() => _colsOpen = false;
+    private void OnColsKey(KeyboardEventArgs e) { if (e.Key == "Escape") _colsOpen = false; }
+
+    // Chỉ đổi cách HIỂN THỊ (không đọc lại DB, không về trang 1) — menu vẫn mở để tick tiếp nhiều cột.
+    private void SetCol(string key, bool visible)
+    {
+        if (visible) _hiddenCols.Remove(key); else _hiddenCols.Add(key);
+        UpdateUrl();
+    }
+
+    private void ShowAllCols()
+    {
+        _hiddenCols.Clear();
+        _colsOpen = false;
+        UpdateUrl();
+    }
+
+    private void OnFilterChanged() { _page = 1; Load(); UpdateUrl(); }
+
+    private void OnCoMaTraChanged(ChangeEventArgs e)
+    {
+        _coMaTra = e.Value is true;
+        OnFilterChanged();
+    }
+
+    // "Hủy lọc": bỏ MỌI bộ lọc (shop/trạng thái/tìm) về xem tất cả + về trang 1. Reset luôn ô Tìm nên huỷ timer
+    // debounce đang chờ, tránh nó nạp lại với chuỗi cũ ngay sau khi mình vừa xoá.
+    private void ClearFilters()
+    {
+        _searchTimer?.Dispose();
+        _shopId = 0;
+        _status = "";
+        _search = "";
+        _coMaTra = false;
+        _page = 1;
+        Load();
+        UpdateUrl();
+    }
+
+    private void OnPageSizeChanged()
+    {
+        _page = 1;
+        Load();
+        UpdateUrl();
+    }
+
+    // Ô TÌM gõ liên tục (oninput) từng chạy đếm+đọc trang (LIKE %…% không index) dưới lock(_gate) toàn cục
+    // của HubDatabase MỖI phím → nghẽn heartbeat/lease cả fleet. Debounce 300ms: huỷ timer cũ mỗi keystroke, chỉ query
+    // KHI ngừng gõ. Callback bắn từ threadpool → InvokeAsync đưa về sync-context của circuit trước khi đụng state/DB.
+    private System.Threading.Timer? _searchTimer;
+    private void OnSearchDebounced()
+    {
+        _searchTimer?.Dispose();
+        _searchTimer = new System.Threading.Timer(_ => _ = InvokeAsync(() =>
+        {
+            _page = 1;
+            Load();
+            UpdateUrl();
+            StateHasChanged();
+        }), null, 300, System.Threading.Timeout.Infinite);
+    }
+
+    public void Dispose() => _searchTimer?.Dispose();   // huỷ timer đang chờ khi rời trang (khỏi rò timer + callback trên circuit đã đóng)
+
+    private void GoPage(int p) { _page = Math.Clamp(p, 1, _totalPages); Load(); UpdateUrl(); }
+
+    private void Load()
+    {
+        long? shopFilter = _shopId > 0 ? _shopId : null;
+        var status = string.IsNullOrWhiteSpace(_status) ? null : _status;
+        var q = string.IsNullOrWhiteSpace(_search) ? null : _search;
+        var result = Db.QueryOrdersPage(shopFilter, status, q, _pageSize, (_page - 1) * _pageSize, _coMaTra);
+        _total = result.Total;
+        _totalPages = Math.Max(1, (int)Math.Ceiling(_total / (double)_pageSize));
+        if (_page > _totalPages)
+        {
+            _page = _totalPages;
+            result = Db.QueryOrdersPage(shopFilter, status, q, _pageSize, (_page - 1) * _pageSize, _coMaTra);
+        }
+        _orders = result.Items;
+    }
+
+    /// <summary>Link "⬇ ZIP phiếu" — mang ĐÚNG bộ lọc đang xem (trừ phân trang: ZIP lấy mọi trang). Giá trị mặc
+    /// định được bỏ khỏi query y như <see cref="UpdateUrl"/> để link ngắn và ổn định.</summary>
+    private string ZipHref
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (_shopId > 0) parts.Add("shop=" + _shopId);
+            if (!string.IsNullOrWhiteSpace(_status)) parts.Add("status=" + Uri.EscapeDataString(_status));
+            if (!string.IsNullOrWhiteSpace(_search)) parts.Add("q=" + Uri.EscapeDataString(_search));
+            if (_coMaTra) parts.Add("comatra=1");
+            return OrdersZip.Route + (parts.Count == 0 ? "" : "?" + string.Join("&", parts));
+        }
+    }
+
+    private string ShopName(long id) => _shopNames.GetValueOrDefault(id, id.ToString());
+
+    private static string Trim(string? s) =>
+        string.IsNullOrEmpty(s) ? "—" : s.Length > 48 ? s[..48] + "…" : s;
+
+    private static string StatusCss(string? status) => status switch
+    {
+        null or "" => "idle",
+        var s when s.Contains("hủy", StringComparison.OrdinalIgnoreCase) => "fail",
+        var s when s.Contains("hoàn thành", StringComparison.OrdinalIgnoreCase) || s.Contains("giao") => "done",
+        _ => "queued",
+    };
+}

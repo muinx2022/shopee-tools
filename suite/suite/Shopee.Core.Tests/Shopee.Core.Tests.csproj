@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Acornima: parser JavaScript thuần .NET (nhánh kế của Esprima.NET, cũng là parser của Jint). Dùng cho
+         ExtensionJsCuPhapTests — soát cú pháp JS của extensions/ ngay trong `dotnet test`. CỐ Ý không gọi
+         Node ngoài (`node` + cờ check): máy nào không cài Node là lưới tự tắt, mà đây là lưới duy nhất chặn
+         lỗi JS ra bản phát hành (bản 1.8.6 đã lọt một dấu ngoặc thừa làm chết hẳn cầu nối extension). -->
+    <PackageReference Include="Acornima" Version="1.7.0" />
+    <!-- Jint: máy JavaScript thuần .NET (dựng trên chính Acornima ở trên). Dùng cho EdsONgayHopLeTests —
+         CHẠY THẬT luật "ô ngày EDS này có chọn được không" lấy nguyên văn từ `extensions/shopee-orders/flow-km.js`,
+         thay vì chấm một bản chép trong C#. Cùng lý do với Acornima: CỐ Ý không gọi `node` ngoài, máy nào
+         không cài Node là lưới tự tắt. Luật này vừa giết 12/12 shop đêm 27/08/2026 vì một phép so chuỗi con. -->
+    <PackageReference Include="Jint" Version="4.16.1" />
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- CÁCH LY KHO DỮ LIỆU KHI CHẠY TEST: SuitePaths đọc data-dir.txt CẠNH .exe → Root của test trỏ vào
+       bin\...\test-data\ShopeeSuite thay vì %AppData%\ShopeeSuite. Nhờ vậy test đụng được các store dạng
+       `Shared` (ScrapeProgressStore…) mà KHÔNG ghi đè tiến độ thật của máy đang chạy. -->
+  <ItemGroup>
+    <None Update="data-dir.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Ref thẳng cả Shopee.Core (khác XuLyDonShopee.Tests vốn LINK từng file để né dây Playwright/ClosedXML):
+       ở đây test nằm CÙNG solution với Core nên ref project là rẻ nhất, và cần chính các kiểu thật của store
+       (ShopeeAccount / BigSellerAccount / OpProgress) để đối chiếu byte JSON trên đĩa. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Shopee.Core\Shopee.Core.csproj" />
+  </ItemGroup>
+
+</Project>

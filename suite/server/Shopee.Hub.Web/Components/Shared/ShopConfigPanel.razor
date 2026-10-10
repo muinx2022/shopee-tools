@@ -1,0 +1,107 @@
+@* Cấu hình 1 shop BigSeller (tab ⚙ Cấu hình của Fleet, khi chọn 1 shop). Port từ trang cấu hình BigSeller cũ.
+   Guard _loadedKey: parent tick 2s re-render con MỖI TICK → chỉ reload bản-đang-sửa khi acct/shop ĐỔI THẬT. *@
+@inject FileStoreConfigService Config
+
+@if (_acct is null || _shop is null)
+{
+    <p class="hint">Shop không còn trong cấu hình.</p>
+}
+else
+{
+    <div class="editcard">
+        <div class="row">
+            <label>Tên shop <input @bind="_shop.Name" style="width:180px" /></label>
+        </div>
+
+        <div class="row">
+            <label>Crawl URL <input @bind="_shop.BigSellerCrawlUrl" style="width:min(280px,100%)" /></label>
+            <label>AI model <input @bind="_shop.OpenAiModel" style="width:min(150px,100%)" /></label>
+        </div>
+        <label style="display:flex;align-items:center;gap:7px;margin:12px 0;color:var(--text);font-size:13.5px">
+            <input type="checkbox" @bind="_shop.BigSellerImportFromClaimedTab" /> Import từ tab "Đã nhận"
+        </label>
+
+        @* Bộ 3 giá trị workflow "Update product" ĐIỀN vào form BigSeller. Hub là chủ sở hữu (client không có ô
+           nhập nào cho chúng) — mọi máy chạy Update shop này đều dùng bản đặt ở đây. Để TRỐNG = dùng mặc định. *@
+        <div class="subhead">Update product — giá trị điền form (để trống = mặc định)</div>
+        <div class="row">
+            <label title="Tồn kho điền cho MỌI biến thể của sản phẩm. Để trống = @BigSellerShop.DefaultUpdateStock.">
+                Tồn kho
+                <input @bind="_shop.UpdateStockValue" placeholder="@BigSellerShop.DefaultUpdateStock" style="width:120px" />
+            </label>
+            <label title="Cân nặng (gram) điền vào form. Để trống = @BigSellerShop.DefaultUpdateWeight.">
+                Cân nặng (g)
+                <input @bind="_shop.UpdateWeightValue" placeholder="@BigSellerShop.DefaultUpdateWeight" style="width:120px" />
+            </label>
+            <label title="Tên kênh vận chuyển cần tick trên form (khớp CHỮ hiện trên BigSeller). Để trống = @BigSellerShop.DefaultUpdateShippingChannel.">
+                Kênh vận chuyển
+                <input @bind="_shop.UpdateShippingChannel" placeholder="@BigSellerShop.DefaultUpdateShippingChannel" style="width:150px" />
+            </label>
+        </div>
+
+        <div class="bar">
+            <button class="btn primary" @onclick="Save">💾 Lưu</button>
+            @if (!_confirmDelete)
+            {
+                <button class="btn danger sm" @onclick="() => _confirmDelete = true">🗑 Xoá shop</button>
+            }
+            else
+            {
+                <button class="btn danger sm" @onclick="DeleteShop">Bấm lần nữa để xoá</button>
+                <button class="btn sm" @onclick="() => _confirmDelete = false">Huỷ</button>
+            }
+            <span class="action">@_status</span>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public string AccountId { get; set; } = "";
+    [Parameter] public string ShopId { get; set; } = "";
+    [Parameter] public EventCallback OnChanged { get; set; }
+    [Parameter] public EventCallback OnDeleted { get; set; }
+
+    private List<BigSellerAccount> _all = new();
+    private int _version;
+    private BigSellerAccount? _acct;
+    private BigSellerShop? _shop;
+    private string _status = "";
+    private bool _confirmDelete;
+    private string _loadedKey = "\0";
+
+    protected override void OnParametersSet()
+    {
+        var key = AccountId + "|" + ShopId;
+        if (key == _loadedKey) return;
+        _loadedKey = key;
+        _confirmDelete = false;
+        _status = "";
+        Load();
+    }
+
+    private void Load()
+    {
+        _all = Config.BigSellerAccounts();
+        _version = Config.VersionOf(FileStoreConfigService.BigSellerFile);
+        _acct = _all.FirstOrDefault(a => a.Id == AccountId);
+        _shop = _acct?.Shops.FirstOrDefault(s => s.Id == ShopId);
+    }
+
+    private async Task Save()
+    {
+        // Tự-vá shop hub-mode tạo TRƯỚC khi có luật "sheet = shop.Id": sheet rỗng → điền shop.Id để có ngăn dữ liệu.
+        if (_shop is not null && _acct?.UsesHubData == true && string.IsNullOrEmpty(_shop.ShopeeDataSheet))
+            _shop.ShopeeDataSheet = _shop.Id;
+        _status = ConfigSave.Apply(Config, FileStoreConfigService.BigSellerFile, _all, ref _version, Load);
+        await OnChanged.InvokeAsync();
+    }
+
+    private async Task DeleteShop()
+    {
+        if (_acct is null || _shop is null) return;
+        _acct.Shops.RemoveAll(s => s.Id == _shop.Id);
+        _status = ConfigSave.Apply(Config, FileStoreConfigService.BigSellerFile, _all, ref _version, Load);
+        _confirmDelete = false;
+        await OnDeleted.InvokeAsync();
+    }
+}

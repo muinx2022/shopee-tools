@@ -1,0 +1,99 @@
+@* Danh sách acc → shop bên TRÁI của workspace trang BigSeller ("/"). Tách khỏi Fleet.razor: vùng này chỉ VẼ +
+   báo cú bấm lên cha, không giữ state nào (mọi lựa chọn nằm ở cha vì cha ghi chúng vào URL). *@
+
+<div class="wslist">
+    <div class="wslist-head">
+        <input type="text" value="@Search" @oninput="OnSearchInput" placeholder="tìm acc / shop…" />
+        @* Chip lọc trạng thái — TÁI DÙNG .chip/.chips của trang Giao việc (cùng vai trò: thu hẹp danh sách
+           đang nhìn). Lọc THUẦN trên danh sách cha đã dựng, không đọc thêm DB. *@
+        <div class="chips wslist-chips">
+            @foreach (var (key, label) in FleetRowsBuilder.StateChips)
+            {
+                <button class="chip @(State == key ? "on" : "")" @onclick="() => StateChanged.InvokeAsync(key)">@label</button>
+            }
+        </div>
+    </div>
+    @* Nút thêm acc để NGOÀI khối dính: nó là việc hiếm, không đáng chiếm 34px vĩnh viễn của khung danh sách
+       như ô tìm và chip (hai thứ phải thấy được mọi lúc để biết đang lọc theo gì). *@
+    <button class="btn sm wsadd" @onclick="() => OnAddAccount.InvokeAsync()">+ Thêm tài khoản</button>
+    @foreach (var g in Groups)
+    {
+        <div class="wsacct @(SelectedRow is null && SelectedAccountId == g.AccountId ? "sel" : "")" @onclick="() => OnSelectAcct.InvokeAsync(g.AccountId)">
+            @* Email acc dài hơn bề ngang cột (270px) → PHẢI cắt ellipsis, kẻo dòng gãy làm hai và danh sách
+               dài thêm gần một nửa. Tên đầy đủ nằm ở title. *@
+            <span class="nm" title="@g.AccountName">@g.AccountName</span>
+            <span class="cnt">@g.Shops.Count shop</span>
+        </div>
+        @foreach (var row in g.Shops)
+        {
+            var sel = SelectedShopKey is { } k && k.AccountId == row.AccountId && k.ShopId == row.ShopId;
+            // MỘT lượt tính cho cả glyph lẫn cờ "đang chạy" — xem FleetShopState (OpCell không rẻ, nhịp 2s).
+            var st = FleetRowsBuilder.StateOf(Snap, row);
+            <div class="wsshop @(sel ? "sel" : "") @(row.InConfig ? "" : "ghost") @(st.Running ? "run" : "")" title="@GlyphTitle(row)" @onclick="() => OnSelectShop.InvokeAsync(row)">
+                @if (st.Running)
+                {
+                    <span class="glyph"><span class="rundot"></span></span>
+                    <span class="nm" title="@row.ShopName">@row.ShopName</span>
+                    <span class="runbadge">chạy</span>
+                }
+                else
+                {
+                    <span class="glyph">@GlyphOf(row, st)</span>
+                    <span class="nm" title="@row.ShopName">@row.ShopName</span>
+                }
+            </div>
+        }
+    }
+    @if (Groups.Count == 0)
+    {
+        <div class="empty">@EmptyText</div>
+    }
+</div>
+
+@code {
+    /// <summary>Nhóm acc → shop ĐÃ lọc theo ô tìm (cha lọc, xem <c>FleetRowsBuilder.Filter</c>).</summary>
+    [Parameter] public List<FleetAcctGroup> Groups { get; set; } = new();
+
+    [Parameter] public string Search { get; set; } = "";
+    [Parameter] public EventCallback<string> SearchChanged { get; set; }
+
+    /// <summary>Chip lọc trạng thái đang bật (khoá của <c>FleetRowsBuilder.StateChips</c>, "" = Tất cả). Cha giữ
+    /// và ghi vào URL; ở đây chỉ tô chip + báo cú bấm lên — việc LỌC thật nằm ở cha
+    /// (<c>FleetRowsBuilder.FilterByState</c>), cùng chỗ với lọc theo ô tìm.</summary>
+    [Parameter] public string State { get; set; } = "";
+    [Parameter] public EventCallback<string> StateChanged { get; set; }
+
+    /// <summary>Lựa chọn hiện tại — cha giữ (nằm trong URL). <c>SelectedRow</c> null = đang chọn ở mức ACC.</summary>
+    [Parameter] public string? SelectedAccountId { get; set; }
+    [Parameter] public FleetShopRow? SelectedRow { get; set; }
+    [Parameter] public (string AccountId, string ShopId)? SelectedShopKey { get; set; }
+
+    [Parameter] public FleetSnapshot Snap { get; set; } = new();
+
+    /// <summary>Acc ở chế độ kho Hub (Postgres) — chỉ để chọn chữ hiển thị trong tooltip glyph.</summary>
+    [Parameter] public Func<string, bool> IsHubAcct { get; set; } = _ => false;
+
+    /// <summary>Chữ hiện khi không nhóm nào lọt lưới — cha phân biệt "chưa có tài khoản" với "không khớp tìm kiếm".</summary>
+    [Parameter] public string EmptyText { get; set; } = "";
+
+    [Parameter] public EventCallback OnAddAccount { get; set; }
+    [Parameter] public EventCallback<string> OnSelectAcct { get; set; }
+    [Parameter] public EventCallback<FleetShopRow> OnSelectShop { get; set; }
+
+    private Task OnSearchInput(ChangeEventArgs e) => SearchChanged.InvokeAsync(e.Value?.ToString() ?? "");
+
+    // Glyph trạng thái nhanh của shop cho danh sách trái — nhận SẴN trạng thái đã tính (khỏi quét OpCell lượt nữa).
+    private static string GlyphOf(FleetShopRow r, FleetShopState st)
+    {
+        if (r.InConfig && string.IsNullOrEmpty(r.Sheet)) return "⚠";
+        if (st.Running) return "⏳";
+        if (st.Stopped) return "■";
+        if (st.AllDone) return "✓";
+        return "·";
+    }
+
+    private string GlyphTitle(FleetShopRow r) =>
+        r.InConfig && string.IsNullOrEmpty(r.Sheet)
+            ? (IsHubAcct(r.AccountId) ? "thiếu ngăn dữ liệu" : "chưa gán sheet")
+            : "";
+}

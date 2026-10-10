@@ -1,0 +1,312 @@
+@page "/"
+@* KHÔNG dùng @@page "/fleet": route đó thuộc API client (GET /fleet trả JSON). Trang này ở "/".
+   Trang SOI & SỬA (số liệu · đặt tay ledger · rewrite · cấu hình · dữ liệu) — bố cục WORKSPACE master-detail:
+   KPI + danh sách acc→shop bên TRÁI, bên PHẢI các tab cho mục đang chọn.
+   GIAO VIỆC (ghim/huỷ/tiếp tục/điều phối tự động) nằm hẳn ở trang 🎯 Giao việc (/dispatch).
+   Mã của trang nằm ở code-behind Fleet.razor.cs; dựng dòng/nhóm/tóm tắt ở FleetRowsBuilder.cs. *@
+@attribute [Authorize(Policy = "Web")]
+@inherits FleetPageBase
+@inject FileStoreConfigService Config
+@inject HubDatabase Db
+@inject NavigationManager Nav
+@inject RewriteJobService Rewrite
+@inject IServiceProvider Sp
+
+<div class="fleetpage">
+@* ── Hàng thẻ TỔNG QUAN (H1.1): "hôm nay ổn không" trong một cái liếc, mỗi thẻ là lối sang trang chi tiết.
+   Thẻ = 0 thì MỜ (icon xám, không màu cảnh báo) — chỉ thẻ có số mới được kêu. Máy offline + việc gián đoạn đọc
+   THẲNG snapshot fleet (miễn phí, tươi mỗi nhịp 2s); ba thẻ chạm DB (đơn chờ hôm nay · acc lỗi · cảnh báo địa
+   chỉ) nạp lại tối đa mỗi 10s như các nguồn chậm khác của trang — xem ReloadOverview. *@
+<div class="kpis overview">
+    <a class="kpi @(_ovDonCho > 0 ? "" : "dim")" href="/orders"
+       title="Đơn '@TrangThaiCho' xuất hiện HÔM NAY theo giờ Việt Nam (mốc first_seen_at — đồng bộ lại không làm đơn cũ nhảy sang hôm nay). Bấm để sang trang Đơn hàng.">
+        <div class="kpi-ic @(_ovDonCho > 0 ? "blue" : "mute")">@HubIcons.Svg("orders", 22)</div>
+        <div><div class="kpi-val">@_ovDonCho.ToString("N0")</div><div class="kpi-label">Đơn chờ hôm nay</div></div>
+    </a>
+    <a class="kpi @(OvMayOffline > 0 ? "" : "dim")" href="/machines"
+       title="@OvMayTitle">
+        <div class="kpi-ic @(OvMayOfflineGiuViec ? "red" : OvMayOffline > 0 ? "amber" : "mute")">@HubIcons.Svg("machines", 22)</div>
+        <div><div class="kpi-val">@OvMayOffline<span class="kpi-sub">/@Snap.Machines.Count</span></div><div class="kpi-label">Máy offline</div></div>
+    </a>
+    <a class="kpi @(_ovAccLoi > 0 ? "" : "dim")" href="/config/errored"
+       title="Tài khoản Shopee client báo lỗi/captcha, chưa ai xử. Bấm để sang trang Acc lỗi.">
+        <div class="kpi-ic @(_ovAccLoi > 0 ? "amber" : "mute")">@HubIcons.Svg("users", 22)</div>
+        <div><div class="kpi-val">@_ovAccLoi</div><div class="kpi-label">Acc lỗi</div></div>
+    </a>
+    <a class="kpi @(OvGianDoan > 0 ? "" : "dim")" href="/dispatch?kpi=interrupted"
+       title="Việc dừng/lỗi chưa xong — bấm để sang trang Giao việc, mở sẵn bảng việc gián đoạn.">
+        <div class="kpi-ic @(OvGianDoan > 0 ? "red" : "mute")">@HubIcons.Svg("alert", 22)</div>
+        <div><div class="kpi-val">@OvGianDoan</div><div class="kpi-label">Việc gián đoạn</div></div>
+    </a>
+    @* Cảnh báo địa chỉ KHÔNG có trang riêng — section nằm ngay dưới hàng thẻ này. Trang chủ khoá chiều cao
+       (.main:has(.fleetpage){overflow:hidden}) nên anchor "#" không cuộn được tới đâu: thẻ làm NÚT đóng/mở
+       section, y khuôn .kpi-btn của trang Giao việc. Không có cảnh báo nào → <div> trơ, không mời bấm hụt. *@
+    @if (_alerts.Count > 0)
+    {
+        <button class="kpi kpi-btn @(_alertsOpen ? "open" : "")"
+                title="@(_alertsOpen ? "Đang hiện danh sách cảnh báo địa chỉ — bấm để thu gọn." : $"Xem {_alerts.Count} cảnh báo địa chỉ đang mở.")"
+                @onclick="ToggleAlerts">
+            <div class="kpi-ic red">@HubIcons.Svg("alert", 22)</div>
+            <div><div class="kpi-val">@_alerts.Count</div><div class="kpi-label">Cảnh báo địa chỉ@(_alertsOpen ? " ▾" : " ▸")</div></div>
+        </button>
+    }
+    else
+    {
+        <div class="kpi dim" title="Không shop nào đang báo lỗi đặt địa chỉ lấy hàng.">
+            <div class="kpi-ic mute">@HubIcons.Svg("alert", 22)</div>
+            <div><div class="kpi-val">0</div><div class="kpi-label">Cảnh báo địa chỉ</div></div>
+        </div>
+    }
+</div>
+
+@* ── Section cảnh báo địa chỉ (H1.2). Nút "Đã xử lý" đi ĐÚNG hàm mà client bấm X đi qua
+   (HubDatabase.DismissPickupAlert) → rev tăng, mọi máy nhận tombstone ở lượt merge kế. KHÔNG có luật so mốc
+   thời gian nào ở đây; cột "Phát hiện" chỉ để xem (mốc do chính hub ghi). *@
+@if (_alerts.Count > 0 && _alertsOpen)
+{
+    <div class="alertsec">
+        <div class="subhead">⛔ Lỗi đặt địa chỉ lấy hàng — @_alerts.Count shop đang báo</div>
+        <div class="tablewrap alertwrap">
+        <table class="grid sm stack-sm">
+            <thead><tr>
+                <th>Tài khoản</th><th>Shop</th><th class="m-hide">Địa chỉ định đặt</th>
+                <th class="m-hide">Phát hiện</th><th class="m-hide">Máy báo</th><th>Hành động</th>
+            </tr></thead>
+            <tbody>
+            @foreach (var a in _alerts)
+            {
+                <tr @key="@(a.AccountLogin + "|" + a.ShopLogin)">
+                    <td class="acct" data-label="Tài khoản">@a.AccountLogin</td>
+                    <td data-label="Shop">@a.ShopLogin</td>
+                    <td class="m-hide" data-label="Địa chỉ định đặt">@(a.Province.Length > 0 ? a.Province : "—")</td>
+                    <td class="m-hide" data-label="Phát hiện" title="Mốc do HUB ghi lúc nhận báo cáo (chỉ để xem — không luật nào của banner dùng mốc thời gian).">@FleetStateService.Ago(a.CreatedAt)</td>
+                    <td class="m-hide" data-label="Máy báo">@(a.UpdatedByMachine.Length > 0 ? Short(a.UpdatedByMachine) : "—")</td>
+                    <td data-label="Hành động">
+                        <button class="btn sm" title="Đóng banner này trên MỌI máy đang chạy tài khoản @a.AccountLogin (đúng như bấm X trên app). Lỗi còn thật thì vòng shop kế sẽ hiện lại."
+                                @onclick="() => DismissAlert(a)">✓ Đã xử lý</button>
+                    </td>
+                </tr>
+            }
+            </tbody>
+        </table>
+        </div>
+    </div>
+}
+
+@* Kết quả lượt đóng để NGOÀI khối section: đóng nốt cảnh báo CUỐI thì section biến mất, dòng báo nằm trong đó
+   sẽ mất theo — admin không thấy xác nhận nào. *@
+@if (!string.IsNullOrEmpty(_alertMsg))
+{
+    <div class="bar"><span class="action">@_alertMsg</span></div>
+}
+
+@* ── Dải thống kê: các số THỤ ĐỘNG (không bấm được, không dẫn sang trang nào) + câu tóm tắt lưới. Chúng không
+   đáng một hàng thẻ .kpi cao 85px + một hàng .bar nữa, trên trang đã khoá chiều cao viewport; hàng thẻ TỔNG QUAN
+   ở trên (bấm được, là lối sang trang khác) mới giữ vai trò nổi bật.
+   KHÔNG có mục "Máy online" ở đây: thẻ "N/M Máy offline" ngay trên đã trả lời cùng câu hỏi, mà hai chỗ dùng HAI
+   ngưỡng khác nhau (online < 45s · offline ≥ 180s) ⇒ máy im nhịp 45–180s làm hai con số cãi nhau trên cùng một
+   màn ("0/9 Máy offline" cạnh "0 Máy online"). Ngưỡng là của dùng chung (sidebar · /machines · MachineOfflineWatch)
+   nên KHÔNG đụng tới — bỏ mục trùng ở đây là hết mâu thuẫn mà không đổi luật của ai.
+   Câu tóm tắt cũng đã bỏ "đang chạy"/"chờ"/"N máy" vì ba cụm đó lặp đúng thứ nằm cách nó vài chục pixel
+   (xem FleetRowsBuilder.Summarize).
+   Trang này chỉ SOI & SỬA (số liệu · đặt tay ledger · rewrite · cấu hình · dữ liệu); mọi lối GIAO VIỆC
+   (điều phối tự động, ghim/huỷ/tiếp tục việc) đã chuyển hẳn sang trang 🎯 Giao việc (/dispatch). ── *@
+<div class="statstrip">
+    <span class="ss-item"><b>@_kRunning</b> Việc đang chạy</span>
+    <span class="ss-item"><b>@_kQueued</b> Việc chờ</span>
+    <span class="ss-item m-hide"><b>@_kCookies</b> Acc có cookie</span>
+    <span class="ss-sum m-hide" title="@_summary">@_summary</span>
+</div>
+
+<div class="workspace">
+    <WorkspaceShopList Groups="Filtered()" Search="@_search" SearchChanged="OnSearchChanged"
+                       State="@_state" StateChanged="OnStateChanged"
+                       SelectedAccountId="@_selAcctId" SelectedRow="_selRow" SelectedShopKey="_selShopKey"
+                       Snap="Snap" IsHubAcct="IsHubAcct" EmptyText="@ListEmptyText"
+                       OnAddAccount="AddAccount" OnSelectAcct="SelectAcct" OnSelectShop="SelectShop" />
+
+    <div class="wsmain">
+        <h2>@AcctName@(_selRow is not null ? " › " + _selRow.ShopName : "")</h2>
+        <div class="tabs">
+            <button class="@(_tab == "action" ? "active" : "")" @onclick='() => SetTab("action")'>⚡ Hành động</button>
+            @* Thống kê chỉ còn ở mức SHOP; mức ACC đã gộp vào dashboard của tab Hành động. *@
+            @if (_selRow is not null)
+            {
+                <button class="@(_tab == "stats" ? "active" : "")" @onclick='() => SetTab("stats")'>📊 Thống kê</button>
+                <button class="@(_tab == "data" ? "active" : "")" @onclick='() => SetTab("data")'>📋 Dữ liệu</button>
+            }
+            <button class="@(_tab == "config" ? "active" : "")" @onclick='() => SetTab("config")'>⚙ Cấu hình</button>
+        </div>
+
+        @if (_selRow is not null)
+        {
+            var row = _selRow!;
+            @if (_tab == "action")
+            {
+                @* (a) Trạng thái 4 op của shop + combo đặt-tay ledger *@
+                <div class="tablewrap">
+                <table class="grid sm stack-sm">
+                    <thead><tr><th>Việc</th><th>Trạng thái</th><th>Dòng</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var op in FleetRowsBuilder.OpOrder)
+                        {
+                            var cell = FleetStateService.OpCell(Snap, row.AccountId, row.ShopId, op);
+                            var st = row.Ops.GetValueOrDefault(op);
+                            <tr>
+                                <td data-label="Việc">@OpLabel(op)</td>
+                                <td data-label="Trạng thái"><span class="pill @cell.Css" title="@(st is null ? "" : $"{st.Machine} · {st.LastAgo}")">@cell.Text</span></td>
+                                <td data-label="Dòng">@(st is { RowCount: > 0 } ? st.RowCount.ToString("N0") : "")</td>
+                                <td data-label="">
+                                    @* Máy đang chạy (Locked) → ẩn combo. Rewrite + shop mồ côi + shop chưa gán sheet cũng không đặt-tay được. *@
+                                    @if (op != AssignmentOps.Rewrite && row.InConfig && !cell.Locked && !string.IsNullOrEmpty(row.Sheet))
+                                    {
+                                        @* Select UNCONTROLLED → PHẢI @key theo (acc|shop|op|thế hệ): thiếu key thì Blazor tái dùng
+                                           đúng element DOM cũ khi đổi shop → lựa chọn vừa đặt (vd "Chưa (reset)") hiện dính sang
+                                           MỌI shop khác; sau khi đặt-tay xong cũng nhảy thế hệ để combo dựng lại, quay về ⋯. *@
+                                        <select class="cellset" @key="@($"{row.AccountId}|{row.ShopId}|{op}|{_cellsetGen}")"
+                                                @onchange="e => SetLedger(row.AccountId, row.ShopId, row.Sheet, op, e.Value?.ToString())">
+                                            <option value="">⋯</option>
+                                            <option value="@LedgerStatus.Completed">✓ Xong</option>
+                                            <option value="@LedgerStatus.Idle">Chưa (reset)</option>
+                                            <option value="@LedgerStatus.Stopped">■ Dừng</option>
+                                        </select>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+                </div>
+
+                @* (b) Giao việc đã chuyển hẳn sang trang /dispatch → chỉ còn LỐI SANG đó, lọc sẵn acc + shop. *@
+                @if (!row.InConfig)
+                {
+                    <p class="hint">Shop không còn trong cấu hình — chỉ xem tiến độ.</p>
+                }
+                else if (string.IsNullOrEmpty(row.Sheet))
+                {
+                    <p class="hint">@(IsHubAcct(row.AccountId)
+                        ? "Shop thiếu ngăn dữ liệu — mở tab ⚙ Cấu hình bấm Lưu để vá."
+                        : "Shop chưa gán sheet — vào tab ⚙ Cấu hình.")</p>
+                }
+                else
+                {
+                    <div class="bar">
+                        <a class="btn primary sm" href="@DispatchLink(row)"
+                           title="Sang trang Giao việc, lọc sẵn tài khoản + shop này — ở đó chọn máy rồi bấm thẳng việc.">🎯 Giao việc cho shop này</a>
+                    </div>
+                }
+
+                @* (c) Rewrite tên CHẠY TRÊN HUB — chỉ acc kho-Hub (client excel-mode tự lo qua module Update). *@
+                @if (IsHubAcct(row.AccountId) && row.InConfig && !string.IsNullOrEmpty(row.Sheet))
+                {
+                    var rw = Rewrite.GetState(row.AccountId, row.Sheet);
+                    var rwBusy = rw is not null && rw.Status is "running" or "queued";
+                    <div class="pinpanel" style="margin-top:14px">
+                        <div class="subhead">✎ Rewrite tên (chạy trên hub)</div>
+                        @if (!PgReady)
+                        {
+                            <p class="hint">Kho Postgres chưa sẵn sàng — cấu hình <span class="wbname">HUB_PG_CONN</span> để bật rewrite trên hub.</p>
+                            <div class="pin pinbtns">
+                                <button class="btn primary" disabled>▶ Chạy</button>
+                            </div>
+                        }
+                        else
+                        {
+                            <p class="hint">
+                                @if (_rwPendingKey == RwKey(row) && _rwPending is { } pc)
+                                {
+                                    <span>Còn <b>@pc.ToString("N0")</b> dòng chờ rewrite (tên gốc + SKU, chưa có tên-sửa).</span>
+                                }
+                                else
+                                {
+                                    <span>Đang đếm dòng chờ…</span>
+                                }
+                                <button class="linkbtn" @onclick="() => RefreshRewritePending(row.AccountId, row.Sheet)">⟳ làm mới</button>
+                            </p>
+                            <div class="pin pinbtns">
+                                <button class="btn primary" disabled="@rwBusy" @onclick="() => StartRewrite(row)">▶ Chạy</button>
+                                @if (rwBusy)
+                                {
+                                    <button class="btn danger" @onclick="() => Rewrite.Cancel(row.AccountId, row.Sheet)">■ Dừng</button>
+                                }
+                            </div>
+                            @if (!string.IsNullOrEmpty(_rwActionMsg))
+                            {
+                                <div class="warn" style="margin-top:8px">@_rwActionMsg</div>
+                            }
+                            @if (rw is not null)
+                            {
+                                <div class="action" style="margin-top:10px">@RewriteStatusLine(rw)</div>
+                                var rwLog = rw.LogSnapshot();   // bản sao an toàn-thread (worker mutate list gốc song song)
+                                @if (rwLog.Count > 0)
+                                {
+                                    <div style="margin-top:8px; max-height:150px; overflow:auto; font-family:var(--mono); font-size:11.5px; line-height:1.5; color:var(--body); overflow-wrap:anywhere">
+                                        @foreach (var line in rwLog)
+                                        {
+                                            <div>@line</div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        }
+                    </div>
+                }
+            }
+            else if (_tab == "stats")
+            {
+                <ShopStatsCards Snap="Snap" Row="row" OnOpenMap="OpenMap" />
+            }
+            else if (_tab == "data")
+            {
+                <ProductGridPanel AccountId="@row.AccountId" Sheet="@row.Sheet" InitialState="_gridInitial" OnViewChanged="OnGridViewChanged" />
+            }
+            else
+            {
+                @if (row.InConfig)
+                {
+                    <ShopConfigPanel AccountId="@row.AccountId" ShopId="@row.ShopId" OnChanged="OnConfigChanged" OnDeleted="OnShopDeleted" />
+                }
+                else
+                {
+                    <p class="hint">Shop không còn trong cấu hình — chỉ xem tiến độ.</p>
+                }
+            }
+        }
+        else if (_selAcctId is not null)
+        {
+            @if (_tab == "action")
+            {
+                <AcctDashboard Snap="Snap" AccountId="@(_selAcctId!)" Shops="AcctShops()"
+                               InConfig="@_accounts.Any(a => a.Id == _selAcctId)" DispatchHref="@DispatchLink(_selAcctId!)"
+                               OnSelectShop="SelectShop" />
+            }
+            else
+            {
+                @if (_accounts.Any(a => a.Id == _selAcctId))
+                {
+                    <AccountConfigPanel AccountId="@(_selAcctId!)" OnChanged="OnConfigChanged" OnDeleted="OnAcctDeleted" OnShopAdded="OnShopAdded" OnShopOpen="OnShopOpen" />
+                    <DataStorePanel AccountId="@(_selAcctId!)" OnChanged="OnConfigChanged" />
+                }
+                else
+                {
+                    <p class="hint">Tài khoản không còn trong cấu hình (chỉ còn lịch sử).</p>
+                }
+            }
+        }
+        else
+        {
+            <p class="hint">Chọn 1 tài khoản hoặc shop ở danh sách bên trái.</p>
+        }
+    </div>
+</div>
+</div>
+
+@if (_map is not null)
+{
+    <RowMapModal Title="@_map.Title" Op="@_map.Op" OpLabel="@_map.OpLabel" AccountId="@_map.AccountId"
+                 Sheet="@_map.Sheet" Ledger="_map.Ledger" OnClose="() => _map = null" />
+}
+
+@* Đặt NGOÀI mọi .tablewrap (overlay position:fixed) — khuôn dùng chung, xem ConfirmDialog.razor. *@
+<ConfirmDialog @ref="_confirm" />

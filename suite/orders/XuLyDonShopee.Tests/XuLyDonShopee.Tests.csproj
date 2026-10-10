@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0-windows + UseWPF: test dựng control WPF thật (CellTextExtractorTests) và đọc SolidColorBrush
+         (OrderStatusPillConverterTests). Chạy trên thread MTA của xunit vẫn được vì chỉ TẠO đối tượng,
+         không bơm message loop / không hiện cửa sổ. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+    <!-- [StaFact]/[StaTheory]: control WPF (TextBlock/Border/Button) CHỈ dựng được trên luồng STA, còn xunit
+         chạy test trên threadpool MTA. Chỉ CellTextExtractorTests cần; các test khác giữ [Fact] như cũ. -->
+    <PackageReference Include="Xunit.StaFact" Version="1.1.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <!-- Danh sách implicit của SDK desktop (net8.0-windows) KHÔNG có System.IO + System.Net.Http như SDK
+         thường → thêm lại, không thì các test dùng FileStream/HttpClient vỡ vì thiếu using. -->
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\XuLyDonShopee.Core\XuLyDonShopee.Core.csproj" />
+    <ProjectReference Include="..\XuLyDonShopee.App\XuLyDonShopee.App.csproj" />
+  </ItemGroup>
+
+  <!-- Nguồn dùng chung được LINK (khuôn của Shopee.Hub.Web.csproj) — KHÔNG tham chiếu cả Shopee.Core (kéo theo
+       Playwright/ClosedXML/WMI). MachineSlots là luật SUẤT LÀM VIỆC dùng chung hub↔client, thuần BCL. -->
+  <ItemGroup>
+    <Compile Include="..\..\suite\Shopee.Core\Coordination\MachineSlots.cs" Link="Shared\Coordination\MachineSlots.cs" />
+    <!-- Luật SỐ LANE theo op (import khoá cứng 1 lane) — dùng chung chỗ chạy thật ↔ quỹ Brave, thuần BCL. -->
+    <Compile Include="..\..\suite\Shopee.Core\Coordination\AssignmentConsts.cs" Link="Shared\Coordination\AssignmentConsts.cs" />
+    <Compile Include="..\..\suite\Shopee.Core\Coordination\OpLanes.cs" Link="Shared\Coordination\OpLanes.cs" />
+    <!-- Điều phối "nhờ Hub đăng nhập lại BigSeller": thuần BCL (hub/đĩa là hàm tiêm vào) — dedup lời nhờ + kéo
+         cookie đúng 1 lần + buông khi hỏng/quá hạn, sai chỗ nào cũng làm việc của acc kẹt hoặc chạy cookie chết. -->
+    <Compile Include="..\..\suite\Shopee.Core\Coordination\BigSellerReloginCoordinator.cs" Link="Shared\Coordination\BigSellerReloginCoordinator.cs" />
+    <!-- Luật DỪNG JOB khi key proxy chết: 2 file thuần BCL (ProxyFailure + luật quyết định của ScrapeRunner).
+         Bắt nhầm lỗi proxy lẻ thành lỗi toàn cục sẽ giết oan job đang chạy → phải có test cả ca âm tính. -->
+    <Compile Include="..\..\suite\Shopee.Core\Proxy\ProxyFailure.cs" Link="Shared\Proxy\ProxyFailure.cs" />
+    <Compile Include="..\..\suite\Shopee.Module.MultiBrave\ScrapeFailurePolicy.cs" Link="Shared\Scrape\ScrapeFailurePolicy.cs" />
+  </ItemGroup>
+
+</Project>

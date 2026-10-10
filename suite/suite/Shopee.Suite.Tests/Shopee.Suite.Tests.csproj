@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <!-- net8.0-windows + UseWPF: Shopee.Suite là project WPF, và RibbonGroup/RibbonActionItem đụng
+         System.Windows.Input.ICommand. Cùng khuôn XuLyDonShopee.Tests. -->
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <AssemblyName>Shopee.Suite.Tests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.5.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.3" />
+    <!-- [StaFact]: dựng Application + tra tài nguyên WPF phải ở STA thread. -->
+    <PackageReference Include="Xunit.StaFact" Version="1.1.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- CÁCH LY KHO DỮ LIỆU KHI CHẠY TEST (khuôn Shopee.Core.Tests): SuitePaths đọc data-dir.txt CẠNH .exe → Root
+       của test trỏ vào bin\...\test-data\ShopeeSuite thay vì %AppData%\ShopeeSuite. Cần từ 22/08/2026, khi
+       KmVongBaWorkerTests gọi WireKmSync — hàm đó đọc MachineIdentity.Shared, tức machine.json THẬT của máy
+       đang chạy. -->
+  <ItemGroup>
+    <None Update="data-dir.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!-- Ref thẳng shell: cần chính RibbonGroup/RibbonActionItem thật, không phải bản chép.
+       ⚠ KHÔNG dựng ShellViewModel trong test — ctor của nó khởi động trọn bộ module + database THẬT của người
+       dùng. Chỉ gọi các factory `internal static` đã tách sẵn. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Shopee.Suite\Shopee.Suite.csproj" />
+  </ItemGroup>
+
+</Project>

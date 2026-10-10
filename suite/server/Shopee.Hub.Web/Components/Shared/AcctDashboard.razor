@@ -1,0 +1,123 @@
+@* Dashboard gọn của ACC (panel phải trang BigSeller "/" khi chưa chọn shop): việc đang chạy + máy giữ acc +
+   ma-trận shop (trạng thái · số dòng, bấm dòng mở shop). Tab Thống kê mức acc đã GỘP vào đây (dòng Tổng cuối bảng).
+   KHÔNG còn hàng 4 thẻ .kpi ở đầu: số của chúng là TỔNG dòng theo op, mà hàng "Tổng" cuối bảng ngay dưới cộng đúng
+   phép cộng đó ⇒ bốn con số y hệt nhau cách nhau 250px. Phần KHÔNG trùng của mấy thẻ đó là tỉ lệ "N/M shop ✓" —
+   nó đã dời vào tiêu đề cột của chính bảng, nơi nó thuộc về. Thuần hiển thị — cú bấm dòng báo lên cha. *@
+
+@foreach (var l in AcctLeases())
+{
+    <div class="busyline running"><span class="dot"></span> Đang chạy: <b>@ShopNameOf(l.ShopId)</b> · @OpLabel(l.Op) · máy <b>@l.Hostname</b></div>
+}
+@if (!AcctLeases().Any() && OwnerOf(AccountId) is { } om)
+{
+    <div class="hint" style="margin:2px 0 8px">🔒 Acc đang do máy <b>@HostName(om)</b> giữ — việc mới của acc sẽ vào máy này.</div>
+}
+<div class="tablewrap" style="margin-top:10px">
+<table class="grid sm stack-sm">
+    @* Tỉ lệ "N/M ✓" của cả acc nằm ngay trên cột nó tóm tắt. Ở khổ ≤920px khuôn stack-sm giấu thead → tỉ lệ
+       hiện lại ở hàng Tổng bên dưới (.m-only), nên không khổ nào mất con số này. *@
+    <thead><tr>
+        <th>Shop</th>
+        @foreach (var op in FleetRowsBuilder.OpOrder)
+        {
+            var d = AcctOpDone(op);
+            <th title="@d.Done/@d.Total shop của tài khoản đã xong việc @OpLabel(op).">
+                @OpLabel(op) <span class="thsub">@d.Done/@d.Total ✓</span>
+            </th>
+        }
+    </tr></thead>
+    <tbody>
+        @foreach (var r in Shops)
+        {
+            <tr @onclick="() => OnSelectShop.InvokeAsync(r)">
+                <td class="shop" data-label="Shop">@r.ShopName</td>
+                @foreach (var op in FleetRowsBuilder.OpOrder)
+                {
+                    <td data-label="@OpLabel(op)">
+                        @if (string.IsNullOrEmpty(r.Sheet))
+                        {
+                            <span class="sub">—</span>
+                        }
+                        else
+                        {
+                            var cell = FleetStateService.OpCell(Snap, r.AccountId, r.ShopId, op);
+                            var st = r.Ops.GetValueOrDefault(op);
+                            <span class="pill @cell.Css" title="@(st is null ? "" : $"{st.Machine} · {st.LastAgo}")">@cell.Text@(st is { RowCount: > 0 } ? $" · {st.RowCount:N0}" : "")</span>
+                        }
+                    </td>
+                }
+            </tr>
+        }
+        @if (Shops.Any())
+        {
+            <tr class="acctrow">
+                <td data-label="Shop">Tổng</td>
+                @foreach (var op in FleetRowsBuilder.OpOrder)
+                {
+                    var tot = Shops.Sum(r => r.Ops.GetValueOrDefault(op)?.RowCount ?? 0);
+                    var d = AcctOpDone(op);
+                    @* .m-only: chỉ ≤920px, đúng khổ mà stack-sm giấu thead mang tỉ lệ này. *@
+                    <td data-label="@OpLabel(op)">@tot.ToString("N0") <span class="thsub m-only">@d.Done/@d.Total ✓</span></td>
+                }
+            </tr>
+        }
+        else
+        {
+            <tr><td colspan="5" class="empty">Tài khoản chưa có shop nào.</td></tr>
+        }
+    </tbody>
+</table>
+</div>
+@* Acc mồ côi (chỉ còn trong ledger) không giao việc được → không dựng lối sang. *@
+@if (InConfig)
+{
+    <div class="bar">
+        <a class="btn primary sm" href="@DispatchHref"
+           title="Sang trang Giao việc, lọc sẵn tài khoản này — ở đó chọn máy rồi bấm việc cho từng shop (hoặc cả acc).">🎯 Giao việc cho tài khoản này</a>
+    </div>
+}
+
+@code {
+    [Parameter] public FleetSnapshot Snap { get; set; } = new();
+    [Parameter] public string AccountId { get; set; } = "";
+
+    /// <summary>Mọi shop của acc đang chọn (cha đã lọc từ danh sách dòng).</summary>
+    [Parameter] public List<FleetShopRow> Shops { get; set; } = new();
+
+    /// <summary>Acc còn trong cấu hình? Acc mồ côi (chỉ còn ledger) không dựng lối sang trang Giao việc.</summary>
+    [Parameter] public bool InConfig { get; set; }
+
+    /// <summary>Link trang Giao việc đã lọc sẵn acc này (cha dựng — cùng chỗ dựng link mức shop).</summary>
+    [Parameter] public string DispatchHref { get; set; } = "";
+
+    [Parameter] public EventCallback<FleetShopRow> OnSelectShop { get; set; }
+
+    /// <summary>Số shop của acc đã ✓ xong một op / tổng shop — phần DUY NHẤT của hàng thẻ cũ mà bảng không nói
+    /// (tổng dòng thì hàng "Tổng" đã cộng), nên chỉ còn tính tỉ lệ này.</summary>
+    private (int Done, int Total) AcctOpDone(string op)
+    {
+        var done = Shops.Count(r => FleetStateService.OpCell(Snap, r.AccountId, r.ShopId, op).Text.StartsWith('✓'));
+        return (done, Shops.Count);
+    }
+
+    /// <summary>Lease sống của acc đang chọn — mỗi lease = 1 việc đang chạy thật (shop/op/máy).</summary>
+    private List<LeaseRecord> AcctLeases() =>
+        AccountId.Length == 0 ? new() : Snap.Leases.Where(l => l.BigsellerId == AccountId).ToList();
+
+    private string ShopNameOf(string shopId) =>
+        Shops.FirstOrDefault(r => r.ShopId == shopId)?.ShopName
+        ?? (shopId.Length > 8 ? shopId[..8] : shopId);
+
+    private string? OwnerOf(string bs)
+    {
+        // Máy đang giữ lease tươi hoặc assignment running của acc này.
+        var lease = Snap.Leases.FirstOrDefault(l => l.BigsellerId == bs);
+        if (lease is not null) return lease.MachineId;
+        var asn = Snap.Assignments.FirstOrDefault(a => a.BigsellerId == bs && a.Status == AssignmentStatus.Running);
+        return asn?.ClaimedByMachineId;
+    }
+
+    private string HostName(string machineId) => FleetRowsBuilder.HostName(Snap, machineId);
+
+    private static string OpLabel(string op) => FleetViewProjection.OperationLabel(op);
+}
