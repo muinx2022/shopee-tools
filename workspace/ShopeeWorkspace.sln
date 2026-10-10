@@ -1,0 +1,61 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Toolkit", "shared\Shopee.Toolkit\Shopee.Toolkit.csproj", "{11111111-0001-0000-0000-000000000000}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Core", "src\Shopee.Core\Shopee.Core.csproj", "{11111111-0002-0000-0000-000000000000}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Module.MultiBrave", "src\Shopee.Module.MultiBrave\Shopee.Module.MultiBrave.csproj", "{11111111-0003-0000-0000-000000000000}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Module.UpdateProduct", "src\Shopee.Module.UpdateProduct\Shopee.Module.UpdateProduct.csproj", "{11111111-0004-0000-0000-000000000000}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Module.CheckAccount", "src\Shopee.Module.CheckAccount\Shopee.Module.CheckAccount.csproj", "{11111111-0005-0000-0000-000000000000}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Workspace", "src\Shopee.Workspace\Shopee.Workspace.csproj", "{11111111-0006-0000-0000-000000000000}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Core.Tests", "tests\Shopee.Core.Tests\Shopee.Core.Tests.csproj", "{11111111-0007-0000-0000-000000000000}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Workspace.Tests", "tests\Shopee.Workspace.Tests\Shopee.Workspace.Tests.csproj", "{11111111-0008-0000-0000-000000000000}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{11111111-0001-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0001-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0001-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0001-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-0002-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0002-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0002-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0002-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-0003-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0003-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0003-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0003-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-0004-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0004-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0004-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0004-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-0005-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0005-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0005-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0005-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-0006-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0006-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0006-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0006-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-0007-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0007-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0007-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0007-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{11111111-0008-0000-0000-000000000000}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{11111111-0008-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{11111111-0008-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{11111111-0008-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

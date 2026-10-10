@@ -1,0 +1,255 @@
+using Microsoft.Extensions.DependencyInjection;
+using Shopee.Core.Ai;
+using Shopee.Core.Coordination;
+using Shopee.Core.Scrape;   // RowRange (ledger)
+using Shopee.Hub;
+using UpdateProduct;         // BigSellerText.TruncateProductNamePreservingSku (file LINK từ suite\ — xem csproj)
+
+namespace Shopee.Hub.Web.Services;
+
+/// <summary>Trạng thái 1 việc rewrite tên trên hub cho 1 (acc, sheet) — cho web UI hiển thị + điều khiển.</summary>
+public sealed class RewriteState
+{
+    /// <summary>idle | queued | running | done | failed.</summary>
+    public string Status { get; internal set; } = "idle";
+    public string Message { get; internal set; } = "";
+    /// <summary>Số TÊN unique cần xử lý (mẫu số của tiến độ x/y).</summary>
+    public int Total { get; internal set; }
+    /// <summary>Số TÊN unique đã xử lý xong.</summary>
+    public int Done { get; internal set; }
+    /// <summary>Số DÒNG đã ghi tên-sửa (mỗi tên có thể nhiều dòng).</summary>
+    public int RowsWritten { get; internal set; }
+
+    // ≤10 dòng log cuối. Worker (WorkerLoopAsync) mutate qua AppendLog dưới _logGate RIÊNG; UI (Fleet.razor) đọc
+    // qua LogSnapshot() — KHÔNG cho render foreach thẳng list gốc (worker Add giữa lúc render → "Collection was modified").
+    private readonly object _logGate = new();
+    private List<string> Log { get; } = new();
+    internal void AppendLog(string line) { lock (_logGate) { Log.Add(line); if (Log.Count > 10) Log.RemoveAt(0); } }
+    /// <summary>Bản sao an toàn-thread của log để UI render (không đụng list gốc đang bị worker mutate).</summary>
+    public List<string> LogSnapshot() { lock (_logGate) return Log.ToList(); }
+}
+
+/// <summary>
+/// Chạy VIẾT LẠI TÊN sản phẩm NGAY TRÊN HUB (hub quản toàn bộ dữ liệu Postgres) — bấm từ web, không cần client.
+/// Mỗi (acc, sheet) chỉ 1 việc tại 1 thời điểm; MỘT worker nền chạy TUẦN TỰ từng việc (1 việc/lúc — tránh dội AI
+/// nhiều shop cùng lúc). Với mỗi việc: lấy dòng chờ rewrite (<see cref="ProductDb.GetRewritePendingAsync"/>) → dedup
+/// theo tên gốc (khớp BuildPlan của ProductNameRewriteRunner) → gọi <see cref="NameRewriteEngine"/> theo batch → ghi
+/// tên-sửa (<see cref="ProductDb.SetRewrittenAsync"/>, idempotent, updated_by="hub-rewrite") → đẩy ledger IN-PROCESS
+/// (<see cref="HubDatabase.PublishLedger"/>, op="rewrite") cho trang Thống kê.
+///
+/// ProductDb có thể CHƯA đăng ký DI (chưa cấu hình Postgres) → resolve qua <see cref="IServiceProvider"/> (null =
+/// "chưa sẵn sàng", <see cref="Start"/> trả message lỗi rõ). Cấu hình AI đọc TƯƠI mỗi việc từ config/ai.json qua
+/// <see cref="FileStoreConfigService.Ai"/>; model/batch có thể override theo shop (OpenAiModel/OpenAiBatchSize).
+/// </summary>
+public sealed class RewriteJobService
+{
+    private readonly IServiceProvider _sp;
+    private readonly FileStoreConfigService _config;
+    private readonly HubDatabase _db;
+    private readonly ILogger<RewriteJobService> _log;
+
+    private readonly object _gate = new();
+    private readonly Dictionary<string, Job> _jobs = new(StringComparer.Ordinal);
+    private readonly Queue<Job> _queue = new();
+    private bool _workerRunning;
+
+    public RewriteJobService(IServiceProvider sp, FileStoreConfigService config, HubDatabase db, ILogger<RewriteJobService> log)
+    { _sp = sp; _config = config; _db = db; _log = log; }
+
+    private sealed class Job
+    {
+        public string AcctId = "", Sheet = "", ShopName = "";
+        public RewriteState State { get; } = new();
+        public CancellationTokenSource Cts { get; } = new();
+    }
+
+    private static string Key(string acctId, string sheet) => acctId + "\0" + sheet;
+
+    /// <summary>Trạng thái việc rewrite của (acc, sheet) — null nếu chưa từng chạy (UI hiểu là idle).</summary>
+    public RewriteState? GetState(string acctId, string sheet)
+    {
+        lock (_gate) return _jobs.TryGetValue(Key(acctId, sheet), out var j) ? j.State : null;
+    }
+
+    /// <summary>Xếp hàng 1 việc rewrite. Trả null nếu OK; message lỗi nếu từ chối (đang chạy/xếp hàng, hoặc pg chưa
+    /// sẵn sàng).</summary>
+    public string? Start(string acctId, string sheet, string shopName)
+    {
+        if (string.IsNullOrWhiteSpace(acctId) || string.IsNullOrWhiteSpace(sheet))
+            return "Thiếu acc/sheet.";
+        var pdb = _sp.GetService<ProductDb>();
+        if (pdb is null || !pdb.IsReady)
+            return "⛔ Kho Postgres chưa sẵn sàng.";
+        lock (_gate)
+        {
+            var key = Key(acctId, sheet);
+            if (_jobs.TryGetValue(key, out var ex) && ex.State.Status is "queued" or "running")
+                return "Việc rewrite của shop này đang chạy hoặc đã xếp hàng.";
+            var job = new Job { AcctId = acctId, Sheet = sheet, ShopName = shopName };
+            job.State.Status = "queued";
+            job.State.Message = "Đã xếp hàng.";
+            job.State.Total = job.State.Done = job.State.RowsWritten = 0;
+            // job mới → State.Log đã rỗng (không cần Clear; Log giờ private, chỉ mutate qua AppendLog).
+            _jobs[key] = job;
+            _queue.Enqueue(job);
+            if (!_workerRunning) { _workerRunning = true; _ = Task.Run(WorkerLoopAsync); }
+        }
+        return null;
+    }
+
+    /// <summary>Dừng MỀM: worker dừng SAU batch hiện tại (không cắt ngang lô AI/ghi đang chạy).</summary>
+    public void Cancel(string acctId, string sheet)
+    {
+        lock (_gate)
+            if (_jobs.TryGetValue(Key(acctId, sheet), out var j) && j.State.Status is "queued" or "running")
+                j.Cts.Cancel();
+    }
+
+    /// <summary>Đếm dòng CHỜ rewrite của 1 (acc, sheet) cho UI (GetRewritePendingAsync count). pg chưa sẵn sàng → null.</summary>
+    public async Task<int?> CountPendingAsync(string acctId, string sheet, CancellationToken ct)
+    {
+        var pdb = _sp.GetService<ProductDb>();
+        if (pdb is null || !pdb.IsReady) return null;
+        var rows = await pdb.GetRewritePendingAsync(acctId, sheet, 2, 0, ct);
+        return rows.Count;
+    }
+
+    private async Task WorkerLoopAsync()
+    {
+        while (true)
+        {
+            Job? job;
+            lock (_gate)
+            {
+                if (!_queue.TryDequeue(out job)) { _workerRunning = false; return; }   // hết việc → thoát (atomic dưới _gate)
+            }
+            try { await RunJobAsync(job!); }
+            catch (OperationCanceledException) { Done(job!, "■ Đã dừng."); }
+            catch (Exception ex) { Fail(job!, ex.Message); }
+        }
+    }
+
+    private async Task RunJobAsync(Job job)
+    {
+        // Dừng MỀM: token CHỈ dùng để quyết định dừng ở RANH GIỚI batch; các lệnh AI/DB của 1 batch chạy tới cùng
+        // (CancellationToken.None) để không mất tiền AI / ghi dở giữa lô.
+        if (job.Cts.IsCancellationRequested) { Done(job, "■ Đã hủy trước khi chạy."); return; }
+
+        var pdb = _sp.GetService<ProductDb>();
+        if (pdb is null || !pdb.IsReady) { Fail(job, "Kho Postgres chưa sẵn sàng."); return; }
+
+        // Shop (model/batch override) + ledger shopId. Hub-mode: sheet = ShopeeDataSheet nên shop luôn khớp; không
+        // khớp (mồ côi) → dùng sheet làm shopId để ledger vẫn có khoá ổn định.
+        var acct = _config.BigSellerAccounts().FirstOrDefault(a => a.Id == job.AcctId);
+        var shop = acct?.Shops.FirstOrDefault(s => string.Equals(s.ShopeeDataSheet, job.Sheet, StringComparison.Ordinal));
+        var shopId = shop?.Id ?? job.Sheet;
+
+        var cfg = _config.Ai();   // fresh mỗi việc → mutate an toàn
+        if (shop is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(shop.OpenAiModel)) cfg.OpenAiModel = shop.OpenAiModel;
+            if (shop.OpenAiBatchSize > 0) cfg.BatchSize = shop.OpenAiBatchSize;
+        }
+        if (!cfg.HasActiveKey) { Fail(job, $"Chưa cấu hình API key AI ({cfg.Provider}) — trang Cấu hình AI trên Hub."); return; }
+        var batchSize = Math.Clamp(cfg.BatchSize, 1, 500);
+
+        lock (_gate) { job.State.Status = "running"; }
+        Say(job, $"📝 Rewrite tên (hub): shop '{job.ShopName}', AI {cfg.Provider}·{cfg.ActiveModel}, batch {batchSize}.");
+
+        // Dòng chờ rewrite + dedup theo tên gốc (SKU đầu-tiên/tên; gom rows theo tên) — KHỚP BuildPlan runner.
+        var pending = await pdb.GetRewritePendingAsync(job.AcctId, job.Sheet, 2, 0, CancellationToken.None);
+        var uniqueNames = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var rowsByName = new Dictionary<string, List<(int RowNo, string Sku)>>(StringComparer.Ordinal);
+        foreach (var r in pending)
+        {
+            var name = (r.NameOriginal ?? "").Trim();
+            var sku = (r.Sku ?? "").Trim();
+            if (name.Length == 0 || sku.Length == 0) continue;   // phòng thủ (server đã lọc)
+            rowsByName.TryAdd(name, []);
+            rowsByName[name].Add((r.RowNo, sku));
+            if (seen.Add(name)) uniqueNames.Add(name);
+        }
+        if (uniqueNames.Count == 0) { Done(job, "✓ Không còn dòng cần rewrite."); return; }
+
+        lock (_gate) { job.State.Total = uniqueNames.Count; }
+        Say(job, $"Cần rewrite {uniqueNames.Count} tên unique / {pending.Count} dòng.");
+
+        var engine = new NameRewriteEngine(cfg, BigSellerText.TruncateProductNamePreservingSku);
+        var rowsWritten = 0;
+        var maxRow = 0;
+        var canceled = false;
+
+        for (var i = 0; i < uniqueNames.Count; i += batchSize)
+        {
+            if (job.Cts.IsCancellationRequested) { canceled = true; break; }   // dừng MỀM ở ranh giới batch
+            var batch = uniqueNames.Skip(i).Take(Math.Min(batchSize, uniqueNames.Count - i)).ToList();
+            Say(job, $"Batch {i + 1}-{i + batch.Count}/{uniqueNames.Count} — đang gọi AI…");
+
+            var titles = await engine.RewriteTitlesAsync(batch, m => Say(job, m), CancellationToken.None);
+            if (titles.Count != batch.Count)
+            { Fail(job, $"AI trả số tiêu đề không khớp ({titles.Count}/{batch.Count})."); return; }
+
+            var items = new List<ProductRewrittenItem>();
+            var ranges = new List<RowRange>();
+            for (var idx = 0; idx < batch.Count; idx++)
+            {
+                foreach (var (rowNo, sku) in rowsByName[batch[idx]])
+                {
+                    // Ghép SKU CỦA DÒNG này + cắt ≤120 (giữ SKU) — cùng engine/cùng hàm cắt như client → khớp byte.
+                    var finalName = engine.ComposeFinalName(titles[idx], sku);
+                    if (string.IsNullOrWhiteSpace(finalName)) continue;
+                    items.Add(new ProductRewrittenItem(rowNo, finalName));
+                    ranges.Add(new RowRange { From = rowNo, To = rowNo });
+                    if (rowNo > maxRow) maxRow = rowNo;
+                }
+            }
+
+            if (items.Count > 0)
+            {
+                await pdb.SetRewrittenAsync(new ProductRewrittenRequest(job.AcctId, job.Sheet, items), "hub-rewrite", CancellationToken.None);
+                rowsWritten += items.Count;
+                PublishLedger(job, shopId, ranges, maxRow, LedgerStatus.Running);
+            }
+
+            lock (_gate) { job.State.Done = Math.Min(i + batch.Count, uniqueNames.Count); job.State.RowsWritten = rowsWritten; }
+            Say(job, $"💾 Đã ghi batch: {items.Count} dòng (tổng {rowsWritten}).");
+        }
+
+        if (canceled)
+        {
+            PublishLedger(job, shopId, null, maxRow, LedgerStatus.Stopped);
+            Done(job, $"■ Đã dừng — đã ghi {rowsWritten} dòng.");
+        }
+        else
+        {
+            PublishLedger(job, shopId, null, maxRow, LedgerStatus.Completed);
+            Done(job, $"✓ Xong rewrite: {rowsWritten} dòng.");
+        }
+    }
+
+    private void PublishLedger(Job job, string shopId, List<RowRange>? completed, int lastRow, string status)
+    {
+        try
+        {
+            _db.PublishLedger(new WorkLedgerRecord
+            {
+                Key = $"{job.AcctId}__{shopId}__{AssignmentOps.Rewrite}",
+                BigsellerId = job.AcctId, ShopId = shopId, Sheet = job.Sheet, Op = AssignmentOps.Rewrite,
+                Completed = completed ?? new List<RowRange>(), LastRowReached = lastRow, Status = status,
+                LastMachineId = "hub", LastHostname = "hub", LastRunAt = DateTimeOffset.Now,
+            });
+        }
+        catch (Exception ex) { _log.LogWarning(ex, "rewrite ledger publish lỗi"); }
+    }
+
+    private void Say(Job job, string msg)
+    {
+        lock (_gate) job.State.Message = msg;
+        job.State.AppendLog($"{DateTimeOffset.Now:HH:mm:ss} {msg}");   // tự khoá _logGate riêng của State
+        _log.LogInformation("rewrite-job {Acct}/{Sheet}: {Msg}", job.AcctId, job.Sheet, msg);
+    }
+
+    private void Done(Job job, string msg) { lock (_gate) job.State.Status = "done"; Say(job, msg); }
+    private void Fail(Job job, string msg) { lock (_gate) job.State.Status = "failed"; Say(job, "✘ " + msg); }
+}

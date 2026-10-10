@@ -1,0 +1,685 @@
+using System.Collections.Concurrent;
+using OpenMultiBraveLauncherV3;
+using Shopee.Core.Browser;
+using Shopee.Core.Proxy;
+
+namespace Shopee.Modules.MultiBrave;
+
+/// <summary>Mô tả một account Shopee + phần dòng được giao, để engine v31 mở Brave và scrape.</summary>
+public sealed record ScrapeAccountSpec(
+    string Id, string Label, string ShopeeAccountLogin, bool OpenWithShopeeAccount,
+    string KiotProxyKey, string Region, string ProxyType, string ManualProxy, bool RequireProxy,
+    string Sheet, string ShopeeProfileDir = "");
+
+/// <summary>Kho tk Shopee DÙNG CHUNG cho auto-run: worker mượn 1 tk (nghỉ lâu nhất) TRƯỚC mỗi khối,
+/// chạy xong TRẢ về kho → xoay vòng toàn kho, cho tk nghỉ luân phiên. Nhiều job BigSeller chia sẻ cùng
+/// kho mà không tk nào bị 2 cửa sổ dùng một lúc (mượn = lấy khỏi kho). "Số process" = số worker (cửa sổ)
+/// chạy song song, KHÔNG còn = số tk dùng.</summary>
+public interface IScrapeAccountPool
+{
+    /// <summary>Mượn 1 tk nghỉ lâu nhất. Chờ nếu chưa có tk rảnh; null khi kho cạn hẳn (hết tk khả dụng).</summary>
+    Task<ScrapeAccountSpec?> BorrowAsync(CancellationToken ct);
+    /// <summary>Chạy ổn → trả tk về kho (đẩy xuống cuối hàng nghỉ).</summary>
+    void Release(ScrapeAccountSpec spec);
+    /// <summary>Lỗi proxy/tạm → cho tk nghỉ rồi tự quay lại kho. Trả (giây nghỉ, có "để dành" không) để log.</summary>
+    AccountCooldown Cooldown(ScrapeAccountSpec spec);
+    /// <summary>Captcha → LOẠI tk khỏi khung NGAY (bỏ grace 2 lần): khung thiếu → BorrowAsync tự bù tk thay
+    /// thế, phần dòng dở VÁ bằng tk khác. Việc xóa profile + log do handler ngoài lo; KHÔNG đánh dấu tk lỗi.</summary>
+    void Quarantine(ScrapeAccountSpec spec);
+}
+
+public readonly record struct AccountCooldown(int Seconds, bool SetAside);
+
+/// <summary>
+/// Facade công khai bọc engine scrape v31 (BraveInstanceSession + LauncherRunnerLoop +
+/// ExtensionRunnerAutomation — tất cả là internal). Dữ liệu workbook/video đọc native (không Python).
+/// </summary>
+public sealed class ScrapeRunner
+{
+    private readonly string _braveExe;
+    private readonly string _sourceUserData;
+    private readonly string _workbookPath;
+    private readonly string _bigSellerAccountName;
+    private readonly string _bigSellerAccountId;
+    private readonly bool _useHubData;
+    // Khoảng nghỉ giữa 2 link (giây) của CẢ lượt chạy — cấu hình máy hoặc tham số Hub giao; mang xuống engine
+    // qua InstanceConfig. null lúc dựng → Default (120–240s) = hành vi cũ.
+    private readonly Shopee.Core.Scrape.ScrapeRestWindow _restWindow;
+    private readonly ConcurrentDictionary<string, BraveInstanceSession> _sessions = new();
+
+    /// <summary>(key, dòng log). key = account.Id (manual) hoặc "P{slot}" (auto).</summary>
+    public event Action<string, string>? InstanceLog;
+    /// <summary>(key, trạng thái).</summary>
+    public event Action<string, string>? InstanceStatus;
+    /// <summary>(key, tên account, khối dòng) — auto: khi 1 slot nhận tk + khối mới.</summary>
+    public event Action<string, string, string>? SlotAssigned;
+    /// <summary>(accountId, label) — tk Shopee dính captcha khi scrape: đã LOẠI khỏi khung (đổi tk khác) và
+    /// CẦN xóa profile để lần chạy sau ép login mới. KHÔNG đánh dấu tk lỗi (không Disabled, không vào lưới
+    /// lỗi, không báo Hub). Handler ngoài lo xóa profile + log.</summary>
+    public event Action<string, string>? AccountCaptchaDropped;
+    /// <summary>(from, to) — khoảng dòng vừa cào XONG (để lưu tiến độ resume). Báo theo từng chunk.</summary>
+    public event Action<int, int>? RowsCompleted;
+    /// <summary>Dòng đang được mở để scrape (chỉ số sản phẩm của lượt chạy).</summary>
+    public event Action<int>? RowOpened;
+    /// <summary>(row, lý do) — dòng BỊ BỎ QUA: nằm trong khoảng runner báo "đã cào" nhưng THỰC TẾ không có dữ
+    /// liệu (cào lỗi giữa khối, hoặc kẹt <see cref="MaxStallRetries"/> lần liên tiếp). Handler ngoài phải GHI
+    /// NHẬN (skip-ledger) — bất biến: mọi dòng trong vùng phủ = cào OK HOẶC có tên trong sổ bỏ qua.</summary>
+    public event Action<int, string>? RowSkipped;
+    /// <summary>(lý do) — tk BigSeller mất phiên ("log in first"). Toàn bộ job tk này bị dừng; cần đăng nhập lại BigSeller.</summary>
+    public event Action<string>? BigSellerNeedLogin;
+    /// <summary>(lý do) — LỖI HẠ TẦNG TOÀN CỤC (key proxy chết): mọi tk Shopee đều hỏng như nhau nên job đã bị
+    /// DỪNG NGAY — không cooldown, không vá bằng tk khác, KHÔNG bỏ qua dòng nào. Job coi như kết thúc ở trạng
+    /// thái LỖI: handler ngoài lấy lý do này báo 'failed' lên Hub.</summary>
+    public event Action<string>? JobFatal;
+
+    public ScrapeRunner(string workbookPath, string videoOutputDir, string? braveExe = null, string sourceUserData = "", string bigSellerAccountName = "",
+        string bigSellerAccountId = "", bool useHubData = false, Shopee.Core.Scrape.ScrapeRestWindow? restWindow = null)
+    {
+        _restWindow = restWindow ?? Shopee.Core.Scrape.ScrapeRestWindow.Default;
+        // Workbook giữ PER-INSTANCE (mang qua InstanceConfig) để chạy song song nhiều BigSeller mỗi
+        // workbook khác nhau. VideoOutputDir dùng chung mọi BigSeller nên vẫn để static.
+        _workbookPath = workbookPath;
+        _bigSellerAccountName = bigSellerAccountName;
+        // Hub-mode: link/tổng-dòng đọc từ kho Hub theo accountId (thay workbook). Mang qua InstanceConfig.
+        _bigSellerAccountId = bigSellerAccountId ?? "";
+        _useHubData = useHubData;
+        if (!string.IsNullOrWhiteSpace(videoOutputDir)) ScrapeNativeSettings.VideoOutputDir = videoOutputDir;
+        _braveExe = braveExe ?? BrowserLauncher.Detect(BrowserKind.Brave)
+            ?? throw new FileNotFoundException("Không tìm thấy brave.exe. Hãy cài Brave Browser.");
+        _sourceUserData = sourceUserData;
+    }
+
+    // ── Auto (mô hình tiến trình động + vá): KHÔNG chia hết khối từ đầu. Có 1 đường biên (frontier)
+    //    = dòng kế tiếp của tiến trình; worker rảnh thì lấy khối kế `[frontier, frontier+N]` và đẩy
+    //    frontier lên (khối rộng N+1 dòng, nối tiếp — vd N=10: 1–11, 12–22, 23–33…). Khi 1 tk dừng
+    //    GIỮA CHỪNG, phần còn lại thành việc VÁ (ưu tiên worker rảnh nhặt ngay), KHÔNG tính vào frontier.
+    //    MỖI khối mượn 1 tk MỚI (nghỉ lâu nhất) từ KHO CHUNG `pool` rồi trả lại → xoay vòng toàn kho,
+    //    cho tk nghỉ. Tk lỗi: CAPTCHA → pool.Quarantine (loại khỏi kho); PROXY/lỗi khác → pool.Cooldown
+    //    (nghỉ rồi tự quay lại) → khối dở vá bằng tk khác; lỗi HẠ TẦNG TOÀN CỤC (key proxy chết, mọi tk dùng
+    //    chung) → DỪNG cả job (JobFatal), không vá/không bỏ dòng. workerCount = số cửa sổ Brave song song. ──
+    public async Task RunAutoAsync(
+        IScrapeAccountPool pool, int workerCount, IReadOnlyList<(int from, int to)> segments,
+        int rowsPerChunk, string? bigSellerCookieFile, CancellationToken ct)
+    {
+        if (segments.Count == 0 || workerCount <= 0) return;
+        var per = Math.Max(1, rowsPerChunk);
+        var workers = Math.Max(1, workerCount);
+        var work = new WorkAllocator(segments, per, workers);
+
+        // CTS phạm vi 1 job tk BigSeller: nếu 1 worker thấy "log in first" (mất phiên) → cancel để DỪNG
+        // mọi worker cùng tk (vá/retry vô nghĩa khi token đã chết). Linked với ct ngoài (nút Dừng).
+        using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        // Đếm login-first LIÊN TIẾP toàn job (reset khi có chunk chạy được) — chỉ dừng job khi vượt ngưỡng.
+        var needLoginStreak = new int[1];
+        // Lý do DỪNG JOB vì lỗi hạ tầng TOÀN CỤC (key proxy chết). Worker gặp trước ghi vào đây (một lần) rồi
+        // cancel jobCts để mọi worker khác dừng theo; sau khi tất cả dừng, runner báo ra ngoài qua JobFatal.
+        var jobFatal = new string?[1];
+        var tasks = Enumerable.Range(1, workers)
+            .Select(slot => AutoWorkerAsync(slot, work, pool, bigSellerCookieFile, jobCts, needLoginStreak, jobFatal))
+            .ToArray();
+        await Task.WhenAll(tasks);
+
+        // Lỗi TOÀN CỤC → job KẾT THÚC Ở TRẠNG THÁI LỖI. Không in thêm dòng "còn dòng chưa chạy" (đã dừng có
+        // chủ đích, dòng chưa chạy KHÔNG mất: Tiếp tục sẽ chạy nốt phần thiếu sau khi gia hạn key).
+        if (jobFatal[0] is { } fatal) { JobFatal?.Invoke(fatal); return; }
+
+        // Run dừng mà vẫn còn dòng (vd mọi tk dính captcha) → báo RÕ toàn bộ đoạn chưa chạy để chạy lại.
+        if (!ct.IsCancellationRequested)
+        {
+            var remaining = work.Remaining();
+            if (remaining.Count > 0)
+            {
+                var ranges = string.Join(", ", remaining.OrderBy(r => r.from).Select(r => $"{r.from}–{r.to}"));
+                InstanceLog?.Invoke("Auto", $"⚠ CÒN DÒNG CHƯA CHẠY (hết tk khả dụng / captcha): {ranges}. Xử lý captcha/tk rồi chạy lại từ các dòng này.");
+            }
+        }
+    }
+
+    // 3 lần liên tiếp KHÔNG tiến được dòng nào tại cùng 1 dòng bắt đầu → coi dòng đó hỏng, BỎ QUA
+    // (cứu phần còn lại của khối). 1-2 lần có thể do captcha/proxy nhất thời nên vẫn retry.
+    private const int MaxStallRetries = 3;
+
+    // "Log in BigSeller first" từ 1 instance KHÔNG chắc tk BigSeller mất phiên TOÀN CỤC — thường chỉ 1
+    // proxy bị BigSeller từ chối (token vẫn sống ở IP khác; kiểm chứng: đóng mẻ xong mở BigSeller tay vẫn
+    // còn đăng nhập). CHỈ dừng cả job khi login-first xảy ra LIÊN TIẾP tới ngưỡng này (token thật sự chết →
+    // re-import cũng vô ích). Dưới ngưỡng: trả phần dở thành vá + thử lại bằng tk/proxy khác, KHÔNG nuke mẻ.
+    private const int MaxNeedLoginBeforeStop = 3;
+
+    // Giãn khởi động giữa các lane: phóng tất cả Brave cùng lúc (thundering herd) làm nghẽn CPU,
+    // chậm mở CDP port và khiến service worker MV3 dựng đồng loạt bị throttle → probe timeout.
+    // Lệch mỗi lane ~1.5s khi BẮT ĐẦU (chỉ 1 lần lúc ramp-up; sau đó vẫn giữ đủ N lane song song).
+    private const int LaunchStaggerMs = 1500;
+
+    // CỔNG WARMUP: số instance được "dựng service worker (cold-start)" ĐỒNG THỜI. Đây là nút thắt thật
+    // trên máy yếu — nhiều SW MV3 cold-start cùng lúc → tranh CPU → SW không lên → reopen/reload. Giới
+    // hạn ở đây (mặc định 3) để chỉ vài cái dựng SW một lúc; cái nào SW lên thì THẢ cổng cho cái kế →
+    // tổng số Brave chạy vẫn cao (30-50) mà SW vẫn lên ổn định, chỉ chậm lúc ramp. Chỉnh được từ ngoài.
+    public static int WarmupSlots { get; set; } = 3;
+    private static readonly SemaphoreSlim WarmupGate = new(Math.Max(1, WarmupSlots), Math.Max(1, WarmupSlots));
+
+    private async Task AutoWorkerAsync(
+        int slot, WorkAllocator work, IScrapeAccountPool pool, string? cookieFile,
+        CancellationTokenSource jobCts, int[] needLoginStreak, string?[] jobFatal)
+    {
+        var ct = jobCts.Token;
+        var key = "P" + slot;
+
+        // Giãn lần phóng Brave ĐẦU TIÊN của mỗi lane để không dồn cục lúc bắt đầu.
+        if (slot > 1)
+        {
+            try { await Task.Delay((slot - 1) * LaunchStaggerMs, ct).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return; }
+        }
+
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                // Lấy việc: ƯU TIÊN vá (phần dở của tk lỗi), rồi tới khối kế của tiến trình (frontier).
+                var item = work.TryTake();
+                if (item is null)
+                {
+                    if (work.AllDone()) break;                           // hết việc thật sự
+                    await Task.Delay(500, ct).ConfigureAwait(false);     // worker khác đang chạy, có thể sinh vá
+                    continue;
+                }
+                var (from, to, stall, isPatch) = item.Value;
+
+                try
+                {
+                    // Mượn 1 tk MỚI (nghỉ lâu nhất) từ kho chung cho khối này → xoay vòng toàn kho, cho tk nghỉ.
+                    var spec = await pool.BorrowAsync(ct).ConfigureAwait(false);
+                    if (spec is null)
+                    {
+                        // Kho cạn hẳn (mọi tk captcha/lỗi/disabled) → trả việc lại, dừng worker.
+                        work.AddPatch(from, to, stall);
+                        InstanceStatus?.Invoke(key, "Hết tài khoản");
+                        InstanceLog?.Invoke(key, $"⚠ Hết tk khả dụng (captcha/lỗi) — còn dòng {from}–{to} CHƯA chạy (xử lý rồi chạy lại).");
+                        break;
+                    }
+
+                    SlotAssigned?.Invoke(key, spec.Label, $"{from}–{to}");
+                    InstanceLog?.Invoke(key, $"→ tk {spec.Label}, dòng {from}–{to}{(isPatch ? " [vá]" : "")}");
+                    var res = await RunChunkAsync(spec, key, from, to, cookieFile, ct, needLoginStreak).ConfigureAwait(false);
+
+                    if (ct.IsCancellationRequested) { pool.Release(spec); break; }
+
+                    // Có chunk KHÔNG báo login-first → token tk BigSeller vẫn dùng được → reset chuỗi đếm.
+                    if (!res.NeedLogin) Interlocked.Exchange(ref needLoginStreak[0], 0);
+
+                    // "Log in first" từ 1 instance: thường chỉ 1 proxy bị BigSeller TỪ CHỐI, token tk BigSeller
+                    // VẪN sống (kiểm chứng: đóng mẻ xong mở BigSeller tay vẫn còn đăng nhập). Nên KHÔNG nuke cả
+                    // job ngay — trả phần dở thành vá + thử lại bằng tk/proxy khác (mở lại sẽ re-import token còn
+                    // sống + lấy proxy mới). CHỈ dừng khi login-first LIÊN TIẾP tới ngưỡng (token thật sự chết).
+                    if (res.NeedLogin)
+                    {
+                        var lastDoneNl = res.LastCompletedRow;
+                        if (lastDoneNl >= from) RowsCompleted?.Invoke(from, Math.Min(lastDoneNl, to));
+                        var nlFrom = Math.Max(from, lastDoneNl + 1);
+                        if (nlFrom <= to) work.AddPatch(nlFrom, to, stall);
+
+                        // VERIFY "BigSeller out thật?": nếu tk khác TRONG KHUNG vẫn còn muc_token sống →
+                        // account CÒN sống, chỉ tk này glitch → cho nghỉ, vá bằng tk khác, KHÔNG dừng job.
+                        if (await AnySiblingHasBigSellerAuthAsync(key).ConfigureAwait(false))
+                        {
+                            Interlocked.Exchange(ref needLoginStreak[0], 0);
+                            pool.Cooldown(spec);
+                            InstanceLog?.Invoke(key, $"⚠ {res.Reason} — nhưng tk khác trong khung CÒN phiên BigSeller sống → chỉ tk này lỗi, VÁ bằng tk khác (KHÔNG dừng job).");
+                            continue;
+                        }
+                        // Không tk nào trong khung còn phiên → nghi OUT THẬT; xác nhận qua ngưỡng liên tiếp (chống nhiễu 1 nhịp).
+                        var streak = Interlocked.Increment(ref needLoginStreak[0]);
+                        if (streak >= MaxNeedLoginBeforeStop)
+                        {
+                            pool.Release(spec);
+                            InstanceLog?.Invoke(key, $"⛔ {res.Reason} — KHÔNG tk nào trong khung còn phiên ({streak} lần) → BigSeller OUT thật → DỪNG job, cần đăng nhập lại.");
+                            BigSellerNeedLogin?.Invoke(res.Reason);
+                            try { jobCts.Cancel(); } catch { }
+                            break;
+                        }
+                        pool.Cooldown(spec);   // cho tk Shopee nghỉ; phần dở vá bằng tk khác
+                        InstanceLog?.Invoke(key,
+                            $"⚠ {res.Reason} (lần {streak}/{MaxNeedLoginBeforeStop}, chưa thấy phiên sống) — thử lại bằng tk khác.");
+                        continue;
+                    }
+
+                    // Phân loại tk lỗi (luật thuần ScrapeFailurePolicy.Decide): CAPTCHA → loại khỏi kho (xử lý
+                    // sau); lỗi HẠ TẦNG TOÀN CỤC → dừng cả job; PROXY/lỗi khác → cho nghỉ rồi tự quay lại kho;
+                    // không lỗi → trả về kho ngay (phần dở sẽ vá bằng tk khác đang rảnh).
+                    var action = ScrapeFailurePolicy.Decide(res.Errored, res.IsCaptcha, res.Reason);
+                    if (action == ScrapeFailureAction.StopJob)
+                    {
+                        // KEY PROXY CHẾT: cả kho tk Shopee dùng CHUNG một key nên cho tk nghỉ rồi vá bằng tk khác
+                        // đều hỏng y hệt — chính nhánh cooldown bên dưới (trước đây nuốt luôn ca này) đã bỏ qua
+                        // 17 dòng trong 6 phút mà job vẫn báo "đang chạy". Nhả tk NGUYÊN VẸN (không cooldown,
+                        // không tính lần lỗi), báo phần đã cào xong, KHÔNG bỏ dòng nào, rồi dừng CẢ job.
+                        pool.Release(spec);
+                        var doneFatal = res.LastCompletedRow;
+                        if (doneFatal >= from) RowsCompleted?.Invoke(from, Math.Min(doneFatal, to));
+                        // MỘT dòng log mức job (worker nào chạm trước thì ghi) — không spam mỗi tk một dòng.
+                        if (Interlocked.CompareExchange(ref jobFatal[0], res.Reason, null) is null)
+                            InstanceLog?.Invoke("Auto",
+                                "⛔ DỪNG JOB: key proxy hết hạn — mọi tk Shopee dùng chung key này. Gia hạn key rồi chạy lại. "
+                                + $"[{res.Reason}]");
+                        try { jobCts.Cancel(); } catch { }   // các khối P1/P2… đang chạy cũng dừng theo
+                        break;
+                    }
+                    if (action == ScrapeFailureAction.Quarantine)
+                    {
+                        // Captcha → LOẠI tk khỏi khung NGAY lần đầu (bỏ grace 2 lần). Khung thiếu → bù tk
+                        // thay thế; phần dòng dở VÁ bằng tk khác (logic dưới). Báo lên UI để XÓA profile
+                        // (ép login mới lần chạy sau); KHÔNG đánh dấu tk lỗi (không Disabled/lưới lỗi/Hub).
+                        pool.Quarantine(spec);
+                        AccountCaptchaDropped?.Invoke(spec.Id, spec.Label);
+                        InstanceStatus?.Invoke(key, "🚫 Captcha");
+                        InstanceLog?.Invoke(key, $"🚫 {spec.Label}: captcha → LOẠI khỏi khung + xóa profile (login mới lần sau), đổi tk khác.");
+                    }
+                    else if (action == ScrapeFailureAction.Cooldown)
+                    {
+                        // Lỗi khác (proxy/đứt/tạm) → cho tk nghỉ. Lần 1 nghỉ ngắn (15s); lỗi ≥2 lần liên
+                        // tiếp → nghỉ dài (90s) "để dành". Phần dở vá bằng tk khác đang rảnh (không chờ tk này).
+                        var cd = pool.Cooldown(spec);
+                        InstanceLog?.Invoke(key, $"⏸ {spec.Label}: {res.Reason} → cho tk nghỉ {cd.Seconds}s, vá phần dở bằng tk khác"
+                            + (cd.SetAside ? " (lỗi 2 lần — nghỉ dài 90s)." : "."));
+                    }
+                    else pool.Release(spec);
+
+                    // Chỉ XONG khi scrape tới `to`. Dừng giữa chừng (lỗi HAY không) → phần còn lại
+                    // [lastDone+1, to] thành việc VÁ; không mất dòng, không chạy lại dòng đã xong.
+                    var lastDone = res.LastCompletedRow;
+                    // Báo phần đã cào xong của chunk này để lưu tiến độ (resume).
+                    if (lastDone >= from) RowsCompleted?.Invoke(from, Math.Min(lastDone, to));
+                    if (lastDone >= to) { InstanceLog?.Invoke(key, $"✓ Xong dòng {from}–{to} (tk {spec.Label})."); continue; }
+
+                    var nextFrom = Math.Max(from, lastDone + 1);
+                    var progressed = lastDone >= from;
+                    var nextStall = progressed ? 0 : stall + 1;
+                    if (nextStall >= MaxStallRetries)
+                    {
+                        var stallReason = string.IsNullOrWhiteSpace(res.Reason) ? "không tiến" : res.Reason;
+                        InstanceLog?.Invoke(key,
+                            $"⛔ Dòng {nextFrom} kẹt {MaxStallRetries} lần liên tiếp " +
+                            $"({stallReason}) → BỎ QUA dòng {nextFrom}.");
+                        // GHI NHẬN dòng bỏ qua: không báo ra thì shop kẹt vĩnh viễn ở "chưa xong" (dòng này
+                        // không bao giờ cào được), mỗi lượt Tiếp tục lại đốt 3 lượt mở Brave cho đúng nó.
+                        RowSkipped?.Invoke(nextFrom, $"kẹt {MaxStallRetries} lần liên tiếp ({stallReason})");
+                        nextFrom += 1;
+                        nextStall = 0;
+                    }
+                    if (nextFrom <= to)
+                    {
+                        work.AddPatch(nextFrom, to, nextStall);
+                        InstanceLog?.Invoke(key,
+                            $"↻ Còn dòng {nextFrom}–{to} (đã xong tới {lastDone}) → VÁ bằng tk khác " +
+                            (res.Errored ? $"[{res.Reason}]." : "[dừng giữa chừng]."));
+                    }
+                    else InstanceLog?.Invoke(key, $"✓ Xong dòng {from}–{to} (sau khi bỏ dòng kẹt).");
+                }
+                finally { work.Done(); } // khớp với inFlight++ trong TryTake
+            }
+            InstanceStatus?.Invoke(key, ct.IsCancellationRequested ? "Đã dừng" : "Xong");
+        }
+        catch (OperationCanceledException) { InstanceStatus?.Invoke(key, "Đã dừng"); }
+        catch (Exception ex) { InstanceLog?.Invoke(key, "✘ " + ex.Message); }
+    }
+
+    /// <summary>Có process ANH EM nào (khác <paramref name="exceptKey"/>) đang chạy mà browser còn muc_token
+    /// BigSeller sống không. true → BigSeller CÒN sống (process báo login-first chỉ glitch lẻ); false → không
+    /// ai còn phiên (nghi account OUT thật).</summary>
+    private async Task<bool> AnySiblingHasBigSellerAuthAsync(string exceptKey)
+    {
+        foreach (var kv in _sessions)
+        {
+            if (kv.Key == exceptKey) continue;
+            try { if (await kv.Value.HasBigSellerAuthAsync().ConfigureAwait(false)) return true; }
+            catch { }
+        }
+        return false;
+    }
+
+    /// <summary>Chuỗi hiển thị cột "Trạng thái" (cột 3) theo TỪNG DÒNG: "Đang mở dòng X…" / "Đang tải video
+    /// dòng X…" thay cho "Đang chạy — proxy". Đọc pha + dòng hiện tại do engine ghi vào cfg mỗi nhịp.</summary>
+    private static string RowStatus(InstanceConfig cfg)
+    {
+        var row = cfg.CurrentRow;
+        // CAPTCHA ưu tiên CAO NHẤT — hiện NGAY ở cột Trạng thái, không để các nhịp "Đang mở dòng…" đè mất.
+        if (cfg.CaptchaError)
+            return row is > 0 ? $"🚫 Captcha dòng {row} — giải tay" : "🚫 Captcha — giải tay";
+        if (row is not > 0) return cfg.LastRunnerMessage ?? "Đang chuẩn bị…";
+        return (cfg.RunnerPhase ?? "") switch
+        {
+            "opening" or "starting" => $"Đang mở dòng {row}…",
+            "video" => $"Đang tải video dòng {row}…",
+            "waiting" => $"Xong dòng {cfg.LastCompletedRow} · chờ link kế…",
+            "paused" => cfg.LastRunnerMessage ?? $"Tạm dừng (dòng {row})",
+            "needlogin" => $"⚠ BigSeller mất phiên (dòng {row})",
+            "stopped" => "Đã dừng",
+            "finished" => "Xong",
+            _ => $"Đang xử lý dòng {row}…",
+        };
+    }
+
+    private readonly record struct ChunkResult(bool Errored, string Reason, int LastCompletedRow, bool IsCaptcha, bool NeedLogin = false);
+
+    /// <summary>Dòng cuối ĐÃ scrape xong của 1 chunk (đọc từ cfg do engine ghi per-row). Toán nằm ở
+    /// <see cref="Shopee.Core.Scrape.ScrapeChunkMath.ClampLastDone"/> (thuần, có test) — nhớ: giá trị LỚN HƠN
+    /// <paramref name="to"/> là RÁC của lượt trước còn trong profile, KHÔNG phải "xong cả khối".</summary>
+    private static int LastDoneOf(InstanceConfig cfg, int from, int to) =>
+        Shopee.Core.Scrape.ScrapeChunkMath.ClampLastDone(cfg.LastCompletedRow, from, to);
+
+    /// <summary>Chạy 1 khối dòng với 1 account (mở Brave → đăng nhập → extension → đóng). Đọc
+    /// cfg.RunnerPhase/LastRunnerMessage sau khi xong để biết captcha/proxy lỗi.</summary>
+    private async Task<ChunkResult> RunChunkAsync(
+        ScrapeAccountSpec spec, string key, int from, int to, string? cookieFile, CancellationToken ct,
+        int[]? needLoginStreak = null)
+    {
+        BraveInstanceSession? session = null;
+        var cfg = BuildConfig(spec, from, to);
+        cfg.WorkbookPath = _workbookPath;   // per-instance workbook (chạy song song nhiều BigSeller)
+        cfg.UseHubData = _useHubData;   // hub-mode: đọc link/tổng-dòng từ kho Hub thay vì workbook
+        cfg.HubAccountId = _bigSellerAccountId;   // khoá kho Hub theo tk BigSeller (TÁCH khỏi AccountId auto-login)
+        cfg.BigSellerAccountName = _bigSellerAccountName;   // để overlay hiện "Bigseller Account: …"
+        var port = ScrapePorts.Shared.Allocate();
+        var windowSlotHeld = false;
+        // Sổ dòng bỏ qua ĐÃ báo ra ngoài của chunk này (cfg mới toanh mỗi chunk nên không lẫn chunk khác).
+        // Diff chạy từ 2 luồng: ExtensionProgressSynced (luồng nền của session) + lượt vét cuối chunk (luồng
+        // worker) → khoá quanh tập đã báo; event bắn NGOÀI khoá để handler ngoài không chạy dưới lock.
+        // CHỈ báo dòng NẰM TRONG vùng đã phủ [from..lastDone]: dòng hỏng ở ĐUÔI chunk (lớn hơn lastDone)
+        // không bị nuốt — nó quay lại hàng VÁ và được tk khác thử lại, báo bỏ qua lúc này là báo oan. Dòng
+        // đuôi thử mãi không được thì đường "kẹt N lần" bắn RowSkipped riêng.
+        var skipLock = new object();
+        var reportedSkips = new HashSet<int>();
+        void DrainSkippedRows()
+        {
+            var covered = LastDoneOf(cfg, from, to);
+            List<(int Row, string Reason)> fresh = [];
+            foreach (var item in cfg.SnapshotFailedRows())
+            {
+                if (item.Row < from || item.Row > covered) continue;
+                lock (skipLock) { if (!reportedSkips.Add(item.Row)) continue; }
+                fresh.Add(item);
+            }
+            foreach (var item in fresh) RowSkipped?.Invoke(item.Row, item.Reason);
+        }
+        try
+        {
+            // PHANH SỐ CỬA SỔ: giữ tổng cửa sổ Brave (mọi job cộng lại) ≤ trần toàn app + chờ nếu RAM
+            // trống thấp. Đây là thứ chặn "bùng số tiến trình" — nguyên nhân thật làm đơ máy qua đêm.
+            await BraveFleet.AcquireWindowSlotAsync(line => InstanceLog?.Invoke(key, line), ct).ConfigureAwait(false);
+            windowSlotHeld = true;
+
+            session = new BraveInstanceSession(port, line => InstanceLog?.Invoke(key, line));
+            // Cổng warmup dùng CHUNG mọi instance: giới hạn số SW cold-start đồng thời.
+            session.WarmupAcquire = WarmupGate.WaitAsync;
+            session.WarmupRelease = () => WarmupGate.Release();
+            _sessions[key] = session;
+            session.StatusChanged += () =>
+            {
+                // Cột Trạng thái CHỈ hiện captcha/lỗi từ session. Các trạng thái VÒNG-ĐỜI (Mở Brave / Đang chạy /
+                // Đang đóng profile / Dừng / Đang khởi động) là TRANSIENT giữa 2 chunk (đóng tk cũ → mở tk kế) —
+                // trước đây lọt ra cột Trạng thái trông như "đã dừng" dù chỉ đang xoay tk. Bỏ chúng đi; trạng
+                // thái theo dòng do RowStatus lo, lý do DỪNG THẬT do AutoWorkerAsync set.
+                var st = session!.StatusText;
+                if (st.Contains("Captcha", StringComparison.Ordinal) || st.StartsWith("Lỗi", StringComparison.Ordinal))
+                    InstanceStatus?.Invoke(key, st);
+            };
+            // Báo tiến độ theo TỪNG DÒNG (live) — engine cập nhật cfg.CurrentRow/LastCompletedRow + bắn
+            // ExtensionProgressSynced mỗi nhịp. Cập nhật cột Trạng thái = "Đang mở dòng X…" theo từng dòng.
+            var reportedRow = from - 1;
+            var openedRow = 0;
+            session.ExtensionProgressSynced += () =>
+            {
+                InstanceStatus?.Invoke(key, RowStatus(cfg));
+                var cur = cfg.CurrentRow ?? 0;
+                if (cur > 0 && cur != openedRow)
+                {
+                    openedRow = cur;
+                    RowOpened?.Invoke(cur);
+                }
+                DrainSkippedRows();   // báo SỚM dòng hỏng (khỏi đợi hết chunk) — idempotent, không bắn trùng
+                var lc = cfg.LastCompletedRow ?? 0;
+                if (lc > reportedRow && lc <= to)
+                {
+                    var lo = reportedRow + 1;
+                    reportedRow = lc;
+                    RowsCompleted?.Invoke(lo, lc);
+                    // Cào được 1 DÒNG = tk BigSeller CÒN SỐNG → reset chuỗi đếm login-first. Nhờ vậy vài
+                    // instance proxy xấu báo login-first KHÔNG dồn bộ đếm tới ngưỡng khi các instance khác
+                    // vẫn cào ngon → job KHÔNG tự đóng. Chỉ dừng nếu THỰC SỰ không cào được gì + login-first dồn.
+                    if (needLoginStreak is not null) Interlocked.Exchange(ref needLoginStreak[0], 0);
+                }
+            };
+            if (!string.IsNullOrWhiteSpace(cookieFile)) session.SetBigSellerCookieFile(cookieFile);
+            // Import session Shopee đã đăng nhập (profile Edge của tk) → khỏi login form → tránh captcha.
+            session.SetShopeeSessionProfileDir(spec.ShopeeProfileDir);
+            session.ApplyConfig(cfg);
+
+            InstanceStatus?.Invoke(key, "Mở Brave…");
+            await session.StartAsync(_braveExe, _sourceUserData).ConfigureAwait(false);
+
+            InstanceStatus?.Invoke(key, $"Scrape dòng {from}–{(to <= 0 ? "hết" : to.ToString())}…");
+            var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            // Bỏ qua RunnerLoopEnded phát ra GIỮA lúc watchdog/proxy đang relaunch+resume cùng profile
+            // (IsRunnerResuming); chỉ kết thúc khi runner thật sự xong — giống ShopeeWorkspaceControl v31.
+            void OnEnded(string _) { if (session!.IsRunnerResuming) return; done.TrySetResult(); }
+            session.RunnerLoopEnded += OnEnded;
+            try
+            {
+                await session.ResumeContinueAsync(
+                    _braveExe, _sourceUserData, retryExtensionStart: true, cancellationToken: ct)
+                    .ConfigureAwait(false);
+                using (ct.Register(() => done.TrySetResult()))
+                    await done.Task.ConfigureAwait(false);
+            }
+            finally { session.RunnerLoopEnded -= OnEnded; }
+
+            var lastDone = LastDoneOf(cfg, from, to);
+            if (ct.IsCancellationRequested) return new ChunkResult(false, "", lastDone, false);
+            return Classify(cfg) with { LastCompletedRow = lastDone };
+        }
+        catch (OperationCanceledException) { InstanceStatus?.Invoke(key, "Đã dừng"); return new ChunkResult(false, "", LastDoneOf(cfg, from, to), false); }
+        catch (Exception ex) { InstanceLog?.Invoke(key, "✘ " + ex.Message); return new ChunkResult(true, ex.Message, LastDoneOf(cfg, from, to), false); }
+        finally
+        {
+            // VÉT nốt sổ bỏ qua của chunk (mọi lối ra: xong / dừng / lỗi). Đặt trong finally để không lối
+            // nào bỏ sót; bọc try/catch vì handler ngoài KHÔNG được phép chặn các bước nhả cửa sổ/port dưới.
+            try { DrainSkippedRows(); } catch (Exception ex) { InstanceLog?.Invoke(key, "✘ ghi dòng bỏ qua lỗi: " + ex.Message); }
+            try { if (session is not null) await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            try { session?.Dispose(); } catch { }
+            _sessions.TryRemove(key, out _);
+            // Trả suất cửa sổ về gate (sau khi đã đóng Brave) để worker khác mở cửa sổ kế.
+            if (windowSlotHeld) BraveFleet.ReleaseWindowSlot();
+            // Trả port về pool — nếu thiếu dòng này, mỗi chunk rò 1 port → auto run dài cạn pool (600 port) rồi chết.
+            ScrapePorts.Shared.Free(port);
+        }
+    }
+
+    /// <summary>Phân loại kết quả từ InstanceConfig sau khi runner kết thúc.</summary>
+    private static ChunkResult Classify(InstanceConfig cfg)
+    {
+        var phase = cfg.RunnerPhase ?? "";
+        var msg = cfg.LastRunnerMessage ?? "";
+        var captcha = cfg.CaptchaError
+            || msg.Contains("captcha", StringComparison.OrdinalIgnoreCase)
+            || msg.Contains("verify", StringComparison.OrdinalIgnoreCase);
+        var proxy = msg.Contains("proxy", StringComparison.OrdinalIgnoreCase);
+
+        // LastCompletedRow=0 là placeholder — caller ghi đè bằng `with { LastCompletedRow = … }`.
+        if (string.Equals(phase, "needlogin", StringComparison.OrdinalIgnoreCase))
+            return new ChunkResult(true, string.IsNullOrWhiteSpace(msg) ? "BigSeller mất đăng nhập — cần đăng nhập lại" : msg, 0, false, NeedLogin: true);
+        // Trang /verify/traffic/error còn sau khi đã đổi IP → đóng Brave tài khoản này, kho đưa tài khoản khác.
+        // Phải đứng TRƯỚC luật "verify" = captcha, kẻo câu log bị coi là captcha và xóa profile.
+        if (string.Equals(phase, "traffic-switch", StringComparison.OrdinalIgnoreCase))
+            return new ChunkResult(true, string.IsNullOrWhiteSpace(msg) ? "Shopee chặn traffic — đổi tài khoản" : msg, 0, false);
+        if (captcha) return new ChunkResult(true, "Captcha/verify", 0, true);   // IsCaptcha=true → quarantine
+        // (URL captcha KHÔNG đi qua ChunkResult: đã lưu thẳng vào cfg.CaptchaUrl ở LauncherRunnerLoop, nơi
+        //  "Kiểm tra tk lỗi" đọc lại. Field CaptchaUrl trên record này từng chỉ-ghi-không-đọc → đã bỏ.)
+        // Lỗi HẠ TẦNG TOÀN CỤC (key proxy chết) → GIỮ NGUYÊN thông điệp gốc (KEY_EXPIRED…) thay vì gộp thành
+        // "Lỗi proxy" ở dòng dưới: AutoWorkerAsync cần chuỗi này để nhận ra ca dừng-job + báo lý do thật lên Hub.
+        if (ProxyFailure.IsFleetWideProxyFailure(msg)) return new ChunkResult(true, msg, 0, false);
+        if (proxy) return new ChunkResult(true, "Lỗi proxy", 0, false);
+        if (string.Equals(phase, "error", StringComparison.OrdinalIgnoreCase))
+            return new ChunkResult(true, string.IsNullOrWhiteSpace(msg) ? "Lỗi" : msg, 0, false);
+        if (string.Equals(phase, "paused", StringComparison.OrdinalIgnoreCase))
+            return new ChunkResult(true, string.IsNullOrWhiteSpace(msg) ? "Tạm dừng" : msg, 0, false);
+        return new ChunkResult(false, "", 0, false);
+    }
+
+    private InstanceConfig BuildConfig(ScrapeAccountSpec spec, int from, int to)
+    {
+        var cfg = new InstanceConfig
+        {
+            RestMinSeconds = _restWindow.MinSeconds,
+            RestMaxSeconds = _restWindow.MaxSeconds,
+            Id = spec.Id,
+            Label = spec.Label,
+            ShopeeAccountLogin = spec.ShopeeAccountLogin,
+            OpenWithShopeeAccount = spec.OpenWithShopeeAccount,
+            KiotProxyKey = spec.KiotProxyKey,
+            Region = string.IsNullOrWhiteSpace(spec.Region) ? "random" : spec.Region,
+            ProxyType = string.IsNullOrWhiteSpace(spec.ProxyType) ? "http" : spec.ProxyType,
+            ManualProxy = spec.ManualProxy,
+            RequireProxy = spec.RequireProxy,
+            DataSheet = spec.Sheet,
+            StartRow = from,
+            EndRow = to,
+            NextRunRow = from,
+            AutoCloseProfileOnFinish = true,
+        };
+        cfg.EnsureProfileRelativePath();
+        return cfg;
+    }
+
+    /// <summary>Dừng mọi phiên đang chạy (đóng Brave + lưu tiến độ).</summary>
+    public async Task StopAllAsync()
+    {
+        foreach (var s in _sessions.Values.ToArray())
+        {
+            try { await s.StopRunningWorkAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+        }
+    }
+
+    /// <summary>Đưa cửa sổ Brave của 1 process (key = "P{slot}") lên trước toàn bộ — gọi khi click dòng tiến trình.</summary>
+    public void BringInstanceToFront(string key)
+    {
+        if (_sessions.TryGetValue(key, out var session)) session.BringWindowToFront();
+    }
+
+    /// <summary>Cấp việc động cho auto-run: đường biên (frontier) cho TIẾN TRÌNH + hàng VÁ cho phần
+    /// dở của tk lỗi (ưu tiên vá trước). Đếm việc đang chạy (inFlight) để biết khi nào THỰC SỰ hết.</summary>
+    /// <summary>
+    /// Cấp dòng theo DANH SÁCH KHOẢNG còn cần chạy (segments) — reset = [(start,total)]; resume = các
+    /// khoảng còn thiếu. Mỗi segment được cắt thành khối rộng N+1 dòng (per+1) theo thứ tự. Vẫn hỗ trợ
+    /// VÁ (patch) cho phần dở của tk lỗi/dừng giữa chừng.
+    /// </summary>
+    private sealed class WorkAllocator
+    {
+        private readonly object _lock = new();
+        private readonly Queue<(int from, int to, int stall)> _patches = new();
+        private readonly List<(int from, int to)> _segments;
+        private readonly int _per;
+        private readonly int _workers;
+        private int _segIdx;
+        private int _cursor;     // dòng kế trong segment hiện tại
+        private int _inFlight;
+
+        public WorkAllocator(IEnumerable<(int from, int to)> segments, int per, int workers = 1)
+        {
+            _per = Math.Max(1, per);
+            _workers = Math.Max(1, workers);
+            _segments = segments.Where(s => s.to >= s.from).OrderBy(s => s.from).ToList();
+            _segIdx = 0;
+            _cursor = _segments.Count > 0 ? _segments[0].from : int.MaxValue;
+        }
+
+        /// <summary>Lấy việc kế: ưu tiên VÁ, rồi tới khối kế trong các segment (rộng N+1 dòng).
+        /// null = hết việc khả dĩ ngay lúc này. inFlight++ khi trả việc.</summary>
+        public (int from, int to, int stall, bool isPatch)? TryTake()
+        {
+            lock (_lock)
+            {
+                if (_patches.Count > 0)
+                {
+                    var p = _patches.Dequeue();
+                    // ĐUÔI: mảng vá còn NHIỀU dòng (>= 2×process) → cắt 1 lát, TRẢ phần dư lại hàng để
+                    // worker rảnh khác cùng chạy, thay vì 1 worker ôm cả mảng (chia việc đoạn cuối).
+                    // Toán cắt (kể cả luật "phần dư stall=0") nằm ở ScrapeChunkMath.SplitPatch — thuần, có test.
+                    var (piece, rest) = Shopee.Core.Scrape.ScrapeChunkMath.SplitPatch(
+                        new Shopee.Core.Scrape.ScrapeChunkMath.PatchSlice(p.from, p.to, p.stall), _workers);
+                    if (rest is { } r) _patches.Enqueue((r.From, r.To, r.Stall));
+                    _inFlight++;
+                    return (piece.From, piece.To, piece.Stall, true);
+                }
+                while (_segIdx < _segments.Count)
+                {
+                    var seg = _segments[_segIdx];
+                    if (_cursor > seg.to)
+                    {
+                        _segIdx++;
+                        if (_segIdx < _segments.Count) _cursor = _segments[_segIdx].from;
+                        continue;
+                    }
+                    var from = _cursor;
+                    var to = Math.Min(seg.to, from + ChunkWidth());
+                    _cursor = to + 1;
+                    _inFlight++;
+                    return (from, to, 0, false);
+                }
+                return null;
+            }
+        }
+
+        /// <summary>Độ rộng khối kế. Bình thường = _per. Ở ĐUÔI (còn ít việc + nhiều process): thu nhỏ về
+        /// ~còn-lại/process để MỌI worker cùng chạy đoạn cuối thay vì 1 worker ôm hết. Quy tắc: còn
+        /// >= 2×process thì chia, ít hơn thì để 1 worker chạy nốt. Gọi trong [_lock] (từ TryTake).</summary>
+        private int ChunkWidth()
+        {
+            if (_workers <= 1) return _per;
+            var remaining = RemainingRowsLocked();
+            // còn nhiều (mỗi worker vẫn đủ ≥1 khối _per) hoặc còn quá ít (< 2×process) → giữ _per như cũ.
+            if (remaining >= _per * _workers || remaining < 2 * _workers) return _per;
+            // vùng đuôi: chia phần còn lại thành ~_workers lát đều → mỗi worker 1 lát.
+            var rows = (int)Math.Ceiling((double)remaining / _workers);
+            return Math.Clamp(rows - 1, 1, _per);
+        }
+
+        /// <summary>Tổng dòng CHƯA cấp (segment từ cursor + các mảng vá). Gọi trong [_lock].</summary>
+        private int RemainingRowsLocked()
+        {
+            var r = 0;
+            foreach (var p in _patches) r += p.to - p.from + 1;
+            if (_segIdx < _segments.Count)
+            {
+                r += _segments[_segIdx].to - _cursor + 1;
+                for (var i = _segIdx + 1; i < _segments.Count; i++)
+                    r += _segments[i].to - _segments[i].from + 1;
+            }
+            return Math.Max(0, r);
+        }
+
+        public void AddPatch(int from, int to, int stall) { lock (_lock) _patches.Enqueue((from, to, stall)); }
+
+        public void Done() { lock (_lock) _inFlight--; }
+
+        /// <summary>Hết việc THẬT: hết segment + không còn vá + không worker nào đang chạy.</summary>
+        public bool AllDone() { lock (_lock) return _segIdx >= _segments.Count && _patches.Count == 0 && _inFlight == 0; }
+
+        /// <summary>Các đoạn dòng CHƯA chạy (phần còn lại của các segment + các đoạn vá) — để báo
+        /// cho người dùng khi run dừng sớm (vd hết tk do captcha).</summary>
+        public List<(int from, int to)> Remaining()
+        {
+            lock (_lock)
+            {
+                var list = new List<(int, int)>();
+                for (var i = _segIdx; i < _segments.Count; i++)
+                {
+                    var seg = _segments[i];
+                    var from = i == _segIdx ? Math.Max(_cursor, seg.from) : seg.from;
+                    if (from <= seg.to) list.Add((from, seg.to));
+                }
+                foreach (var p in _patches) list.Add((p.from, p.to));
+                return list;
+            }
+        }
+    }
+}

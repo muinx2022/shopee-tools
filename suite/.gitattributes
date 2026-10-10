@@ -1,0 +1,14 @@
+# Script shell chạy trên Ubuntu → BẮT BUỘC line-ending LF (CRLF làm "bad interpreter"/lỗi chạy).
+*.sh text eol=lf
+
+# Batch Windows → BẮT BUỘC CRLF. File .cmd chỉ có LF thì cmd.exe đọc LỆCH DÒNG: nó nhảy `goto` sai
+# chỗ và thực thi cả dòng `REM` như lệnh (đã dính thật 13/08 khi release-suite.cmd bị ghi lại thành
+# LF — script chạy loạn, in "'ho' is not recognized"). Script càng nhiều nhãn/goto càng dễ vỡ.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# JS của extension → LF (P-20260830, sổ P-20260829-10). Hai lý do ĐÃ CẮN: (1) máy này autocrlf=true nên
+# clone mới ra CRLF, mà các test C# bóc NGUYÊN VĂN nguồn JS (EdsONgayHopLe/FlashSaleDoDom/FlowChung…) có
+# chỗ nhạy CRLF — NguonHang từng đỏ giả vì `$` Multiline khớp trước \n; (2) mọi lệnh git trên cây LF hiện
+# tại đều rắc cảnh báo "LF will be replaced by CRLF" — mầm diff-rác nếu một phiên checkout lại.
+*.js text eol=lf

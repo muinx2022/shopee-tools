@@ -1,0 +1,335 @@
+@* Nút "⬆ Nhập Excel" + modal WIZARD nhập Excel vào 1 shop — DÙNG CHUNG cho lưới per-shop (ProductGridPanel: đích
+   CỐ ĐỊNH qua FixedAcct/FixedSheet, ẩn selector) và trang /data (AllData: chọn Acc/Shop ngay trong form, prefill từ
+   bộ lọc). Flow: upload → chọn sheet → xem trước → map 6 cột → khoảng dòng → Ghi đè/Nối thêm → checkbox tự sinh SKU
+   thiếu (mặc định BẬT) → OK (pre-check trùng nội bộ ở ProductDb). Blazor gọi THẲNG ProductDb; ProductDb có thể chưa
+   đăng ký DI → resolve qua IServiceProvider. LƯU Ý: component có thể được đặt TRONG .editcard (ProductGridPanel) →
+   MỌI input trong modal PHẢI có width tường minh (.ci / inline) hoặc là checkbox, kẻo dính .editcard input{width:100%}. *@
+@using Microsoft.Extensions.DependencyInjection
+@implements IAsyncDisposable
+@inject FileStoreConfigService Config
+@inject HubOptions HubOptions
+@inject IServiceProvider Sp
+
+<label class="btn sm" style="@(BtnDisabled ? "opacity:.45;cursor:not-allowed" : "")">⬆ Nhập Excel
+    <InputFile OnChange="OnFile" accept=".xlsx" disabled="@BtnDisabled" style="display:none" />
+</label>
+
+@if (_open)
+{
+    @* KHÔNG đóng khi bấm ra backdrop (dễ nhầm mất dữ liệu đang nhập) — chỉ ✕ / Huỷ / OK-thành-công mới đóng. *@
+    <div class="modal-overlay">
+        <div class="modal wide" @onclick:stopPropagation="true">
+            <div class="modal-head">
+                <span>⬆ Nhập Excel vào shop</span>
+                <button class="linkbtn" title="Đóng" @onclick="Cancel">✕</button>
+            </div>
+            <div class="modal-body">
+                @* Chọn đích (chỉ khi KHÔNG cố định) — 2 select Acc/Shop đầu form, prefill từ bộ lọc. *@
+                @if (!Fixed)
+                {
+                    <div class="form-fields">
+                        <label class="field-col">Tài khoản *
+                            <select value="@_selAcct" @onchange="OnSelAcct" disabled="@_wizBusy" style="width:min(220px,100%)">
+                                <option value="">— chọn tài khoản —</option>
+                                @foreach (var a in _accounts) { <option value="@a.Id">@a.DisplayName</option> }
+                            </select>
+                        </label>
+                        <label class="field-col">Shop *
+                            <select value="@_selSheet" @onchange="OnSelSheet" disabled="@(_wizBusy || string.IsNullOrEmpty(_selAcct))" style="width:min(220px,100%)">
+                                <option value="">— chọn shop —</option>
+                                @foreach (var s in SelShopOptions()) { <option value="@s.ShopeeDataSheet">@s.DisplayName</option> }
+                            </select>
+                        </label>
+                    </div>
+                }
+
+                <div class="wbrow">
+                    <span class="wblabel">📄 File:</span>
+                    <span class="wbname">@_wizFileName</span>
+                    <span class="wblabel" style="margin-left:auto">Sheet:</span>
+                    <select value="@_wizSheet" @onchange="WizSelectSheet" disabled="@(_wizBusy || _wizSheets.Count == 0)" style="width:min(220px,100%)">
+                        @foreach (var sh in _wizSheets)
+                        {
+                            <option value="@sh">@sh</option>
+                        }
+                    </select>
+                </div>
+
+                @if (!string.IsNullOrEmpty(_wizError))
+                {
+                    <div class="warn">@_wizError</div>
+                }
+                @if (Pg is not { IsReady: true })
+                {
+                    <div class="warn">Postgres chưa sẵn sàng — xem trước được nhưng chưa nhập được.</div>
+                }
+
+                <div class="subhead">Xem trước (@_wizPreview.Count dòng đầu)</div>
+                <div class="tablewrap" style="max-height:210px">
+                    <table class="grid sm">
+                        <thead>
+                            <tr>
+                                <th style="width:52px">Dòng</th>
+                                @foreach (var c in _wizCols) { <th>@c</th> }
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (_wizPreview.Count == 0)
+                            {
+                                <tr><td colspan="@(_wizCols.Count + 1)" class="empty">Sheet không có dòng dữ liệu.</td></tr>
+                            }
+                            else
+                            {
+                                @foreach (var (rowNo, cells) in _wizPreview)
+                                {
+                                    <tr>
+                                        <td>@rowNo</td>
+                                        @foreach (var cell in cells)
+                                        {
+                                            <td style="@Clip" title="@cell">@cell</td>
+                                        }
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="subhead">Ánh xạ cột (1-based, 0 = bỏ trường)</div>
+                <div class="form-fields">
+                    <label class="field-col">Link <input type="number" @bind="_wizLink" class="ci" /></label>
+                    <label class="field-col">Giá bán <input type="number" @bind="_wizPrice" class="ci" /></label>
+                    <label class="field-col">SKU <input type="number" @bind="_wizSku" class="ci" /></label>
+                    <label class="field-col">Item ID <input type="number" @bind="_wizItem" class="ci" /></label>
+                    <label class="field-col">Tên gốc <input type="number" @bind="_wizName" class="ci" /></label>
+                    <label class="field-col">Tên đã sửa <input type="number" @bind="_wizRewritten" class="ci" /></label>
+                </div>
+                <p class="hint">Các cột phụ (giá gốc, danh mục, rating…) đọc theo vị trí chuẩn B, H..Q nếu có.</p>
+
+                <div class="form-fields">
+                    <label class="field-col">Từ dòng <input type="number" @bind="_wizFrom" class="ci" /></label>
+                    <label class="field-col">Đến dòng <input type="number" @bind="_wizTo" class="ci" /></label>
+                    <span class="hint" style="margin:0 0 4px">(dòng 1 là tiêu đề; đến dòng 0 = hết)</span>
+                    <label class="field-col">Chế độ
+                        <select @bind="_wizMode" style="width:180px">
+                            <option value="replace">Ghi đè (thay toàn bộ)</option>
+                            <option value="append">Nối thêm (vào cuối)</option>
+                        </select>
+                    </label>
+                    <label class="toggle" style="margin:0 0 4px"><input type="checkbox" @bind="_wizFillSku" /> Tự sinh SKU cho dòng thiếu (B#####)</label>
+                </div>
+            </div>
+            <div class="modal-foot">
+                @if (_wizBusy) { <span class="action">⏳ đang xử lý…</span> }
+                <button class="btn" @onclick="Cancel" disabled="@_wizBusy">Huỷ</button>
+                <button class="btn primary" @onclick="Import"
+                        disabled="@(_wizBusy || Pg is not { IsReady: true } || _wizSheets.Count == 0 || string.IsNullOrEmpty(_wizSheet) || string.IsNullOrEmpty(TargetAcct) || string.IsNullOrEmpty(TargetSheet))">OK — Nhập</button>
+            </div>
+        </div>
+    </div>
+}
+
+@* Đứng SAU modal wizard trong DOM → cùng z-index nhưng vẽ đè lên trên (hộp xác nhận phải nằm trên wizard). *@
+<ConfirmDialog @ref="_confirm" />
+
+@code {
+    // Đích CỐ ĐỊNH (per-shop): set cả 2 → ẩn selector Acc/Shop. Null → cho chọn trong form (prefill từ bộ lọc /data).
+    [Parameter] public string? FixedAcct { get; set; }
+    [Parameter] public string? FixedSheet { get; set; }
+    [Parameter] public string? PrefillAcct { get; set; }
+    [Parameter] public string? PrefillSheet { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public EventCallback<ImportResult> OnImported { get; set; }
+
+    /// <summary>Kết quả nhập trả về parent: thông điệp + có phải ghi đè (parent per-shop dùng để về trang 1/cuối) + số dòng.</summary>
+    public sealed record ImportResult(string Message, bool Replace, int Count);
+
+    private const int PreviewRows = 5;   // số dòng dữ liệu hiện trong bảng xem trước
+    private const string Clip = "max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+    private const long MaxUploadBytes = 256L * 1024 * 1024;
+    private static readonly SemaphoreSlim ParseGate = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCts = new();
+    private ConfirmDialog? _confirm;
+    private bool _open, _wizBusy;
+    private string? _wizTempPath;
+    private string _wizFileName = "", _wizSheet = "", _wizError = "", _wizMode = "replace";
+    private List<string> _wizSheets = new(), _wizCols = new();
+    private List<(int RowNo, List<string> Cells)> _wizPreview = new();
+    // Ánh xạ 6 field nghiệp vụ (1-based; 0 = bỏ) — mặc định = ColumnOverrides.Default (1,3,4,5,6,7).
+    private int _wizLink = 1, _wizPrice = 3, _wizSku = 4, _wizItem = 5, _wizName = 6, _wizRewritten = 7;
+    private int _wizFrom = 2, _wizTo;   // khoảng dòng; _wizTo = 0 = hết
+    private bool _wizFillSku = true;    // tự sinh SKU 'B#####' cho dòng file thiếu SKU (mặc định BẬT)
+    // Đích chọn trong form (khi không cố định).
+    private string _selAcct = "", _selSheet = "";
+    private List<BigSellerAccount> _accounts = new();
+
+    private ProductDb? Pg => Sp.GetService<ProductDb>();
+    private bool Fixed => !string.IsNullOrEmpty(FixedAcct) && !string.IsNullOrEmpty(FixedSheet);
+    private bool BtnDisabled => Disabled || _wizBusy;
+    private string TargetAcct => Fixed ? FixedAcct! : _selAcct;
+    private string TargetSheet => Fixed ? FixedSheet! : _selSheet;
+
+    private IEnumerable<BigSellerShop> SelShopOptions() =>
+        _accounts.FirstOrDefault(a => a.Id == _selAcct)?.Shops.Where(s => !string.IsNullOrWhiteSpace(s.ShopeeDataSheet))
+        ?? Enumerable.Empty<BigSellerShop>();
+
+    private void OnSelAcct(ChangeEventArgs e) { _selAcct = e.Value?.ToString() ?? ""; _selSheet = ""; }
+    private void OnSelSheet(ChangeEventArgs e) => _selSheet = e.Value?.ToString() ?? "";
+
+    // Chon file -> luu file tam (khong giu byte[] 256MB trong circuit), doc ten sheet + preview roi mo modal.
+    private async Task OnFile(InputFileChangeEventArgs e)
+    {
+        if (_wizBusy) return;
+        // Đọc file + xem trước KHÔNG cần Postgres (chỉ ParseSheet); chỉ bước Import (OK) mới gated theo Pg.
+        var file = e.File;
+        _wizBusy = true; _wizError = "";
+        try
+        {
+            var ct = _lifetimeCts.Token;
+            DeleteTempFile();
+            var tempDir = Path.Combine(HubOptions.DataDir, "import-temp");
+            Directory.CreateDirectory(tempDir);
+            _wizTempPath = Path.Combine(tempDir, Guid.NewGuid().ToString("N") + ".xlsx");
+            await using (var input = file.OpenReadStream(MaxUploadBytes, ct))
+            await using (var output = new FileStream(_wizTempPath, FileMode.CreateNew, FileAccess.Write,
+                             FileShare.Read, 81920, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                await input.CopyToAsync(output, ct);
+
+            var path = _wizTempPath;
+            var load = await ParseAsync(() =>
+            {
+                try
+                {
+                    List<string> sheets;
+                    using (var stream = File.OpenRead(path)) sheets = ProductXlsxCodec.ListSheetNames(stream);
+                    if (sheets.Count == 0)
+                        return (sheets, "", new List<string>(), new List<(int, List<string>)>(), "File không có worksheet nào.");
+                    var s0 = sheets[0];
+                    using var previewStream = File.OpenRead(path);
+                    var pv = ProductXlsxCodec.PreviewSheet(previewStream, s0, PreviewRows);
+                    return (sheets, s0, pv.ColLetters, pv.Rows, "");
+                }
+                catch (Exception ex)
+                {
+                    return (new List<string>(), "", new List<string>(), new List<(int, List<string>)>(), "Không đọc được file: " + ex.Message);
+                }
+            }, ct);
+
+            // Nạp state modal + reset map/khoảng dòng/chế độ về mặc định cho lần nhập này.
+            _wizFileName = file.Name;
+            _wizSheets = load.Item1; _wizSheet = load.Item2; _wizCols = load.Item3; _wizPreview = load.Item4; _wizError = load.Item5;
+            _wizLink = 1; _wizPrice = 3; _wizSku = 4; _wizItem = 5; _wizName = 6; _wizRewritten = 7;
+            _wizFrom = 2; _wizTo = 0; _wizMode = "replace"; _wizFillSku = true;
+            // Đích chọn-trong-form → nạp accounts + prefill từ bộ lọc.
+            if (!Fixed)
+            {
+                _accounts = Config.BigSellerAccounts();
+                _selAcct = PrefillAcct ?? "";
+                _selSheet = PrefillSheet ?? "";
+            }
+            _open = true;   // mở modal kể cả khi có lỗi (báo lỗi trong modal, không đóng)
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
+        catch (Exception ex) { _wizError = "✘ Lỗi đọc file: " + ex.Message; _open = true; DeleteTempFile(); }
+        finally { _wizBusy = false; }
+    }
+
+    // Đổi sheet trong modal → parse lại xem trước (Task.Run). Lỗi → báo trong modal, giữ modal mở.
+    private async Task WizSelectSheet(ChangeEventArgs e)
+    {
+        _wizSheet = e.Value?.ToString() ?? "";
+        if (_wizTempPath is null || string.IsNullOrEmpty(_wizSheet)) return;
+        if (!TempFileConHan()) return;
+        _wizBusy = true; _wizError = "";
+        try
+        {
+            var path = _wizTempPath; var sheet = _wizSheet;
+            var res = await ParseAsync(() =>
+            {
+                try { using var stream = File.OpenRead(path); var pv = ProductXlsxCodec.PreviewSheet(stream, sheet, PreviewRows); return (pv.ColLetters, pv.Rows, ""); }
+                catch (Exception ex) { return (new List<string>(), new List<(int, List<string>)>(), "Không đọc được sheet: " + ex.Message); }
+            }, _lifetimeCts.Token);
+            _wizCols = res.Item1; _wizPreview = res.Item2; _wizError = res.Item3;
+        }
+        finally { _wizBusy = false; }
+    }
+
+    private void Cancel() { _open = false; _wizError = ""; DeleteTempFile(); }
+
+    // OK → confirm chế độ → ParseSheet(bytes, sheet, ov, from, to) → (fill SKU thiếu) → ImportIntoSheetAsync. Ghi đè giữ
+    // RowNo từ ParseSheet; nối thêm để ProductDb tự cấp row_no từ max+1. Lỗi → giữ modal. Xong → bắn OnImported.
+    private async Task Import()
+    {
+        if (_wizBusy || _wizTempPath is null || string.IsNullOrEmpty(_wizSheet)) return;
+        if (!TempFileConHan()) return;
+        var pg = Pg;
+        if (pg is null || !pg.IsReady) return;
+        var acct = TargetAcct; var dest = TargetSheet;
+        if (string.IsNullOrEmpty(acct) || string.IsNullOrEmpty(dest)) { _wizError = "Chọn tài khoản + shop đích."; return; }
+        var replace = !string.Equals(_wizMode, "append", StringComparison.Ordinal);
+        if (_confirm is null) return;
+        if (!await _confirm.AskAsync(
+                replace ? "Nhập Excel theo GHI ĐÈ?" : "Nhập Excel theo NỐI THÊM?",
+                replace
+                    ? $"XOÁ toàn bộ dòng hiện có của shop rồi nạp phần đã chọn từ sheet '{_wizSheet}'. Không thể hoàn tác."
+                    : $"Thêm phần đã chọn từ sheet '{_wizSheet}' vào CUỐI danh sách dòng của shop.",
+                replace ? "⚠ Ghi đè" : "Nối thêm", danger: replace))
+            return;
+
+        _wizBusy = true; _wizError = "";
+        try
+        {
+            var path = _wizTempPath; var sheet = _wizSheet; var src = _wizFileName; var from = _wizFrom; var to = _wizTo;
+            var ct = _lifetimeCts.Token;
+            var ov = new ProductXlsxCodec.ColumnOverrides(
+                Math.Max(0, _wizLink), Math.Max(0, _wizPrice), Math.Max(0, _wizSku),
+                Math.Max(0, _wizItem), Math.Max(0, _wizName), Math.Max(0, _wizRewritten));
+
+            var rows = await ParseAsync(() => { using var stream = File.OpenRead(path); return ProductXlsxCodec.ParseSheet(stream, sheet, ov, from, to); }, ct);
+            // Tự sinh SKU 'B#####' cho dòng file THIẾU SKU (nếu bật) → dòng nào cũng đạt chuẩn per-shop trước khi ghi.
+            var filled = 0;
+            if (_wizFillSku) (rows, filled) = await pg.FillMissingSkusAsync(acct, dest, rows, ct);
+            var count = await pg.ImportIntoSheetAsync(acct, dest, rows, replace, src, "hub-web", ct);
+
+            _open = false; DeleteTempFile();
+            var msg = $"✔ Đã nhập {count:N0} dòng vào shop ({(replace ? "ghi đè" : "nối thêm")})"
+                + (filled > 0 ? $" — tự sinh SKU cho {filled:N0} dòng thiếu." : ".");
+            await OnImported.InvokeAsync(new ImportResult(msg, replace, count));
+        }
+        catch (OperationCanceledException) when (_lifetimeCts.IsCancellationRequested) { }
+        catch (Exception ex) { _wizError = "✘ Lỗi nhập: " + ProductDb.Friendly(ex); }
+        finally { _wizBusy = false; }
+    }
+
+    private static async Task<T> ParseAsync<T>(Func<T> parse, CancellationToken ct)
+    {
+        await ParseGate.WaitAsync(ct);
+        try { return await Task.Run(parse, ct); }
+        finally { ParseGate.Release(); }
+    }
+
+    // File tam co the da bi don (MaintenanceService) hoac mat vi ly do khac giua luc modal dang mo. Bao ro mot cau
+    // roi de admin chon lai file, thay vi de FileNotFoundException noi len thanh "Loi nhap: ..." kho hieu.
+    private bool TempFileConHan()
+    {
+        if (_wizTempPath is not null && File.Exists(_wizTempPath)) return true;
+        _wizTempPath = null;
+        _wizError = "✘ File tạm đã hết hạn hoặc bị dọn — hãy chọn lại file Excel.";
+        return false;
+    }
+
+    private void DeleteTempFile()
+    {
+        var path = _wizTempPath;
+        _wizTempPath = null;
+        if (string.IsNullOrEmpty(path)) return;
+        try { File.Delete(path); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _lifetimeCts.CancelAsync();
+        DeleteTempFile();
+        _lifetimeCts.Dispose();
+    }
+}

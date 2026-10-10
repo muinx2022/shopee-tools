@@ -1,0 +1,216 @@
+@page "/config/accounts"
+@attribute [Authorize(Policy = "Web")]
+@inject FileStoreConfigService Config
+@inject NavigationManager Nav
+
+<p class="hint m-hide">Web hub là nguồn sự thật. Client kéo về, giữ trạng thái riêng-máy (profile/disabled/captcha).</p>
+
+<div class="bar bar-stack">
+    <button class="btn" @onclick="AddAccount">+ Thêm acc</button>
+    <button class="btn" @onclick="() => _showImport = true">⬇ Import acc / proxy</button>
+    <button class="btn primary" @onclick="Save">💾 Lưu acc</button>
+    <span class="action">@_status</span>
+</div>
+
+<div class="bar bar-stack">
+    <span class="stat">@_accounts.Count tài khoản</span>
+    <label>Mỗi trang
+        <select @bind="_pageSize" @bind:after="OnPageSizeChanged">
+            <option value="10">10</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+        </select>
+    </label>
+    @* Cụm phân trang bọc .btnrow: ở màn hẹp .bar-stack là LƯỚI, để rời ra thì ◀ và ▶ rơi vào hai hàng khác
+       nhau (row-major), chỉ số trang lại nằm cạnh ◀. Bọc lại thì cả cụm giữ đúng thứ tự trên một hàng. *@
+    <div class="btnrow pagerow">
+        <button class="btn sm" disabled="@(_page <= 0)" @onclick="() => GoPage(_page - 1)">◀</button>
+        <span class="stat">Trang @(_page + 1)/@PageCount</span>
+        <button class="btn sm" disabled="@(_page >= PageCount - 1)" @onclick="() => GoPage(_page + 1)">▶</button>
+    </div>
+</div>
+
+<div class="tablewrap">
+<table class="grid sm stack-sm cfg-accts">
+    <thead><tr><th>#</th><th>Nhãn</th><th>Login (user|pass)</th><th>KiotProxy</th><th>Vùng</th><th>Proxy tay</th><th>Cần proxy</th><th></th></tr></thead>
+    <tbody>
+    @foreach (var (a, idx) in PagedAccounts)
+    {
+        <tr>
+            <td class="mono" data-label="#">@(idx + 1)</td>
+            <td data-label="Nhãn"><input @bind="a.Label" class="cfg-field cfg-label" /></td>
+            <td data-label="Login"><input @bind="a.ShopeeAccountLogin" class="cfg-field cfg-login" /></td>
+            <td data-label="KiotProxy"><input @bind="a.KiotProxyKey" class="cfg-field cfg-kiot" /></td>
+            <td data-label="Vùng"><input @bind="a.Region" class="cfg-field cfg-region" /></td>
+            <td data-label="Proxy tay"><input @bind="a.ManualProxy" class="cfg-field cfg-proxy" /></td>
+            <td data-label="Cần proxy" style="text-align:center"><input type="checkbox" @bind="a.RequireProxy" /></td>
+            <td data-label=""><button class="btn danger sm" @onclick="() => Remove(a)">×</button></td>
+        </tr>
+    }
+    </tbody>
+</table>
+</div>
+
+<h2>Kho proxy (KiotProxy)</h2>
+<p class="hint m-hide">Mỗi dòng 1 key KiotProxy hoặc host:port. Client round-robin theo index acc.</p>
+<div class="editcard" style="max-width:640px">
+    <textarea @bind="_proxyText" rows="10" style="width:100%;font-family:monospace"></textarea>
+    <div class="bar">
+        <button class="btn primary" @onclick="SaveProxy">💾 Lưu proxy</button>
+        <span class="action">@_proxyStatus</span>
+    </div>
+</div>
+
+@if (_showImport)
+{
+    @* KHÔNG đóng khi bấm ra backdrop (dễ nhầm mất dữ liệu đang nhập) — chỉ ✕ / Huỷ mới đóng. *@
+    <div class="modal-overlay">
+        <div class="modal" @onclick:stopPropagation="true">
+            <div class="modal-head">Import acc / proxy <button class="btn sm" title="Đóng" @onclick="() => _showImport = false">✕</button></div>
+            <div class="modal-body">
+                <label>Tài khoản Shopee — mỗi dòng <code>user|pass</code> hoặc <code>user|pass|.shopee.vn=SPC_F=…</code></label>
+                <textarea @bind="_importAccText" rows="6" style="width:100%;font-family:monospace" placeholder="user1|pass1&#10;user2|pass2"></textarea>
+                <label style="margin-top:10px">Proxy — mỗi dòng 1 KiotProxy key hoặc host:port (để trống nếu chỉ import acc)</label>
+                <textarea @bind="_importProxyText" rows="6" style="width:100%;font-family:monospace" placeholder="proxy1&#10;host:port"></textarea>
+                <p class="hint">
+                    • Nhập acc, không proxy → chỉ thêm acc.<br />
+                    • Không nhập acc, có proxy → <b>gán lại proxy dàn đều</b> cho MỌI acc đang có (acc1→proxy1 … acc11→proxy1…).<br />
+                    • Nhập cả hai → thêm acc rồi gán proxy dàn đều cho toàn bộ acc.
+                </p>
+            </div>
+            <div class="modal-foot">
+                <span class="action">@_importPreview</span>
+                <button class="btn" @onclick="() => _showImport = false">Huỷ</button>
+                <button class="btn primary" @onclick="DoImport">Áp dụng</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<ShopeeAccount> _accounts = new();
+    private int _version;
+    private string _status = "";
+
+    private bool _showImport;
+    private string _importAccText = "";
+    private string _importProxyText = "";
+    private string _importPreview => $"{Lines(_importAccText).Count} acc · {Lines(_importProxyText).Count} proxy";
+
+    private string _proxyText = "";
+    private int _proxyVersion;
+    private string _proxyStatus = "";
+
+    private static readonly int[] PageSizeOptions = [10, 50, 100];
+
+    private int _pageSize = 50;
+    private int _page;   // 0-based trong code; URL dùng số trang 1-based như mọi trang khác
+    private int PageCount => Math.Max(1, (int)Math.Ceiling(_accounts.Count / (double)_pageSize));
+    private IEnumerable<(ShopeeAccount a, int idx)> PagedAccounts
+    {
+        get
+        {
+            if (_page >= PageCount) _page = PageCount - 1;
+            if (_page < 0) _page = 0;
+            return _accounts.Select((a, i) => (a, i)).Skip(_page * _pageSize).Take(_pageSize);
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        Load();
+        // F5/deep-link: khôi phục trang + cỡ trang SAU khi Load() có danh sách acc. KHÔNG navigate ở đây (còn
+        // prerender → NavigateTo sẽ ném redirect); URL chỉ được ghi lại khi user đổi trang / cỡ trang.
+        RestoreFromUrl();
+    }
+
+    // ── Phân trang ↔ URL query (?page=&size=) — F5 / chia sẻ link giữ nguyên ──
+    private void RestoreFromUrl() => UrlState.Restore(Nav,
+        ("size", v => _pageSize = int.TryParse(v, out var sz) && PageSizeOptions.Contains(sz) ? sz : 50),
+        ("page", v => _page = int.TryParse(v, out var p) && p >= 1 ? p - 1 : 0));
+
+    private void UpdateUrl() => UrlState.Update(Nav, replace: true,
+        ("page", _page > 0 ? (_page + 1).ToString() : ""),
+        ("size", _pageSize != 50 ? _pageSize.ToString() : ""));
+
+    private void GoPage(int page)
+    {
+        _page = Math.Clamp(page, 0, PageCount - 1);
+        UpdateUrl();
+    }
+
+    // Đổi cỡ trang có thể đẩy trang hiện tại ra ngoài phạm vi → kẹp NGAY (y hệt PagedAccounts vẫn làm lúc render)
+    // để URL ghi ra đúng trang sẽ hiện.
+    private void OnPageSizeChanged() => GoPage(_page);
+
+    private void Load()
+    {
+        _accounts = Config.ShopeeAccounts();
+        _version = Config.VersionOf(FileStoreConfigService.AccountsFile);
+        _proxyText = string.Join("\n", Config.KiotProxies());
+        _proxyVersion = Config.VersionOf(FileStoreConfigService.KiotProxiesFile);
+    }
+
+    private void AddAccount() => _accounts.Add(new ShopeeAccount { Label = "Acc mới" });
+    private void Remove(ShopeeAccount a) => _accounts.Remove(a);
+
+    private static List<string> Lines(string s) =>
+        s.Split('\n').Select(x => x.Trim()).Where(x => x.Length > 0).ToList();
+
+    /// <summary>Import từ form. acc-only → chỉ thêm acc. proxy-only → gán proxy dàn đều cho MỌI acc đang có.
+    /// Cả hai → thêm acc rồi gán proxy dàn đều cho ACC MỚI IMPORT (acc1→proxy1 … accN→proxy(N%K)).</summary>
+    private void DoImport()
+    {
+        var accLines = Lines(_importAccText);
+        var proxyLines = Lines(_importProxyText);
+        var report = new List<string>();
+        var newAccounts = new List<ShopeeAccount>();
+
+        if (accLines.Count > 0)
+        {
+            var seen = new HashSet<string>(_accounts.Select(a => a.ShopeeAccountLogin?.Trim() ?? ""), StringComparer.OrdinalIgnoreCase);
+            foreach (var line in accLines)
+            {
+                if (!seen.Add(line)) continue;
+                var acc = new ShopeeAccount { ShopeeAccountLogin = line, Label = line.Split('|')[0].Trim() };
+                _accounts.Add(acc);
+                newAccounts.Add(acc);
+            }
+            report.Add($"thêm {newAccounts.Count} acc");
+        }
+
+        if (proxyLines.Count > 0)
+        {
+            // Vừa import acc → gán proxy cho ACC MỚI; chỉ nhập proxy → gán cho MỌI acc đang có.
+            var targets = newAccounts.Count > 0 ? newAccounts : _accounts;
+            for (var i = 0; i < targets.Count; i++)
+                AssignProxy(targets[i], proxyLines[i % proxyLines.Count]);
+            report.Add($"gán {proxyLines.Count} proxy dàn đều cho {targets.Count} acc");
+        }
+
+        _status = report.Count > 0 ? "✔ " + string.Join(" · ", report) + ". Bấm 💾 Lưu acc để ghi." : "⚠ Không có gì để import.";
+        _showImport = false;
+        _importAccText = ""; _importProxyText = "";
+    }
+
+    /// <summary>Gán 1 proxy cho acc: dạng host:port hoặc có "://" → Proxy tay (ManualProxy); còn lại → KiotProxy key.</summary>
+    private static void AssignProxy(ShopeeAccount a, string proxy)
+    {
+        proxy = proxy.Trim();
+        if (proxy.Contains("://") || System.Text.RegularExpressions.Regex.IsMatch(proxy, @"^[^:\s]+:\d+$"))
+        { a.ManualProxy = proxy; a.KiotProxyKey = ""; }
+        else
+        { a.KiotProxyKey = proxy; a.ManualProxy = ""; }
+    }
+
+    private void Save()
+    {
+        _status = ConfigSave.Apply(Config, FileStoreConfigService.AccountsFile, _accounts, ref _version, Load, $" {_accounts.Count} acc");
+    }
+
+    private void SaveProxy()
+    {
+        var list = Lines(_proxyText).Distinct().ToList();
+        _proxyStatus = ConfigSave.Apply(Config, FileStoreConfigService.KiotProxiesFile, list, ref _proxyVersion, Load, $" {list.Count} proxy");
+    }
+}

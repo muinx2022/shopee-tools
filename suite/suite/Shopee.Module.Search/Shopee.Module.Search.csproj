@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Shopee.Modules.Search</RootNamespace>
+    <AssemblyName>Shopee.Module.Search</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Shopee.Core\Shopee.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Cho bộ test đọc thành viên `internal` (khuôn đã dùng ở Shopee.Core) — vd ctor SearchTaskStore nhận
+         đường dẫn DB tạm, khỏi phải nới `public` chỉ vì test. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Shopee.Module.Search.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>

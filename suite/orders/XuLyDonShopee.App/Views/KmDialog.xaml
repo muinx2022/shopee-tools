@@ -1,0 +1,358 @@
+<Window x:Class="XuLyDonShopee.App.Views.KmDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:c="clr-namespace:XuLyDonShopee.App.Controls"
+        Width="880" Height="720" MinWidth="760" MinHeight="620"
+        ShowInTaskbar="False" WindowStyle="SingleBorderWindow"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        FontFamily="{DynamicResource UiFont}"
+        UseLayoutRounding="True"
+        TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType"
+        Title="KM của Shop">
+
+    <Window.Resources>
+        <ResourceDictionary>
+            <!-- Y như ChanDoanDonDialog / OrderDetailDialog: merge tài nguyên module để có `h1`, `primary`,
+                 `btnLabel`, `card` và kiểu c:PathIcon RIÊNG của module. -->
+            <!-- Riêng `WindowBackgroundBrush` + `UiFont` đến TỪ THEME CỦA SHELL (suite/Themes/Theme.xaml) nên
+                 khai bằng DynamicResource ở trên: StaticResource cấp Window phải tra được NGAY lúc dựng, khiến
+                 module không dựng nổi dialog khi chưa có shell (test, designer). Dynamic tra sau; thiếu thì chỉ
+                 mất màu nền chứ không ném. -->
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="pack://application:,,,/XuLyDonShopee.App;component/Styles/ModuleResources.xaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <DockPanel Margin="20">
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,14">
+            <TextBlock Text="KM của Shop" Style="{StaticResource h1}" />
+            <TextBlock Text="Tạo chương trình khuyến mãi hàng loạt cho mọi shop của tài khoản đang chọn."
+                       FontSize="12" Margin="0,4,0,0"
+                       TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" />
+        </StackPanel>
+
+        <!-- Hàng nút ở đáy — khai TRƯỚC vùng giữa để DockPanel chừa chỗ cho nó (vùng giữa mới là phần co giãn). -->
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
+            <!-- ⚠ Nút này chạy CHƯƠNG TRÌNH CỦA SHOP, KHÔNG chạy theo tab đang mở — xem tooltip. Từ bản chia
+                 tab (26/08/2026) đó là chỗ dễ hiểu nhầm nhất trên form, và nó sẽ thành bẫy THẬT khi vòng combo
+                 chạy được: người dùng đứng ở tab Combo bấm Chạy rồi tưởng vừa chạy combo. Cách chữa là NÓI RA,
+                 không phải đổi hành vi nút theo tab (không ai yêu cầu, và làm vậy thì một cú đổi tab lỡ tay là
+                 một vòng chạy thật trên mọi shop). -->
+            <Button x:Name="ChayButton" Style="{StaticResource primary}" Click="OnChay"
+                    ToolTip="⚠ CHẠY THẬT, và luôn chạy CHƯƠNG TRÌNH CỦA SHOP — không chạy theo tab đang mở: mở trình duyệt, đăng nhập rồi TẠO chương trình khuyến mãi trên MỌI shop của tài khoản này (nghỉ 3-5 phút giữa hai shop, cả vòng có thể mất một tiếng). Check đơn tạm dừng và tự chạy lại khi xong.">
+                <StackPanel Orientation="Horizontal">
+                    <c:PathIcon Data="{DynamicResource IconPlay}" />
+                    <TextBlock Text="Chạy chương trình" Style="{StaticResource btnLabel}" />
+                </StackPanel>
+            </Button>
+            <Button x:Name="DongButton" Margin="8,0,0,0" Click="OnDong"
+                    ToolTip="Đóng form. Thay đổi bạn vừa sửa được lưu nếu HỢP LỆ; mở ra XEM mà không sửa gì thì KHÔNG ghi gì (cấu hình lẫn máy chủ trì đều giữ nguyên); dữ liệu còn sai thì giữ nguyên cấu hình cũ.">
+                <StackPanel Orientation="Horizontal">
+                    <c:PathIcon Data="{DynamicResource IconClose}" />
+                    <TextBlock Text="Đóng" Style="{StaticResource btnLabel}" />
+                </StackPanel>
+            </Button>
+        </StackPanel>
+
+        <!-- Bố cục (26/08/2026): VÙNG CHUNG ở trên (máy chủ trì + chu kỳ dùng chung) → dải TAB một tab cho mỗi
+             loại chương trình → khung lỗi + dòng tổng kết ở dưới. Lỗi và tổng kết nằm NGOÀI tab có chủ đích:
+             chúng nói về cả form, để trong tab thì đổi tab một cái là câu cảnh báo biến mất. -->
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- ══════════ VÙNG CHUNG — thứ dùng chung cho CẢ BA vòng, nên phải nằm NGOÀI tab ══════════ -->
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- MÁY CHỦ TRÌ + nút nhận quyền. Trước bản này form không lộ chủ trì, nên một máy chủ trì đã
+                     nghỉ hưu (cài lại Windows ⇒ đổi id) là KM chết vĩnh viễn trên cả fleet mà không thao tác
+                     nào trong app gỡ được — xem KmDialogViewModel.DaBamNhanChuTri. Chủ trì là của TÀI KHOẢN,
+                     không của riêng vòng nào ⇒ vùng chung. -->
+                <Border x:Name="ChuTriBox" Grid.Column="0" Padding="10,7" CornerRadius="5"
+                        Background="{StaticResource CardBg}"
+                        BorderBrush="{StaticResource BorderSoft}" BorderThickness="1">
+                    <StackPanel>
+                        <TextBlock x:Name="ChuTriText" Text="{Binding MoTaChuTri}" FontSize="12"
+                                   TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" />
+                        <Button x:Name="NhanChuTriButton" Margin="0,8,0,0" HorizontalAlignment="Left"
+                                Command="{Binding NhanChuTriCommand}" IsEnabled="{Binding CoTheNhanChuTri}"
+                                ToolTip="Đóng dấu MÁY NÀY là máy chủ trì lịch KM của tài khoản này. Chỉ máy chủ trì mới chạy lượt KM tự động 2-6h sáng; các máy khác đứng ngoài. Có hiệu lực khi đóng form.">
+                            <TextBlock Text="Máy này nhận chủ trì" Style="{StaticResource btnLabel}" />
+                        </Button>
+                    </StackPanel>
+                </Border>
+
+                <!-- CHU KỲ "sau xx ngày" — MỘT ô cho CẢ BA vòng (không phải của riêng tab đang mở), nên nó ở
+                     đây chứ không nằm cạnh ô "Chạy tự động" như bản một-tab.
+                     ⚠ Điều kiện mở KHÔNG còn là `ChoNhapSoNgay` (chỉ theo `TuDong` của Chương Trình Của Shop):
+                     bật riêng vòng combo mà ô này mờ thì không còn đường nào chỉnh nhịp của nó. -->
+                <Border x:Name="ChuKyBox" Grid.Column="1" Margin="12,0,0,0" Padding="10,7" CornerRadius="5"
+                        Background="{StaticResource CardBg}"
+                        BorderBrush="{StaticResource BorderSoft}" BorderThickness="1">
+                    <StackPanel>
+                        <StackPanel x:Name="ChuKyRow" Orientation="Horizontal"
+                                    IsEnabled="{Binding ChoNhapChuKyChung}">
+                            <TextBlock Text="Sau" VerticalAlignment="Center" FontSize="12"
+                                       Foreground="{StaticResource TextMuted}" />
+                            <TextBox x:Name="SoNgayBox" Width="56" Margin="8,0,0,0"
+                                     Text="{Binding SoNgay, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="ngày" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12"
+                                       Foreground="{StaticResource TextMuted}" />
+                        </StackPanel>
+                        <TextBlock Text="Chu kỳ DÙNG CHUNG cho cả ba vòng — không phải của riêng tab đang mở."
+                                   FontSize="11" Margin="0,4,0,0" MaxWidth="240" TextWrapping="Wrap"
+                                   Foreground="{StaticResource TextMuted}" />
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <!-- ══════════ MỘT TAB CHO MỖI LOẠI CHƯƠNG TRÌNH ══════════ -->
+            <!-- ⚠ BẪY WPF: TabControl KHÔNG dựng nội dung của tab CHƯA CHỌN vào cây trực quan. Test nào đi bộ
+                 trong cây (KmVongBonTests.CacNutTrenForm, KmNhanChuTriVaSoDungCapTests, KmNhanMayTests) phải
+                 duyệt QUA TỪNG TAB rồi hợp lại, nếu không nó rà THIẾU chứ không ĐỎ — đúng loại phép đo rỗng. -->
+            <TabControl x:Name="KmTabs" Grid.Row="1" Margin="0,14,0,0">
+                <TabItem x:Name="TabShop" Header="Chương Trình Của Shop">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <StackPanel Margin="2,12,2,2">
+                            <TextBlock Text="Tên chương trình" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                            <!-- MaxLength chặn ở ô nhập; VM còn kiểm lại lần nữa (dán chuỗi dài / gán từ code vẫn lọt). -->
+                            <TextBox x:Name="TenBox" MaxLength="150" Margin="0,4,0,0"
+                                     Text="{Binding TenChuongTrinh, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="Tự sinh theo ngày/giờ; sửa tay một lần là app thôi ghi đè."
+                                       FontSize="11" Margin="0,3,0,0" Foreground="{StaticResource TextMuted}" />
+
+                            <!-- ══ MỘT KHOẢNG 180 NGÀY, KHÔNG PHẢI MỘT NGÀY (26/08/2026) ══
+                                 Ô "Ngày" là ngày MỞ ĐẦU (mặc định hôm nay); ngày đóng suy ra bằng
+                                 KmLichTuDong.NgayKetThuc nên không có ô nhập riêng. Ô "Kết thúc" cũ đã BỎ HẲN:
+                                 hai đầu khoảng dùng CHUNG một giờ, để lại một ô không đi đâu chính là loại điều
+                                 khiển gây hiểu nhầm mà đợt này đã phải sửa hai lần. -->
+                            <Grid Margin="0,14,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Grid.Column="0">
+                                    <TextBlock Text="Ngày" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                    <DatePicker x:Name="NgayPicker" Margin="0,4,0,0" SelectedDateFormat="Short"
+                                                SelectedDate="{Binding Ngay}" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                    <TextBlock Text="Giờ" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                    <TextBox x:Name="GioBatDauBox" Width="72" Margin="0,4,0,0"
+                                             Text="{Binding GioBatDau, UpdateSourceTrigger=PropertyChanged}" />
+                                </StackPanel>
+                            </Grid>
+                            <TextBlock Text="Chương trình chạy từ ngày trên (mặc định HÔM NAY) đến ngày đó + 180 ngày, cùng giờ này ở hai đầu. Giờ theo định dạng HH:mm."
+                                       FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"
+                                       Foreground="{StaticResource TextMuted}" />
+
+                            <TextBlock Text="% giảm" FontSize="12" Margin="0,14,0,0" Foreground="{StaticResource TextMuted}" />
+                            <TextBox x:Name="PhanTramBox" Width="72" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                     Text="{Binding PhanTram, UpdateSourceTrigger=PropertyChanged}" />
+                            <TextBlock Text="Số nguyên 1–99, áp chung cho mọi sản phẩm."
+                                       FontSize="11" Margin="0,3,0,0" Foreground="{StaticResource TextMuted}" />
+
+                            <CheckBox x:Name="TuDongCheck" Margin="0,16,0,0" IsChecked="{Binding TuDong}"
+                                      Content="Chạy tự động (khung 1-4h sáng)" />
+                            <TextBlock Text="Nhịp lặp lấy theo ô chu kỳ dùng chung ở trên."
+                                       FontSize="11" Margin="0,4,0,0" Foreground="{StaticResource TextMuted}" />
+                        </StackPanel>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- ══ COMBO KHUYẾN MÃI (25/08/2026) — chương trình thứ HAI, khung 01-04h ══
+                     Vòng này ĐỘC LẬP với "Chạy tự động" của Chương Trình Của Shop: người dùng chốt "ba vòng
+                     riêng biệt". Chu kỳ "sau xx ngày" thì DÙNG CHUNG (ô ở vùng chung phía trên). -->
+                <TabItem x:Name="TabCombo" Header="Combo Khuyến Mãi">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto">
+                        <!-- `ComboBox` giữ nguyên TÊN (test bám vào) nhưng thôi làm thẻ card: từ khi vào tab thì
+                             chính tab đã là khung bao, lồng thêm một khung nữa chỉ tốn chỗ. -->
+                        <Border x:Name="ComboBox" Margin="2,12,2,2" Background="Transparent" BorderThickness="0">
+                            <StackPanel>
+                                <!-- Ô tick KHOÁ khi luồng combo phía extension chưa chạy được (KmLichTuDong.ComboSanSang) —
+                                     bật được một vòng chưa chạy nổi là đổi ~2 tiếng check đơn MỖI SÁNG lấy 0 chương
+                                     trình. Dòng chữ ngay dưới nói vì sao.
+                                     ⚠ Hằng đó nay = true (chặng B xong 26/08/2026) nên ô tick MỞ và dòng chữ ẨN — cả
+                                     hai theo BINDING, ĐỪNG XOÁ: tắt gấp vòng combo (Shopee đổi markup) là sửa đúng một
+                                     dòng ở hằng, và giao diện tự giải thích lại cho người dùng. -->
+                                <CheckBox x:Name="ComboBatCheck" IsChecked="{Binding ComboBat}"
+                                          IsEnabled="{Binding ComboSanSang}"
+                                          Content="Combo Khuyến Mãi — chạy tự động (khung 1-4h sáng)"
+                                          ToolTip="Vòng RIÊNG, độc lập với Chạy tự động của Chương Trình Của Shop. Chu kỳ sau xx ngày dùng chung, nhập ở vùng trên." />
+                                <TextBlock x:Name="ComboChuaSanSangText"
+                                           Text="CHƯA DÙNG ĐƯỢC: phần chạy Combo Khuyến Mãi trên trình duyệt chưa làm xong, nên vòng này đang khoá. Bật được sẽ báo trong bản cập nhật."
+                                           FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"
+                                           Foreground="{StaticResource AmberTextBrush}"
+                                           Visibility="{Binding ComboSanSang, Converter={StaticResource InvBoolToVis}}" />
+                                <TextBlock Text="Tên chương trình tự sinh dạng &quot;Combo dd-MM-yyyy&quot; (ô tên của Shopee chỉ nhận 25 ký tự)."
+                                           FontSize="11" Margin="0,3,0,0" Foreground="{StaticResource TextMuted}" />
+
+                                <StackPanel IsEnabled="{Binding ChoNhapCombo}" Margin="0,10,0,0">
+                                    <!-- Ô "Kết thúc" đã BỎ, y tab Chương Trình Của Shop: vòng combo cũng chạy
+                                         một KHOẢNG 180 ngày với CÙNG một giờ ở hai đầu. Combo không có ô ngày —
+                                         nó luôn mở đầu từ HÔM NAY. -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Giờ" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                            <TextBox x:Name="ComboGioBatDauBox" Width="72" Margin="0,4,0,0"
+                                                     Text="{Binding ComboGioBatDau, UpdateSourceTrigger=PropertyChanged}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                            <TextBlock Text="Loại (2=%, 3=số tiền, 1=giá đặc biệt)" FontSize="12"
+                                                       Foreground="{StaticResource TextMuted}" />
+                                            <TextBox x:Name="ComboLoaiBox" Width="56" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                                     Text="{Binding ComboLoai, UpdateSourceTrigger=PropertyChanged}" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Text="Chương trình chạy từ HÔM NAY đến hôm nay + 180 ngày, cùng giờ này ở hai đầu. Giờ theo định dạng HH:mm."
+                                               FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
+                                               Foreground="{StaticResource TextMuted}" />
+
+                                    <Grid Margin="0,10,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Mua (sp)" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                            <TextBox x:Name="ComboMuaSlBox" Width="56" Margin="0,4,0,0"
+                                                     Text="{Binding ComboMuaSl, UpdateSourceTrigger=PropertyChanged}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                            <TextBlock Text="Giảm" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                            <TextBox x:Name="ComboGiamBox" Width="88" Margin="0,4,0,0"
+                                                     Text="{Binding ComboGiam, UpdateSourceTrigger=PropertyChanged}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Margin="12,0,0,0">
+                                            <TextBlock Text="Giới hạn đặt hàng" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                            <TextBox x:Name="ComboGioiHanBox" Width="56" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                                     Text="{Binding ComboGioiHan, UpdateSourceTrigger=PropertyChanged}" />
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <TextBlock Text="Mua ít nhất 2 sản phẩm; giảm là ĐỒNG khi loại = 3, là % (1-99) khi loại = 2."
+                                               FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
+                                               Foreground="{StaticResource TextMuted}" />
+                                </StackPanel>
+
+                                <!-- ĐƯỜNG CHẠY TAY của vòng combo (26/08/2026). Nằm TRONG tab Combo vì nó chạy
+                                     ĐÚNG vòng của tab này — khác hẳn nút "Chạy chương trình" ở đáy form (luôn
+                                     chạy Chương Trình Của Shop, bất kể tab đang mở).
+                                     ⚠ Cửa mở là `ComboSanSang` (luồng extension đã chạy được chưa), KHÔNG phải
+                                     `ChoNhapCombo`/`ComboBat`: ô tick chỉ bật LỊCH TỰ ĐỘNG 6-8h, còn bấm tay thì
+                                     người dùng đang ngồi trước máy — y hệt quan hệ giữa nút "Chạy chương trình"
+                                     và ô tick `TuDong` của vòng kia. Vì thế nó phải nằm NGOÀI khối
+                                     IsEnabled="{Binding ChoNhapCombo}" ở trên. -->
+                                <Button x:Name="ChayComboButton" Margin="0,16,0,0" HorizontalAlignment="Left"
+                                        Style="{StaticResource primary}" Click="OnChayCombo"
+                                        IsEnabled="{Binding ComboSanSang}"
+                                        ToolTip="{Binding TooltipChayCombo}">
+                                    <StackPanel Orientation="Horizontal">
+                                        <c:PathIcon Data="{DynamicResource IconPlay}" />
+                                        <TextBlock Text="Chạy Combo" Style="{StaticResource btnLabel}" />
+                                    </StackPanel>
+                                </Button>
+                            </StackPanel>
+                        </Border>
+                    </ScrollViewer>
+                </TabItem>
+
+                <!-- ══ FLASH SALE — vòng thứ BA: nhiều GÓI NHỎ CẢ NGÀY, xen khe nghỉ check đơn (01/09/2026) ══
+                     Tab này có MỘT ô tick + HAI ô số (%GIẢM và Số lượng SP tham gia — cặp số gõ vào khối
+                     "Chỉnh sửa hàng loạt" của form flash Shopee; nhập từ app từ 03/09/2026, không còn hằng
+                     trong code). Ngày đích là HÔM NAY + 1, khung giờ do Shopee phát hành sẵn, chu kỳ CỨNG 1 ngày
+                     (KmLichTuDong.SoNgayChuKy) — nên ô "sau xx ngày" ở vùng chung KHÔNG áp cho vòng này.
+                     ⚠ IsEnabled bind `FlashSanSang` + dòng chữ cảnh báo bind nghịch: giữ NGUYÊN cả hai, đúng
+                     khuôn ComboBat. Shopee đổi markup ⇒ tắt gấp cả vòng bằng một dòng ở hằng
+                     KmLichTuDong.FlashSanSang, và giao diện tự giải thích lại cho người dùng. -->
+                <TabItem x:Name="TabFlashSale" Header="Flash Sale">
+                    <StackPanel Margin="2,12,2,2">
+                        <CheckBox x:Name="FlashBatCheck" IsChecked="{Binding FlashBat}"
+                                  IsEnabled="{Binding FlashSanSang}"
+                                  Content="Flash Sale Của Shop — chạy tự động (cả ngày, từng gói nhỏ)"
+                                  ToolTip="Vòng RIÊNG, độc lập với hai vòng kia. Mỗi ngày đặt Flash Sale cho NGÀY HÔM SAU trên ĐỦ danh sách shop: mỗi khung giờ còn trống một chương trình, mỗi chương trình 10 sản phẩm bán chạy nhất của một trang. Chạy thành nhiều GÓI NHỎ rải cả ngày, mỗi gói chen vào KHE NGHỈ giữa hai vòng check đơn (không cắt ngang vòng đang chạy). Không bắt đầu shop mới sau 22:15 — Shopee đóng đăng ký cho ngày hôm sau quanh 22:50. Chu kỳ CỨNG mỗi ngày — ô 'sau xx ngày' ở trên KHÔNG áp cho vòng này." />
+                        <TextBlock x:Name="FlashChuaSanSangText"
+                                   Text="CHƯA DÙNG ĐƯỢC: phần chạy Flash Sale trên trình duyệt đang khoá. Bật được sẽ báo trong bản cập nhật."
+                                   FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"
+                                   Foreground="{StaticResource AmberTextBrush}"
+                                   Visibility="{Binding FlashSanSang, Converter={StaticResource InvBoolToVis}}" />
+
+                        <!-- ══ HAI THÔNG SỐ GÕ ĐƯỢC (03/09/2026) — người dùng chốt "5% và 10 sp cho phép nhập
+                             từ client, không fix trong code". Trước bản này chúng là hai hằng
+                             PHAN_TRAM_GIAM_FLASH / SO_LUONG_KM_FLASH trong flow-flashsale.js (đã XOÁ).
+                             ⚠ NẰM NGOÀI mọi khối IsEnabled="{Binding FlashBat}": người dùng đặt trước thông số
+                             rồi mới bật vòng là chuyện thường, và cửa kiểm `KiemTraFormFlash` cũng chặn vô điều
+                             kiện (xem `CauHinhHopLe`) — hai bên phải cùng một luật.
+                             ⚠ UpdateSourceTrigger=PropertyChanged: `OnFlashPhanTramGiamChanged` kiểm NGAY và
+                             đẩy câu lỗi lên khung cảnh báo, vì đường "Đóng" không còn chỗ nào hiện lỗi được. -->
+                        <Grid Margin="0,12,0,0" HorizontalAlignment="Left">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0">
+                                <TextBlock Text="Giảm (%)" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                <TextBox x:Name="FlashPhanTramGiamBox" Width="56" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                         Text="{Binding FlashPhanTramGiam, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="Ô thứ NHẤT của khối 'Chỉnh sửa hàng loạt' trên form Flash Sale của Shopee — %GIẢM áp cho MỌI sản phẩm của MỌI khung giờ trong lượt. Từ 1 đến 99; Shopee hiện đòi tối thiểu 5%." />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Margin="12,0,0,0">
+                                <TextBlock Text="Số lượng SP tham gia (mỗi SP)" FontSize="12" Foreground="{StaticResource TextMuted}" />
+                                <TextBox x:Name="FlashSoLuongThamGiaBox" Width="72" HorizontalAlignment="Left" Margin="0,4,0,0"
+                                         Text="{Binding FlashSoLuongThamGia, UpdateSourceTrigger=PropertyChanged}"
+                                         ToolTip="Ô thứ HAI của cùng khối 'Chỉnh sửa hàng loạt' ('SL sản phẩm khuyến mãi') — số lượng MỖI sản phẩm được bán trong khung. KHÔNG phải số sản phẩm mỗi khung: mỗi chương trình vẫn lấy 10 sản phẩm bán chạy nhất của một trang. Từ 1 đến 9999." />
+                            </StackPanel>
+                        </Grid>
+                        <TextBlock Text="Hai ô này là hai ô của khối 'Chỉnh sửa hàng loạt' trên form Flash Sale của Shopee, áp cho mọi sản phẩm của mọi khung giờ trong lượt."
+                                   FontSize="11" Margin="0,6,0,0" TextWrapping="Wrap"
+                                   Foreground="{StaticResource TextMuted}" />
+
+                        <Border x:Name="FlashSaleBox" Margin="0,12,0,0" Padding="12,10" CornerRadius="5"
+                                Background="{StaticResource WarnSoftBg}"
+                                BorderBrush="{StaticResource WarnSoftBorder}" BorderThickness="1">
+                            <StackPanel>
+                                <TextBlock Text="Cái giá phải biết trước khi bật: mỗi gói chiếm trọn một khe nghỉ của check đơn."
+                                           FontSize="12.5" TextWrapping="Wrap"
+                                           Foreground="{StaticResource AmberTextBrush}" />
+                                <TextBlock Text="Bật ô này thì trong ngày sẽ có vài GÓI Flash Sale, mỗi gói chen vào một khe nghỉ giữa hai vòng check đơn và làm được khoảng 2 shop. Vòng check đơn TRÊN MÁY NÀY không bị cắt ngang và không bị dời giờ: gói xong sớm thì chờ tới đúng cuối khe rồi mới trả máy, nên nhịp check đơn ở đây giữ nguyên như khi không có flash. Máy KHÁC trong fleet thì vẫn bị hub tạm dừng trong lúc gói chạy — mỗi gói một lần. Đổi lại, khe nghỉ phải dài ít nhất 75 phút thì mới đủ chỗ cho một gói — với chu kỳ check đơn 120 phút thì vừa. Ngày nào Shopee chưa mở khung cho ngày hôm sau, các gói vẫn cứ thử và ghi nhật ký; sang ngày là lượt mới đi lại từ đầu."
+                                           FontSize="11.5" Margin="0,6,0,0" TextWrapping="Wrap"
+                                           Foreground="{StaticResource TextMuted}" />
+                                <TextBlock Text="Mỗi tài khoản mỗi ngày tối đa 10 gói, hai gói cách nhau ít nhất 30 phút, và không gói nào bắt đầu shop mới sau 22:15."
+                                           FontSize="11.5" Margin="0,6,0,0" TextWrapping="Wrap"
+                                           Foreground="{StaticResource TextMuted}" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </TabItem>
+            </TabControl>
+
+            <!-- Lỗi đầu vào: hiện NGAY trong form, không MessageBox, không đóng dialog. -->
+            <Border x:Name="LoiBox" Grid.Row="2" Margin="0,14,0,0" Padding="10,7" CornerRadius="5"
+                    Background="{StaticResource WarnSoftBg}"
+                    BorderBrush="{StaticResource WarnSoftBorder}" BorderThickness="1"
+                    Visibility="{Binding Loi, Converter={StaticResource NotNullToVis}}">
+                <TextBlock Text="{Binding Loi}" FontSize="12.5" TextWrapping="Wrap"
+                           Foreground="{StaticResource AmberTextBrush}" />
+            </Border>
+
+            <TextBlock x:Name="TongKetText" Grid.Row="3" Margin="0,12,0,0" FontSize="12" TextWrapping="Wrap"
+                       Foreground="{StaticResource TextMuted}" Text="{Binding TongKet}" />
+        </Grid>
+    </DockPanel>
+</Window>

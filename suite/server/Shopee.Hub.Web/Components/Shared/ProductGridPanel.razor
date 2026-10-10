@@ -1,0 +1,290 @@
+@* Lưới dữ liệu sản phẩm của 1 (acc, sheet) — tab 📋 Dữ liệu của Fleet. LỚP MỎNG trên ProductGridEngine (scope CỐ
+   ĐỊNH về shop này qua SetScope → filter chỉ còn Text tìm đa trường), có ĐỦ action như trang /data (mark/reset/regen/
+   delete + thêm/sửa qua modal CHUNG ProductRowModal). Blazor gọi THẲNG ProductDb in-process qua ProductDbDataOps.
+   Parent tick 2s re-render con MỖI TICK → guard _loadedKey: chỉ nạp lại khi (AccountId|Sheet) ĐỔI THẬT (engine giữ
+   trang/tìm/chọn qua các tick). ProductDb chưa cấu hình → engine.PgReady=false, hiện hint (KHÔNG crash trang). *@
+@using Microsoft.Extensions.DependencyInjection
+@inject FileStoreConfigService Config
+@inject IServiceProvider Sp
+@implements IDisposable
+
+<style>
+    /* Lưới per-shop GIÃN đến cuối vùng chi tiết: editcard chiếm hết chiều cao còn lại của .wsmain (flex-column),
+       vùng bảng tự cuộn thay vì cao theo nội dung. Chỉ nhắm .gridpanel → KHÔNG đụng .editcard tab khác (cấu hình…). */
+    @* Flex-fill CHỈ áp desktop (≥921px): dưới ngưỡng đó specificity (0,3,0) này đè mất cap 60dvh của app.css → bảng
+       100 dòng bung thành trang cuộn dài; còn màn desktop thấp bị Fleet khoá viewport ép bảng ~0px → thêm sàn 240px. *@
+    @@media (min-width: 921px) {
+        .wsmain > .editcard.gridpanel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+        .editcard.gridpanel .tablewrap { flex: 1 1 auto; min-height: 240px; max-height: none; overflow: auto; }
+    }
+    .editcard.gridpanel .soldrow > td { background: var(--success-bg); }
+    .editcard.gridpanel tbody tr { cursor: pointer; }   /* bấm cả dòng = tick/untick chọn (như /data) */
+</style>
+
+<div class="editcard gridpanel">
+    @{ var pgReady = _engine.PgReady; var busy = _engine.Busy; }
+    @* Acc hub-mode: "sheet" là ngăn nội bộ (= GUID) → KHÔNG phô ra subtitle; chỉ excel-mode mới hiện tên sheet. *@
+    <div class="subhead">📋 Dữ liệu sản phẩm@(string.IsNullOrEmpty(Sheet) || _acct?.UsesHubData == true ? "" : $" · sheet '{Sheet}'")</div>
+
+    @if (_acct is null)
+    {
+        <p class="hint">Tài khoản không còn trong cấu hình.</p>
+    }
+    else if (string.IsNullOrEmpty(Sheet))
+    {
+        @* Hub-mode: shop mới luôn có ngăn dữ liệu; chỉ shop hub CŨ (tạo trước luật sheet=Id) mới rơi vào đây. *@
+        <p class="hint">@(_acct.UsesHubData
+            ? "Shop thiếu ngăn dữ liệu — mở tab ⚙ Cấu hình bấm Lưu để vá."
+            : "Shop chưa có ngăn dữ liệu — mở tab ⚙ Cấu hình bấm Lưu để vá (acc còn cờ Excel cũ: chuyển kho Hub trước ở 🗄 Kho dữ liệu).")</p>
+    }
+    else
+    {
+        @if (!_acct.UsesHubData)
+        {
+            <div class="warn">⚠ Tài khoản còn gắn cờ chế độ Excel cũ (đã ngừng hỗ trợ) — vào tab ⚙ Cấu hình › 🗄 Kho dữ liệu bấm "Chuyển sang kho Hub".</div>
+        }
+
+        @* Thanh công cụ hiện KỂ CẢ khi Postgres chưa sẵn sàng — các nút disable theo pgReady (để user thấy có nút
+           Nhập Excel/Thêm dòng, biết chỗ dùng khi kho đã lên). *@
+        <div class="bar bar-stack">
+            <input placeholder="tìm sku / itemId / tên / link…" class="opt-search" @bind="_search" @bind:event="oninput" @onkeydown="OnSearchKey" disabled="@(!pgReady || busy)" />
+            <button class="btn sm" disabled="@(!pgReady || busy)" @onclick="DoSearch">🔍 Tìm</button>
+            @if (!string.IsNullOrEmpty(_search) || !string.IsNullOrEmpty(_engine.Applied.Text))
+            {
+                <button class="btn sm" disabled="@(!pgReady || busy)" @onclick="ClearSearch" title="Xoá ô tìm, hiện lại toàn bộ">✖</button>
+            }
+            <span class="action">@_engine.Total.ToString("N0") dòng@(string.IsNullOrEmpty(_engine.Applied.Text) ? "" : " khớp")</span>
+            <span style="flex:1"></span>
+            @* Nhập Excel vào ĐÚNG ngăn này qua WIZARD dùng chung (đích CỐ ĐỊNH = acc|sheet của lưới này). *@
+            <ImportExcelWizard FixedAcct="@_acct.Id" FixedSheet="@Sheet" Disabled="@busy" OnImported="OnWizardImported" />
+            <button class="btn sm" disabled="@(!pgReady || busy)" @onclick="ToggleAll">@(_showAll ? "Ẩn cột phụ" : "Hiện đủ 17 cột")</button>
+            <button class="btn primary sm" disabled="@busy" @onclick="() => _modal?.OpenAdd(AccountId, Sheet)">➕ Thêm dòng</button>
+        </div>
+
+        @if (!pgReady)
+        {
+            <p class="hint">Postgres chưa sẵn sàng — cấu hình <span class="wbname">HUB_PG_CONN</span> để bật kho sản phẩm trên Hub.</p>
+        }
+        else
+        {
+        @* Phân trang + nút hành động = 2 component DÙNG CHUNG với trang /data (render thẳng vào .bar này). *@
+        <div class="bar">
+            <ProductGridPager Engine="_engine" OnViewChanged="NotifyView" />
+            <ProductGridActions Engine="_engine" DeleteLabel="🗑 Xoá" OnDelete="DeleteSelected" />
+        </div>
+
+        <div class="tablewrap">
+            <table class="grid sm">
+                <thead>
+                    <tr>
+                        <th style="width:26px"></th>
+                        <th style="width:50px">Dòng</th>
+                        <th style="width:36px"></th>
+                        <th>Link</th>
+                        <th>Giá bán</th>
+                        <th>SKU</th>
+                        <th>ItemId</th>
+                        <th>Tên gốc</th>
+                        <th>Tên đã sửa</th>
+                        @if (_showAll)
+                        {
+                            <th>Giá gốc</th><th>Danh mục</th><th>Shop</th><th>Rating</th><th>Bán/tháng</th>
+                            <th>Thích</th><th>Đánh giá</th><th>Vùng</th><th>Ảnh</th><th>MetaShopId</th><th>MetaItemId</th>
+                        }
+                        <th style="width:64px">Đã bán</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (_engine.Rows.Count == 0)
+                    {
+                        <tr><td colspan="@ColCount" class="empty">@(string.IsNullOrEmpty(_engine.Applied.Text) ? "Chưa có dòng nào." : "Không có dòng khớp tìm kiếm.")</td></tr>
+                    }
+                    else
+                    {
+                        @foreach (var r in _engine.Rows)
+                        {
+                            var key = new ProductRowKey(r.AccountId, r.Sheet, r.RowNo);
+                            @* Sửa mở CHUNG modal Thêm/Sửa (đích CỐ ĐỊNH = shop này) — hết inline-edit co giãn cột.
+                               Bấm CẢ DÒNG = tick/untick chọn (như /data) — checkbox chỉ hiển thị, nút ✏ chặn nổi bọt. *@
+                            <tr class="@(r.SoldCount > 0 ? "soldrow" : "")" @onclick="() => _engine.ToggleSelect(key)">
+                                <td><input type="checkbox" style="pointer-events:none;width:auto;margin:0" checked="@_engine.IsSelected(key)" /></td>
+                                <td>@r.RowNo</td>
+                                <td style="white-space:nowrap"><button class="linkbtn" style="display:inline-flex;align-items:center" title="Sửa" disabled="@busy" @onclick="() => _modal?.OpenEdit(r)" @onclick:stopPropagation="true">@HubIcons.Svg("edit", 15)</button></td>
+                                <td style="@Clip" title="@r.Data.Link">@r.Data.Link</td>
+                                <td>@r.Data.PriceSale</td>
+                                <td>@r.Data.Sku</td>
+                                <td>@r.Data.ItemId</td>
+                                <td style="@Clip" title="@r.Data.NameOriginal">@r.Data.NameOriginal</td>
+                                <td style="@Clip" title="@r.Data.NameRewritten">@r.Data.NameRewritten</td>
+                                @if (_showAll)
+                                {
+                                    <td>@r.Data.PriceOriginal</td>
+                                    <td style="@Clip" title="@r.Data.Category">@r.Data.Category</td>
+                                    <td style="@Clip" title="@r.Data.ShopName">@r.Data.ShopName</td>
+                                    <td>@r.Data.Rating</td>
+                                    <td>@r.Data.SoldMonth</td>
+                                    <td>@r.Data.Likes</td>
+                                    <td>@r.Data.Reviews</td>
+                                    <td>@r.Data.Region</td>
+                                    <td style="@Clip" title="@r.Data.Image">@r.Data.Image</td>
+                                    <td>@r.Data.MetaShopId</td>
+                                    <td>@r.Data.MetaItemId</td>
+                                }
+                                <td>@(r.SoldCount > 0 ? r.SoldCount.ToString() : "")</td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+        }
+    }
+
+    @* Status của engine (tìm/mark/reset/regen/delete/lưu) + status riêng của wizard/thêm dòng. *@
+    @if (!string.IsNullOrEmpty(_engine.Status))
+    {
+        <div class="action" style="margin-top:10px">@_engine.Status</div>
+    }
+    @if (!string.IsNullOrEmpty(_localStatus))
+    {
+        <div class="action" style="margin-top:10px">@_localStatus</div>
+    }
+</div>
+
+@* Modal CHUNG Thêm/Sửa dòng (đích CỐ ĐỊNH = shop này) — dùng chung với trang /data. *@
+<ProductRowModal @ref="_modal" Engine="_engine" FixedTarget="true"
+                 FixedAcct="@AccountId" FixedSheet="@Sheet"
+                 FixedAcctLabel="@AcctLabelText()" FixedShopLabel="@ShopLabelText()"
+                 OnSaved="OnRowSaved" />
+
+<ConfirmDialog @ref="_confirm" />
+
+@code {
+    [Parameter] public string AccountId { get; set; } = "";
+    [Parameter] public string Sheet { get; set; } = "";
+    // Trạng thái XEM deep-link (search đã áp, trang, dòng/trang) — áp ĐÚNG 1 LẦN lúc (acct|sheet) load lần đầu.
+    [Parameter] public (string Q, int P, int Ps)? InitialState { get; set; }
+    // Bắn khi user đổi view (tìm/đổi trang/đổi cỡ) → parent ghi vào URL. KHÔNG bắn lúc load-guard (tránh loop).
+    [Parameter] public EventCallback<(string Q, int P, int Ps)> OnViewChanged { get; set; }
+
+    // Bộ lọc "trống" (per-shop chỉ dùng chiều Text; scope acct/sheet do engine ép qua SetScope).
+    private static readonly AllDataFilter EmptyFilter = new(null, null, null, null, null, false, false, null);
+
+    // Ô cắt ngắn text dài (Link/Tên/Ảnh…) — bảng vẫn cuộn ngang qua .tablewrap; title giữ giá trị đầy đủ.
+    private const string Clip = "max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+
+    private ProductGridEngine _engine = default!;
+    private ProductRowModal? _modal;
+    private ConfirmDialog? _confirm;
+    private BigSellerAccount? _acct;
+    private string _search = "";       // ô tìm cục bộ (engine.Applied.Text = tìm ĐÃ áp)
+    private string _localStatus = "";  // status riêng (wizard nhập Excel / thêm dòng) — engine không biết
+    private bool _showAll;
+    private string _loadedKey = "\0";  // chưa load lần nào (khác mọi khoá thật)
+
+    private int ColCount => 10 + (_showAll ? 11 : 0);
+
+    protected override void OnInitialized()
+    {
+        // Engine gọi ProductDb in-process; confirm = hộp xác nhận của hub (engine tự bọc validate/xác nhận tiếng Việt).
+        // _confirm chỉ có sau lần render đầu (@ref) — engine chỉ hỏi khi user bấm nút nên lúc đó đã sẵn; null = không làm.
+        _engine = new ProductGridEngine(
+            new ProductDbDataOps(Sp.GetService<ProductDb>(), "hub-web"),
+            msg => _confirm is null ? Task.FromResult(false) : _confirm.AskEngineAsync(msg));
+        _engine.Changed += OnEngineChanged;
+    }
+
+    private void OnEngineChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        if (_engine is not null) _engine.Changed -= OnEngineChanged;
+    }
+
+    // Guard chống reload theo nhịp: parent re-render mỗi 2s → chỉ nạp lại khi (acc|sheet) ĐỔI THẬT (giữ trang/tìm/
+    // chọn qua các tick — nằm trong engine).
+    protected override async Task OnParametersSetAsync()
+    {
+        var key = AccountId + "|" + Sheet;
+        if (key == _loadedKey) return;
+        _loadedKey = key;
+        _acct = Config.BigSellerAccounts().FirstOrDefault(a => a.Id == AccountId);
+        _search = ""; _localStatus = ""; _showAll = false;
+        if (_acct is null || string.IsNullOrEmpty(Sheet)) return;   // render hiện hint; không nạp
+
+        _engine.SetScope(AccountId, Sheet);
+        // Áp trạng thái XEM deep-link (F5) CHỈ lần đầu load shop này — KHÔNG bắn OnViewChanged (khỏi loop về parent).
+        if (InitialState is { } st)
+        {
+            _search = st.Q ?? "";
+            var f = EmptyFilter with { Text = string.IsNullOrEmpty(_search) ? null : _search };
+            await _engine.RestoreAsync(f, Math.Max(1, st.P), st.Ps > 0 ? st.Ps : 100);
+        }
+        else
+        {
+            await _engine.ApplyFilterAsync(EmptyFilter);
+        }
+    }
+
+    // Báo parent (Fleet) trạng thái xem hiện tại để ghi vào URL — CHỈ gọi từ hành động user (không gọi lúc load-guard).
+    private async Task NotifyView()
+    {
+        if (OnViewChanged.HasDelegate)
+            await OnViewChanged.InvokeAsync((_engine.Applied.Text ?? "", _engine.Page, _engine.PageSize));
+    }
+
+    private string AcctLabelText() => _acct?.DisplayName ?? AccountId;
+    private string ShopLabelText() => _acct?.Shops.FirstOrDefault(s => s.ShopeeDataSheet == Sheet)?.DisplayName ?? Sheet;
+
+    private async Task DoSearch()
+    {
+        _localStatus = "";
+        var text = (_search ?? "").Trim();
+        await _engine.ApplyFilterAsync(EmptyFilter with { Text = string.IsNullOrEmpty(text) ? null : text });
+        await NotifyView();
+    }
+
+    /// <summary>Xoá ô tìm + bỏ lọc đang áp (nếu có) → hiện lại toàn bộ từ trang 1.</summary>
+    private async Task ClearSearch()
+    {
+        var hadApplied = !string.IsNullOrEmpty(_engine.Applied.Text);
+        _search = "";
+        if (hadApplied) await DoSearch();   // đang lọc thật → nạp lại toàn bộ; chưa áp → chỉ xoá chữ trong ô
+    }
+
+    private async Task OnSearchKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await DoSearch();
+    }
+
+    private void ToggleAll() => _showAll = !_showAll;
+
+    // Xoá VĨNH VIỄN dòng chọn (confirm trong engine) → trang có thể bị engine kẹp lại → NotifyView để URL phản ánh.
+    private async Task DeleteSelected()
+    {
+        await _engine.DeleteSelectedAsync();
+        await NotifyView();
+    }
+
+    // Modal lưu xong. Sửa → reload trang hiện tại (giữ chọn). Thêm → bỏ tìm + nhảy trang cuối (dòng mới nằm cuối),
+    // GIỮ chuỗi status của engine ("✔ Đã thêm dòng…") vì RestoreAsync xoá Status.
+    private async Task OnRowSaved((bool IsEdit, string Acct, string Sheet, int RowNo, string Sku) e)
+    {
+        if (e.IsEdit) { _localStatus = ""; await _engine.ReloadAsync(); return; }
+        var msg = _engine.Status;
+        _search = "";
+        await _engine.RestoreAsync(EmptyFilter, int.MaxValue, _engine.PageSize);
+        _localStatus = msg;
+        await NotifyView();
+    }
+
+    // Wizard nhập Excel (đích cố định = acc|sheet lưới này) xong → bỏ tìm; ghi đè→trang 1 / nối thêm→trang cuối (engine
+    // kẹp), status = message của wizard + đồng bộ URL.
+    private async Task OnWizardImported(ImportExcelWizard.ImportResult r)
+    {
+        _search = "";
+        await _engine.RestoreAsync(EmptyFilter, r.Replace ? 1 : int.MaxValue, _engine.PageSize);
+        _localStatus = r.Message;
+        await NotifyView();
+    }
+}

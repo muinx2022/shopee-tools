@@ -1,0 +1,432 @@
+{
+  "format": 1,
+  "restore": {
+    "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Workspace\\Shopee.Workspace.csproj": {}
+  },
+  "projects": {
+    "d:\\Projects\\shopee-tools\\workspace\\shared\\Shopee.Toolkit\\Shopee.Toolkit.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "d:\\Projects\\shopee-tools\\workspace\\shared\\Shopee.Toolkit\\Shopee.Toolkit.csproj",
+        "projectName": "Shopee.Toolkit",
+        "projectPath": "d:\\Projects\\shopee-tools\\workspace\\shared\\Shopee.Toolkit\\Shopee.Toolkit.csproj",
+        "packagesPath": "C:\\Users\\Ng Xuan Mui\\.nuget\\packages\\",
+        "outputPath": "d:\\Projects\\shopee-tools\\workspace\\shared\\Shopee.Toolkit\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\Ng Xuan Mui\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {}
+          }
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Microsoft.Win32.Registry": {
+              "target": "Package",
+              "version": "[5.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\Ng Xuan Mui\\AppData\\Local\\Microsoft\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj",
+        "projectName": "Shopee.Core",
+        "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj",
+        "packagesPath": "C:\\Users\\Ng Xuan Mui\\.nuget\\packages\\",
+        "outputPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\Ng Xuan Mui\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "d:\\Projects\\shopee-tools\\workspace\\shared\\Shopee.Toolkit\\Shopee.Toolkit.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\shared\\Shopee.Toolkit\\Shopee.Toolkit.csproj"
+              }
+            }
+          }
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "ClosedXML": {
+              "target": "Package",
+              "version": "[0.105.0, )"
+            },
+            "Microsoft.Data.Sqlite": {
+              "target": "Package",
+              "version": "[9.0.6, )"
+            },
+            "Microsoft.Playwright": {
+              "target": "Package",
+              "version": "[1.60.0, )"
+            },
+            "Microsoft.Win32.Registry": {
+              "target": "Package",
+              "version": "[5.0.0, )"
+            },
+            "System.Management": {
+              "target": "Package",
+              "version": "[10.0.0, )"
+            },
+            "System.Security.Cryptography.ProtectedData": {
+              "target": "Package",
+              "version": "[8.0.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\Ng Xuan Mui\\AppData\\Local\\Microsoft\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.CheckAccount\\Shopee.Module.CheckAccount.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.CheckAccount\\Shopee.Module.CheckAccount.csproj",
+        "projectName": "Shopee.Module.CheckAccount",
+        "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.CheckAccount\\Shopee.Module.CheckAccount.csproj",
+        "packagesPath": "C:\\Users\\Ng Xuan Mui\\.nuget\\packages\\",
+        "outputPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.CheckAccount\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\Ng Xuan Mui\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\Ng Xuan Mui\\AppData\\Local\\Microsoft\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.MultiBrave\\Shopee.Module.MultiBrave.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.MultiBrave\\Shopee.Module.MultiBrave.csproj",
+        "projectName": "Shopee.Module.MultiBrave",
+        "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.MultiBrave\\Shopee.Module.MultiBrave.csproj",
+        "packagesPath": "C:\\Users\\Ng Xuan Mui\\.nuget\\packages\\",
+        "outputPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.MultiBrave\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\Ng Xuan Mui\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Microsoft.Data.Sqlite": {
+              "target": "Package",
+              "version": "[9.0.6, )"
+            },
+            "Microsoft.Playwright": {
+              "target": "Package",
+              "version": "[1.60.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\Ng Xuan Mui\\AppData\\Local\\Microsoft\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.UpdateProduct\\Shopee.Module.UpdateProduct.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.UpdateProduct\\Shopee.Module.UpdateProduct.csproj",
+        "projectName": "Shopee.Module.UpdateProduct",
+        "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.UpdateProduct\\Shopee.Module.UpdateProduct.csproj",
+        "packagesPath": "C:\\Users\\Ng Xuan Mui\\.nuget\\packages\\",
+        "outputPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.UpdateProduct\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\Ng Xuan Mui\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0": {
+            "targetAlias": "net8.0",
+            "projectReferences": {
+              "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0": {
+          "targetAlias": "net8.0",
+          "dependencies": {
+            "Microsoft.Playwright": {
+              "target": "Package",
+              "version": "[1.60.0, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\Ng Xuan Mui\\AppData\\Local\\Microsoft\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    },
+    "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Workspace\\Shopee.Workspace.csproj": {
+      "version": "1.0.0",
+      "restore": {
+        "projectUniqueName": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Workspace\\Shopee.Workspace.csproj",
+        "projectName": "ShopeeWorkspace",
+        "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Workspace\\Shopee.Workspace.csproj",
+        "packagesPath": "C:\\Users\\Ng Xuan Mui\\.nuget\\packages\\",
+        "outputPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Workspace\\obj\\",
+        "projectStyle": "PackageReference",
+        "configFilePaths": [
+          "C:\\Users\\Ng Xuan Mui\\AppData\\Roaming\\NuGet\\NuGet.Config"
+        ],
+        "originalTargetFrameworks": [
+          "net8.0-windows"
+        ],
+        "sources": {
+          "https://api.nuget.org/v3/index.json": {}
+        },
+        "frameworks": {
+          "net8.0-windows7.0": {
+            "targetAlias": "net8.0-windows",
+            "projectReferences": {
+              "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Core\\Shopee.Core.csproj"
+              },
+              "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.CheckAccount\\Shopee.Module.CheckAccount.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.CheckAccount\\Shopee.Module.CheckAccount.csproj"
+              },
+              "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.MultiBrave\\Shopee.Module.MultiBrave.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.MultiBrave\\Shopee.Module.MultiBrave.csproj"
+              },
+              "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.UpdateProduct\\Shopee.Module.UpdateProduct.csproj": {
+                "projectPath": "d:\\Projects\\shopee-tools\\workspace\\src\\Shopee.Module.UpdateProduct\\Shopee.Module.UpdateProduct.csproj"
+              }
+            }
+          }
+        },
+        "warningProperties": {
+          "warnAsError": [
+            "NU1605"
+          ]
+        },
+        "restoreAuditProperties": {
+          "enableAudit": "true",
+          "auditLevel": "low",
+          "auditMode": "direct"
+        }
+      },
+      "frameworks": {
+        "net8.0-windows7.0": {
+          "targetAlias": "net8.0-windows",
+          "dependencies": {
+            "CommunityToolkit.Mvvm": {
+              "target": "Package",
+              "version": "[8.4.2, )"
+            }
+          },
+          "imports": [
+            "net461",
+            "net462",
+            "net47",
+            "net471",
+            "net472",
+            "net48",
+            "net481"
+          ],
+          "assetTargetFallback": true,
+          "warn": true,
+          "frameworkReferences": {
+            "Microsoft.NETCore.App": {
+              "privateAssets": "all"
+            },
+            "Microsoft.WindowsDesktop.App": {
+              "privateAssets": "none"
+            }
+          },
+          "runtimeIdentifierGraphPath": "C:\\Users\\Ng Xuan Mui\\AppData\\Local\\Microsoft\\dotnet\\sdk\\8.0.424/PortableRuntimeIdentifierGraph.json"
+        }
+      }
+    }
+  }
+}

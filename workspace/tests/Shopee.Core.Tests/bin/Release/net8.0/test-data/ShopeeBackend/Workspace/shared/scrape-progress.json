@@ -1,0 +1,209 @@
+﻿[
+  {
+    "AccountId": "test-d6abaa795f64442da7d81eb2c15fdb4f",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 5
+      }
+    ],
+    "SkippedRows": [
+      5
+    ],
+    "FrameAccountIds": [],
+    "LastRowReached": 5,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:27.7866288+07:00"
+  },
+  {
+    "AccountId": "test-9cd93945b13e438daa92d4ebe5faee22",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 8
+      }
+    ],
+    "SkippedRows": [
+      4
+    ],
+    "FrameAccountIds": [],
+    "LastRowReached": 8,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:28.035544+07:00"
+  },
+  {
+    "AccountId": "test-bfbdc7682c65490499894cfa28d41b10",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 3
+      },
+      {
+        "From": 5,
+        "To": 6
+      },
+      {
+        "From": 8,
+        "To": 8
+      }
+    ],
+    "SkippedRows": [],
+    "FrameAccountIds": [],
+    "LastRowReached": 8,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:28.0432845+07:00"
+  },
+  {
+    "AccountId": "test-5ba33a557b8d4620bb035070015c153e",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 6,
+        "To": 7
+      }
+    ],
+    "SkippedRows": [
+      6,
+      7
+    ],
+    "FrameAccountIds": [],
+    "LastRowReached": 7,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:28.0461584+07:00"
+  },
+  {
+    "AccountId": "test-b535e4efc41e4308b2f70ea9990913ee",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [],
+    "SkippedRows": [],
+    "FrameAccountIds": [],
+    "LastRowReached": 0,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:28.0646606+07:00"
+  },
+  {
+    "AccountId": "test-5d20b6970b9249c7932a10ffb5c8f892",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 2
+      },
+      {
+        "From": 4,
+        "To": 6
+      }
+    ],
+    "SkippedRows": [],
+    "FrameAccountIds": [],
+    "LastRowReached": 6,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:28.0652038+07:00"
+  },
+  {
+    "AccountId": "test-366deeddbad74c2b92886db8779ffc6b",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 5
+      }
+    ],
+    "SkippedRows": [
+      5
+    ],
+    "FrameAccountIds": [],
+    "LastRowReached": 5,
+    "TotalRowsAtLastRun": 5,
+    "Status": "completed",
+    "LastRunAt": "2026-10-10T07:43:28.079451+07:00"
+  },
+  {
+    "AccountId": "test-27e4d5063556478f99de54cac2d789b2",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 5
+      }
+    ],
+    "SkippedRows": [],
+    "FrameAccountIds": [],
+    "LastRowReached": 5,
+    "TotalRowsAtLastRun": 5,
+    "Status": "completed",
+    "LastRunAt": "2026-10-10T07:43:28.082253+07:00"
+  },
+  {
+    "AccountId": "test-3a3353366019498d879cefd51a8459b6",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 3,
+        "To": 3
+      }
+    ],
+    "SkippedRows": [
+      3
+    ],
+    "FrameAccountIds": [],
+    "LastRowReached": 3,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:28.0845015+07:00"
+  },
+  {
+    "AccountId": "test-c51516b638b341028d392d9ad170d7ea",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 8
+      }
+    ],
+    "SkippedRows": [
+      7
+    ],
+    "FrameAccountIds": [],
+    "LastRowReached": 8,
+    "TotalRowsAtLastRun": 10,
+    "Status": "running",
+    "LastRunAt": "2026-10-10T07:43:28.1138281+07:00"
+  },
+  {
+    "AccountId": "test-56a08541e3424ccd9f2238089ee9e331",
+    "Sheet": "Data",
+    "AccountName": "TK test",
+    "Completed": [
+      {
+        "From": 2,
+        "To": 4
+      }
+    ],
+    "SkippedRows": [],
+    "FrameAccountIds": [],
+    "LastRowReached": 5,
+    "TotalRowsAtLastRun": 5,
+    "Status": "stopped",
+    "LastRunAt": "2026-10-10T07:43:28.1168222+07:00"
+  }
+]

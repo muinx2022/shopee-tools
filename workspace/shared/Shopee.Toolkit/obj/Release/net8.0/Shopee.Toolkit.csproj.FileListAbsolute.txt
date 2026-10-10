@@ -1,0 +1,11 @@
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\bin\Release\net8.0\Shopee.Toolkit.deps.json
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\bin\Release\net8.0\Shopee.Toolkit.dll
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\bin\Release\net8.0\Shopee.Toolkit.pdb
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\Shopee.Toolkit.GeneratedMSBuildEditorConfig.editorconfig
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\Shopee.Toolkit.AssemblyInfoInputs.cache
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\Shopee.Toolkit.AssemblyInfo.cs
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\Shopee.Toolkit.csproj.CoreCompileInputs.cache
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\Shopee.Toolkit.dll
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\refint\Shopee.Toolkit.dll
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\Shopee.Toolkit.pdb
+d:\Projects\shopee-tools\workspace\shared\Shopee.Toolkit\obj\Release\net8.0\ref\Shopee.Toolkit.dll

@@ -1,0 +1,404 @@
+using System.Net.Http;
+using System.Text;
+using System.Text.Encodings.Web;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+
+namespace XuLyDonShopee.Core.Services;
+
+/// <summary>
+/// Một đơn hàng GỬI LÊN Web App Google Sheet (Apps Script). Trường null bị BỎ khi tuần tự hóa JSON
+/// (hợp đồng với <c>doPost</c>: chỉ ghi ô đang trống). <see cref="DoanhThu"/> gửi dạng SỐ (JSON number),
+/// KHÔNG format chuỗi — sheet của người dùng đang cộng tổng theo cột. <see cref="DaHuy"/> (JSON
+/// <c>daHuy</c>) LUÔN xuất hiện kể cả <c>false</c> — script cần giá trị tường minh để đổi màu 2 chiều
+/// (hủy → nền đỏ; hết hủy → xóa nền đỏ script đã tô).
+/// <para>
+    /// Layout sheet hiện tại (03/08/2026); việc map trường → cột nằm ở Apps Script phía người dùng:
+    /// <c>A</c> mã đơn gửi · <c>B</c> mã vận đơn
+    /// gửi · <c>C</c> ảnh mã vận đơn gửi (<see cref="FileName"/> + <see cref="FileBase64"/>) · <c>D</c> mã đơn đặt
+    /// (người dùng tự điền) · <c>E</c> <see cref="DonTraHang"/> · <c>F</c> <see cref="TenShop"/> · <c>G</c> tiền
+    /// đặt (tự điền) · <c>H</c> <see cref="DoanhThu"/> ("tiền bán") · <c>I</c> <see cref="Ngay"/> · <c>J</c>
+    /// <see cref="Sku"/> · <c>K</c> <see cref="PhanLoai"/>.
+/// </para>
+/// <see cref="PhanLoai"/> (JSON <c>phanLoai</c>, cột
+/// người dùng thêm NGAY SAU SKU) suy từ <c>items_json</c> qua <see cref="PhanLoaiExtractor"/>; không có
+/// phân loại thì để null để field VẮNG khỏi JSON (khỏi đè ô người dùng có thể đã tự điền).
+/// <see cref="DonTraHang"/> (JSON <c>donTraHang</c>, cột cạnh "Phân loại") = mã yêu cầu trả hàng khớp đơn, đọc ở
+/// bước cuối flow shop; chưa có thì để null để field VẮNG khỏi JSON (cùng nếp "chỉ điền ô trống").
+/// </summary>
+public sealed record GsheetOrderRow(
+    string MaDon,
+    string? MaVanDon,
+    string? FileName,
+    string? FileBase64,
+    string? DonTraHang,
+    long? DoanhThu,
+    string? Ngay,
+    string? TenShop,
+    string? PhanLoai,
+    string? Sku,
+    bool DaHuy);
+
+/// <summary>
+/// Một dòng CHỈ-CÓ-MÃ-TRẢ gửi lên Web App: dùng cho mã yêu cầu trả hàng của đơn <b>đã bị dọn khỏi app</b>
+/// (bảng <c>return_codes</c> sống độc lập với vòng đời đơn) — dòng trên sheet vẫn còn, script tra theo mã đơn
+/// rồi điền ô "Mã đơn trả hàng" đang trống.
+/// <para>
+/// <b>⚠ Đây là record RIÊNG, KHÔNG dùng lại <see cref="GsheetOrderRow"/>, và đó là chủ ý:</b>
+/// <list type="number">
+/// <item><b>Không được có <c>daHuy</c>.</b> Apps Script xử <c>daHuy === true</c> → tô nền đỏ; <c>=== false</c> →
+/// <b>XOÁ</b> nền đỏ; VẮNG → không đụng màu. <see cref="GsheetOrderRow.DaHuy"/> là <c>bool</c> nên LUÔN được
+/// serialize ⇒ đẩy dòng mã-trả cho một đơn ĐÃ HỦY sẽ xoá sạch nền đỏ ở CẢ hai file, im lặng. Ở đây field không
+/// tồn tại nên tai nạn đó là điều KHÔNG THỂ, không phải điều "nhớ đừng làm". (Phương án đổi
+/// <see cref="GsheetOrderRow.DaHuy"/> thành <c>bool?</c> đã bị loại: nó biến một bất biến của kiểu thành kỷ luật
+/// của mọi call-site — hôm nay có 1 call-site, ngày mai có 3.)</item>
+/// <item><b><see cref="ChiDienNeuCo"/> luôn <c>true</c></b> (property TÍNH SẴN, không có setter): script BỎ QUA
+/// đơn không tra thấy mã đơn ở bất kỳ tab nào thay vì APPEND. Không có cờ này, nhánh append sẽ đẻ một dòng gần
+/// như rỗng (chỉ mã đơn + mã trả) cho mọi đơn chưa từng ghi sheet.</item>
+/// </list>
+/// </para>
+/// </summary>
+public sealed record GsheetReturnCodeRow(string MaDon, string DonTraHang)
+{
+    /// <summary>Luôn <c>true</c> — xem doc lớp (bẫy "đẻ dòng mới"). CỐ Ý không cho gán.</summary>
+    public bool ChiDienNeuCo => true;
+}
+
+/// <summary>
+/// Kết quả xử lý MỘT đơn phía Web App (đọc từ mảng <c>results</c> trong phản hồi):
+/// <see cref="Ok"/> = ghi thành công; <see cref="Added"/> = thêm dòng mới (khác với điền bổ sung dòng cũ);
+/// <see cref="FileUrl"/> = nội dung cột C sau khi ghi (link phiếu hiện có, null nếu chưa có);
+/// <see cref="Error"/> = mô tả lỗi phía script (null nếu không lỗi).
+/// <para>
+/// <b><see cref="BoQua"/> = script KHÔNG ghi được gì cho đơn này</b> dù <see cref="Ok"/> vẫn <c>true</c>: đơn
+/// mang cờ <c>chiDienNeuCo</c> mà không tra thấy mã đơn ở bất kỳ tab nào (script trả <c>boQua:true</c>), hoặc lô
+/// đó báo thiếu tiêu đề cột (<c>canhBao</c>) nên giá trị bị bỏ. <b>Caller KHÔNG được đánh dấu "đã đẩy" cho
+/// những đơn này</b> — đó chính là đường làm mất mã trả hàng ÂM THẦM trước 09/08/2026: script trả ok:true
+/// (đúng, "không có gì để làm"), client hiểu thành "đã ghi" rồi không bao giờ thử lại, kể cả sau khi dòng của
+/// đơn xuất hiện trên sheet hay người dùng sửa lại tiêu đề cột.
+/// </para>
+/// </summary>
+public sealed record GsheetOrderResult(
+    string MaDon,
+    bool Ok,
+    bool Added,
+    string? FileUrl,
+    string? Error,
+    bool BoQua = false);
+
+/// <summary>
+/// Đẩy đơn hàng (kèm file phiếu PDF base64) lên <b>Google Apps Script Web App</b> bằng HTTP thuần
+/// (<see cref="HttpClient"/> — KHÔNG dùng thư viện Google, tránh DLL mới bị WDAC chặn). Web App chạy dưới
+/// tài khoản Google của chính người dùng nên file phiếu nằm trong Drive của họ (Google chặn service account
+/// lưu Drive từ 2025 → không xài Sheets API + service account nữa).
+/// <para>
+/// Nhiều phiên tài khoản sync SONG SONG → có <see cref="SemaphoreSlim"/> xếp hàng phía client (server đã có
+/// LockService, nhưng không dội cho đỡ tranh chấp). Chia lô ≤ 10 đơn/POST (mỗi PDF base64 ~100–300KB).
+/// Apps Script trả HTTP 302 sang <c>script.googleusercontent.com</c> → .NET tự GET theo (AllowAutoRedirect
+/// mặc định bật) và nhận JSON — ĐỪNG tắt redirect.
+/// </para>
+/// </summary>
+public class GoogleSheetSyncService
+{
+    /// <summary>Số đơn tối đa mỗi lô POST (payload base64 PDF ~100–300KB/file → giữ lô nhỏ cho an toàn).</summary>
+    private const int BatchSize = 10;
+
+    /// <summary>Thời hạn mỗi lô (giây) — CTS liên kết với ct của caller.</summary>
+    private const int PerBatchTimeoutSec = 120;
+
+    // HttpClient DÙNG CHUNG (tránh cạn socket). Timeout để INFINITE ở đây, kiểm soát thời hạn từng lô bằng
+    // CTS liên kết (HttpClient.Timeout áp cho cả thao tác nên không dùng riêng cho từng lô được).
+    private static readonly HttpClient Http = new() { Timeout = Timeout.InfiniteTimeSpan };
+
+    // Xếp hàng phía client: nhiều phiên gọi PushAsync song song → không dội cùng lúc.
+    private readonly SemaphoreSlim _gate = new(1, 1);
+
+    /// <summary>
+    /// Đẩy <paramref name="rows"/> lên <paramref name="webAppUrl"/> (ghi vào tab <paramref name="tabName"/>)
+    /// theo từng lô ≤ 10 đơn. Trả về kết quả gộp của mọi lô đã gửi. URL trống / danh sách rỗng → trả rỗng
+    /// ngay. Một lô LỖI (timeout / HTTP ≠ 2xx / response không đọc được / script trả <c>{"error":…}</c> khi
+    /// không tìm thấy tab) → ném <see cref="InvalidOperationException"/> (kèm mã HTTP + 200 ký tự đầu body /
+    /// message lỗi của script) và DỪNG các lô sau (mạng đang hỏng — lượt sync sau tự đẩy lại nhờ cờ DB). Hủy
+    /// chủ động (ct) → ném <see cref="OperationCanceledException"/> xuyên để caller dừng sạch.
+    /// <para>
+    /// <paramref name="sheet2"/> = ID bảng tính FILE PHỤ gửi kèm mọi lô (mặc định <c>""</c> = không ghi file phụ).
+    /// </para>
+    /// </summary>
+    public Task<IReadOnlyList<GsheetOrderResult>> PushAsync(
+        string webAppUrl, string tabName, IReadOnlyList<GsheetOrderRow> rows, Action<string> log, CancellationToken ct,
+        string sheet2 = "")
+        => PushRowsAsync(webAppUrl, tabName, rows, log, ct, sheet2);
+
+    /// <summary>
+    /// Như <see cref="PushAsync"/> nhưng cho các dòng CHỈ-CÓ-MÃ-TRẢ (<see cref="GsheetReturnCodeRow"/>): mã yêu cầu
+    /// trả hàng của đơn đã bị dọn khỏi app. Payload KHÔNG có <c>daHuy</c> (không đụng màu dòng) và CÓ
+    /// <c>chiDienNeuCo</c> (script không đẻ dòng mới) — xem doc <see cref="GsheetReturnCodeRow"/>.
+    /// <para><paramref name="tabName"/> chỉ là ĐIỂM VÀO: script tra mã đơn trên MỌI tab, tab đích chỉ dùng cho
+    /// nhánh append mà nhánh đó đã bị <c>chiDienNeuCo</c> chặn.</para>
+    /// </summary>
+    public Task<IReadOnlyList<GsheetOrderResult>> PushReturnCodesAsync(
+        string webAppUrl, string tabName, IReadOnlyList<GsheetReturnCodeRow> rows, Action<string> log,
+        CancellationToken ct, string sheet2 = "")
+        => PushRowsAsync(webAppUrl, tabName, rows, log, ct, sheet2);
+
+    /// <summary>Thân dùng CHUNG của <see cref="PushAsync"/> và <see cref="PushReturnCodesAsync"/> — chia lô, POST,
+    /// đọc kết quả. Chỉ khác nhau ở KIỂU DÒNG (hai hợp đồng JSON khác nhau, cùng một đường mạng).</summary>
+    private async Task<IReadOnlyList<GsheetOrderResult>> PushRowsAsync<TRow>(
+        string webAppUrl, string tabName, IReadOnlyList<TRow> rows, Action<string> log, CancellationToken ct,
+        string sheet2)
+    {
+        var all = new List<GsheetOrderResult>();
+        if (string.IsNullOrWhiteSpace(webAppUrl) || rows is null || rows.Count == 0)
+        {
+            return all;
+        }
+
+        var batches = ChiaLo(rows, BatchSize);
+
+        await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            for (int i = 0; i < batches.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var batch = batches[i];
+                if (batches.Count > 1)
+                {
+                    log($"GSheet: đang gửi lô {i + 1}/{batches.Count} ({batch.Count} đơn)...");
+                }
+
+                var body = TaoJsonBody(tabName, batch, sheet2);
+
+                // Thời hạn từng lô: CTS liên kết ct + hết giờ sau PerBatchTimeoutSec.
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromSeconds(PerBatchTimeoutSec));
+
+                int status;
+                string respBody;
+                try
+                {
+                    using var content = new StringContent(body, Encoding.UTF8, "application/json");
+                    using var resp = await Http.PostAsync(webAppUrl, content, cts.Token).ConfigureAwait(false);
+                    status = (int)resp.StatusCode;
+                    respBody = await resp.Content.ReadAsStringAsync(cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw new OperationCanceledException(ct); // hủy chủ động → ném xuyên
+                }
+                catch (OperationCanceledException)
+                {
+                    // cts hết giờ (KHÔNG do ct) → timeout lô. Message rõ (không phải "A task was canceled").
+                    throw new InvalidOperationException(
+                        $"gọi Web App quá {PerBatchTimeoutSec} giây/lô — mạng chậm hoặc script treo.");
+                }
+                catch (Exception ex)
+                {
+                    // Lỗi mạng → ném để log + DỪNG các lô sau. KHÔNG thêm tiền tố "GSheet:" (caller tự thêm).
+                    throw new InvalidOperationException("gọi Web App thất bại — " + ex.Message, ex);
+                }
+
+                if (status < 200 || status >= 300)
+                {
+                    throw new InvalidOperationException(
+                        $"trả HTTP {status}: {Truncate(respBody, 200)}");
+                }
+
+                IReadOnlyList<GsheetOrderResult> parsed;
+                try
+                {
+                    parsed = DocKetQua(respBody);
+                }
+                catch (JsonException ex)
+                {
+                    // JSON RÁC → bọc kèm body để chẩn đoán. InvalidOperationException từ DocKetQua ({"error":…}:
+                    // không tìm thấy tab) KHÔNG bắt ở đây — cho XUYÊN QUA nguyên vẹn để giữ thông điệp người dùng cần.
+                    throw new InvalidOperationException(
+                        $"trả về không đọc được (HTTP {status}): {Truncate(respBody, 200)}", ex);
+                }
+
+                // Thiếu TIÊU ĐỀ CỘT: script đã BỎ giá trị (không ghi bừa sang cột khác) nhưng vẫn trả ok:true.
+                // CHỈ LOG — KHÔNG suy ra "cả lô chưa đẩy" từ đây: `canhBao` là cấp PHẢN HỒI và gom chung cả FILE
+                // PHỤ, nên hạ cả lô là bắt đẩy lại 14 ngày những mã ĐÃ ghi xong ở file chính. Trạng thái thật
+                // nằm ở cờ `chuaGhiMaTra` của TỪNG DÒNG (xem DocKetQua) — script từ 09/08/2026 trả cờ đó.
+                var canhBao = DocCanhBao(respBody);
+                if (!string.IsNullOrEmpty(canhBao))
+                {
+                    log("GSheet: ⚠ " + canhBao);
+                }
+
+                all.AddRange(parsed);
+
+                // Lỗi ghi FILE PHỤ (nếu có) chỉ CẢNH BÁO — không làm hỏng đường file chính (results vẫn ok).
+                var loiPhu = DocFilePhuLoi(respBody);
+                if (!string.IsNullOrEmpty(loiPhu))
+                {
+                    log("GSheet (file phụ): lỗi ghi — " + loiPhu);
+                }
+            }
+        }
+        finally
+        {
+            _gate.Release();
+        }
+
+        return all;
+    }
+
+    /// <summary>
+    /// Chia <paramref name="rows"/> thành các lô tối đa <paramref name="max"/> phần tử (giữ nguyên thứ tự).
+    /// Danh sách rỗng / <paramref name="max"/> ≤ 0 → trả danh sách rỗng. Tách static để test được.
+    /// </summary>
+    internal static List<List<TRow>> ChiaLo<TRow>(IReadOnlyList<TRow> rows, int max)
+    {
+        var batches = new List<List<TRow>>();
+        if (rows is null || rows.Count == 0 || max <= 0)
+        {
+            return batches;
+        }
+
+        for (int i = 0; i < rows.Count; i += max)
+        {
+            var batch = new List<TRow>();
+            var end = Math.Min(i + max, rows.Count);
+            for (int j = i; j < end; j++)
+            {
+                batch.Add(rows[j]);
+            }
+            batches.Add(batch);
+        }
+
+        return batches;
+    }
+
+    // Tùy chọn JSON: camelCase (hợp đồng script: maDon/maVanDon/tenShop/doanhThu/ngay/sku/phanLoai/donTraHang/fileName/fileBase64),
+    // BỎ field null (chỉ điền ô trống), Relaxed escaping (đỡ escape '+' '/' của base64 → payload gọn hơn).
+    private static readonly JsonSerializerOptions JsonOpts = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+    };
+
+    /// <summary>
+    /// Tạo JSON body <c>{"tab":"tháng 4","sheet2":"&lt;ID&gt;","orders":[{...}]}</c> cho một lô: camelCase, BỎ
+    /// field null, số để dạng SỐ (không bọc nháy). Với <see cref="GsheetOrderRow"/> thì <c>daHuy</c> LUÔN có mặt
+    /// (bool); với <see cref="GsheetReturnCodeRow"/> thì field đó KHÔNG tồn tại (cố ý — xem doc kiểu đó).
+    /// <paramref name="tabName"/> = tab đích của script. Tách static để test được hợp đồng với script.
+    /// <para>
+    /// <paramref name="sheet2"/> = ID bảng tính FILE PHỤ, thuộc tính của CẢ LÔ (không phải của từng đơn) nên nằm
+    /// ở cấp body cạnh <c>tab</c>. <b>LUÔN gửi kể cả chuỗi rỗng</b> — khác quy ước "bỏ field null" của các field
+    /// trong đơn: script cần phân biệt <c>""</c> ("người dùng TẮT ghi file phụ") với field VẮNG HẲN ("client đời
+    /// cũ chưa biết field này" → script lùi về hằng dự phòng của nó). Vì vậy null cũng quy về <c>""</c>.
+    /// </para>
+    /// </summary>
+    internal static string TaoJsonBody<TRow>(string tabName, IEnumerable<TRow> rows, string sheet2 = "")
+        => JsonSerializer.Serialize(new { tab = tabName, sheet2 = sheet2 ?? "", orders = rows }, JsonOpts);
+
+    /// <summary>
+    /// Parse phản hồi <c>{"results":[{maDon,ok,added,fileUrl,error}, ...]}</c> thành danh sách
+    /// <see cref="GsheetOrderResult"/>. Field thiếu → mặc định an toàn (ok/added=false, fileUrl/error=null).
+    /// Phản hồi lỗi cấp script <c>{"error":"Không tìm thấy tab …"}</c> → ném
+    /// <see cref="InvalidOperationException"/> với đúng message đó (người dùng cần sửa tên tab). JSON rác →
+    /// ném (<see cref="JsonException"/>). Tách static để test được.
+    /// </summary>
+    internal static IReadOnlyList<GsheetOrderResult> DocKetQua(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var list = new List<GsheetOrderResult>();
+
+        // Script không tìm thấy tab đích (hoặc lỗi cấp script) → {"error":"..."} → ném với message đó.
+        if (doc.RootElement.ValueKind == JsonValueKind.Object
+            && doc.RootElement.TryGetProperty("error", out var errEl)
+            && errEl.ValueKind == JsonValueKind.String)
+        {
+            throw new InvalidOperationException(errEl.GetString() ?? "GSheet trả về lỗi không rõ.");
+        }
+
+        if (doc.RootElement.ValueKind == JsonValueKind.Object
+            && doc.RootElement.TryGetProperty("results", out var results)
+            && results.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var r in results.EnumerateArray())
+            {
+                list.Add(new GsheetOrderResult(
+                    MaDon: GetString(r, "maDon") ?? string.Empty,
+                    Ok: GetBool(r, "ok"),
+                    Added: GetBool(r, "added"),
+                    FileUrl: GetString(r, "fileUrl"),
+                    Error: GetString(r, "error"),
+                    // Hai đường script báo "chưa ghi được gì cho đơn này", đều ở CẤP DÒNG:
+                    //   boQua        — không tra thấy mã đơn ở tab nào (payload chiDienNeuCo)
+                    //   chuaGhiMaTra — tra thấy dòng nhưng cột "Mã đơn trả hàng" thiếu tiêu đề / ô có công thức
+                    BoQua: GetBool(r, "boQua") || GetBool(r, "chuaGhiMaTra")));
+            }
+        }
+
+        return list;
+    }
+
+    /// <summary>
+    /// Đọc <c>filePhu.loi</c> từ phản hồi Apps Script. Thiếu <c>filePhu</c> / <c>loi</c> null / không phải
+    /// chuỗi / JSON rác → <c>null</c> (KHÔNG ném — <see cref="DocKetQua"/> đã xử phần ném cho <c>results</c>).
+    /// </summary>
+    internal static string? DocFilePhuLoi(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("filePhu", out var fp)
+                || fp.ValueKind != JsonValueKind.Object
+                || !fp.TryGetProperty("loi", out var loi)
+                || loi.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+            var s = loi.GetString();
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Đọc <c>canhBao</c> cấp phản hồi — script báo KHÔNG tìm thấy tiêu đề cột nên các giá trị tương ứng
+    /// <b>đã bị bỏ, không ghi bừa sang cột khác</b>. Thiếu / rỗng / JSON rác → <c>null</c> (KHÔNG ném).
+    /// <para>Với lô CHỈ-CÓ-MÃ-TRẢ thì cảnh báo này chỉ có thể là cột "Mã đơn trả hàng" (payload không ghi cột
+    /// nào khác) ⇒ caller coi cả lô là <see cref="GsheetOrderResult.BoQua"/> để còn thử lại sau khi người dùng
+    /// sửa tiêu đề — xem <paramref name="canhBaoLaBoQua"/> của <c>PushRowsAsync</c>.</para>
+    /// </summary>
+    internal static string? DocCanhBao(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object
+                || !doc.RootElement.TryGetProperty("canhBao", out var cb)
+                || cb.ValueKind != JsonValueKind.String)
+            {
+                return null;
+            }
+            var s = cb.GetString();
+            return string.IsNullOrWhiteSpace(s) ? null : s;
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Đọc chuỗi từ property (chỉ nhận String; thiếu / null / kiểu khác → null).</summary>
+    private static string? GetString(JsonElement el, string prop)
+        => el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    /// <summary>Đọc bool từ property (chỉ true khi kiểu là true; thiếu / false / kiểu khác → false).</summary>
+    private static bool GetBool(JsonElement el, string prop)
+        => el.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.True;
+
+    /// <summary>Cắt chuỗi tối đa <paramref name="max"/> ký tự (cho thông báo lỗi chẩn đoán).</summary>
+    private static string Truncate(string? s, int max)
+        => string.IsNullOrEmpty(s) ? string.Empty : (s.Length <= max ? s : s.Substring(0, max));
+}

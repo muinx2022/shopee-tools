@@ -1,0 +1,792 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using CommunityToolkit.Mvvm.ComponentModel;
+using XuLyDonShopee.App.ViewModels;
+using XuLyDonShopee.Core.Data;
+using XuLyDonShopee.Core.Models;
+using XuLyDonShopee.Core.Services;
+
+namespace XuLyDonShopee.App.Services;
+
+/// <summary>
+/// Một phiên mở trang bán hàng CHẠY NỀN ĐỘC LẬP cho một tài khoản (mỗi tài khoản một Brave/profile/CDP
+/// port/proxy/theo-dõi-đơn riêng) — nhờ đó mở được nhiều shop song song. Kế thừa
+/// <see cref="ObservableObject"/> để trạng thái quan sát được.
+/// <para>
+/// Toàn bộ luồng <b>bê nguyên</b> từ <c>AccountsViewModel.OpenSellerAsync</c> cũ (chọn proxy → chuẩn bị
+/// trình duyệt → mở → tự đăng nhập kiểu người → vòng poll bắt cookie + theo dõi đơn theo chu kỳ cấu hình → bắt-cookie-chốt),
+/// CHỈ khác: <b>bỏ mọi hộp thoại modal</b> (15 phiên = 15 modal) → thay bằng trạng thái/log per-account; và
+/// việc cập nhật danh sách UI được <b>marshal về UI thread</b> ở ViewModel qua sự kiện (session chỉ ghi DB
+/// trên thread nền — SQLite an toàn — rồi phát <see cref="Changed"/>).
+/// </para>
+/// </summary>
+public partial class AccountSession : ObservableObject, IAccountSession
+{
+    private readonly long _accountId;
+    private readonly AppServices _services;
+
+    private readonly object _lifecycleLock = new();
+    private CancellationTokenSource? _cts;
+    private Task? _runTask;
+    // GĐ4: phiên cầu nối đang chạy (nút "▶ Chạy" dùng đường cầu nối extension). Giữ để Dừng kill trình duyệt sạch.
+    private volatile OrdersBridgeSession? _bridge;
+
+    // Cờ "SẴN SÀNG THAO TÁC" TƯỜNG MINH: chỉ true SAU khi (của lần mở/relaunch HIỆN TẠI) đã tự-đăng-nhập
+    // xong VÀ đọc được số "Chờ Lấy Hàng" lần đầu — điểm CHẮC CHẮN trang chủ đã đăng nhập & ổn định, luồng
+    // chuột tự-đăng-nhập đã xong. Nút Sync/Kiểm tra (AccountsViewModel) CHỜ cờ này rồi mới điều hướng để
+    // KHÔNG giẫm lên login. Đặt LẠI false ở đầu MỖI vòng mở/relaunch + khi phát hiện đổi proxy + khi
+    // Stopped/Error → kín mọi ca restart/relaunch/đang-login, KHÔNG bị "sẵn sàng ảo" do số đơn cũ còn sót
+    // (ToShipCount không reset khi relaunch). volatile: đọc từ UI thread trong lúc phiên chạy nền ghi.
+    private volatile bool _readyForActions;
+
+    // Chuỗi vòng BỊ CẮT liên tiếp — đầu vào của NghiSauVong. FIELD chứ KHÔNG phải biến cục bộ trong RunAsync:
+    // AccountSessionManager giữ NGUYÊN một AccountSession cho mỗi tài khoản (GetOrCreate), nên biến cục bộ sẽ
+    // reset mỗi lần bấm Dừng → Chạy. Nhật ký 10/08/2026 có chuỗi 13 vòng cắt liên tiếp xen giữa hàng loạt lần
+    // bấm lại — đúng ca "hỏng dai" mà chốt "chỉ vòng cắt ĐẦU TIÊN" sinh ra để chặn, và biến cục bộ không chặn
+    // được gì (phản biện 18/08/2026).
+    private int _soVongCatLienTiep;
+
+    // Nhãn tài khoản gắn vào mỗi dòng log (phân biệt nguồn khi nhiều phiên chạy song song). Mặc định
+    // "TK {id}" để log phát TRƯỚC khi đọc được email (chọn proxy, chuẩn bị trình duyệt) vẫn có nhãn;
+    // RunAsync cập nhật thành email khi đã đọc tài khoản.
+    // volatile: đảm bảo thread khác (UI thread, thread sync) luôn thấy giá trị mới nhất khi nhiều phiên chạy song song.
+    private volatile string _logLabel;
+
+    // ===== Khóa chạy tài khoản XUYÊN MÁY (chống 2 máy cùng chạy 1 subaccount: tranh đơn "chuẩn bị hàng" +
+    // đăng nhập song song một tài khoản Shopee) =====
+    // 1 = vòng chạy này ĐANG giữ khóa → đường dọn dẹp PHẢI nhả. Interlocked (không phải bool) để nhả ĐÚNG MỘT
+    // lần dù nhiều lối ra cùng gọi tới. Nhả sót = tài khoản bị coi là "đang chạy ở máy X" tới khi lease hết hạn
+    // (~5') → máy khác không chạy được.
+    private int _dangGiuKhoa;
+
+    // Hậu xử lý một lượt cầu nối (ghi DB → GSheet/hub → notify → dọn đơn kết thúc). Sống cùng vòng đời phiên vì
+    // nó giữ shop-context của lượt đang chạy + cờ chống spam log GSheet. Xem OrderPersistPipeline.
+    private readonly OrderPersistPipeline _persist;
+
+    public AccountSession(
+        long accountId,
+        AppServices services)
+    {
+        _accountId = accountId;
+        _services = services;
+        _logLabel = $"TK {accountId}";
+        _persist = new OrderPersistPipeline(accountId, services);
+    }
+
+    public long AccountId => _accountId;
+
+    [ObservableProperty]
+    private SessionState _state = SessionState.Stopped;
+
+    [ObservableProperty]
+    private string? _statusText;
+
+    [ObservableProperty]
+    private int? _toShipCount;
+
+    [ObservableProperty]
+    private string? _lastError;
+
+    // Bất kỳ thay đổi quan sát được nào → phát Changed để manager/VM cập nhật UI. Event Changed CỐ Ý bắn
+    // từ thread nền: manager dùng ConcurrentDictionary (thread-safe) và VM tự marshal về UI thread khi đụng
+    // ObservableCollection. Riêng PropertyChanged (cho binding trực tiếp) được marshal ở OnPropertyChanged.
+    partial void OnStateChanged(SessionState value) => Changed?.Invoke();
+    partial void OnStatusTextChanged(string? value) => Changed?.Invoke();
+    partial void OnToShipCountChanged(int? value) => Changed?.Invoke();
+    partial void OnLastErrorChanged(string? value) => Changed?.Invoke();
+
+    /// <summary>
+    /// Marshal thông báo <b>PropertyChanged</b> về UI thread. Phiên chạy nền (RunAsync) set
+    /// State/StatusText/ToShipCount trên thread nền; nếu UI (Plan B) bind TRỰC TIẾP vào phiên thì cập nhật
+    /// binding phải trên UI thread — bắn từ nền sẽ ném "Call from invalid thread". Chạy ngay nếu đã ở UI
+    /// thread; ngược lại xếp hàng qua <see cref="UiDispatch"/>.
+    /// </summary>
+    protected override void OnPropertyChanged(System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        UiDispatch.Run(() => base.OnPropertyChanged(e));
+    }
+
+    public Process? BraveProcess => _bridge?.Process;
+
+    /// <summary>
+    /// True khi phiên đã "sẵn sàng thao tác" (của lần mở HIỆN TẠI đã đăng nhập xong + đọc số đơn lần đầu) —
+    /// VM chờ cờ này rồi mới chạy Sync/Kiểm tra để không giẫm luồng tự-đăng-nhập. Xem <see cref="_readyForActions"/>.
+    /// </summary>
+    public bool ReadyForActions => _readyForActions;
+
+    /// <summary>True khi vòng lặp shop (mô hình 1 subaccount = nhiều shop) đang chạy — VM dùng để BỎ QUA thao tác
+    /// tay (Sync/Kiểm tra) tránh giẫm luồng. Mô hình cầu nối: vòng lặp shop nằm TRONG
+    /// <see cref="OrdersBridgeSession"/> (không ở AccountSession) nên LUÔN false — thao tác tay định tuyến qua cầu nối.</summary>
+    public bool IsShopLoopRunning => false;
+
+    /// <inheritdoc/>
+    /// <remarks><c>volatile</c>: nhịp lịch flash đọc từ UI thread trong khi vòng nền ghi — chỉ cần thấy giá trị
+    /// mới nhất, không cần khoá (đọc trễ một nhịp 60 giây là vô hại, đọc giá trị CŨ mãi mãi thì không).
+    /// <para><c>DateTime?</c> không đặt <c>volatile</c> được (không phải kiểu tham chiếu/nguyên thuỷ), nên giữ
+    /// mốc ở một biến <c>object?</c> đóng hộp — ghi/đọc tham chiếu là nguyên tử.</para></remarks>
+    public DateTime? ThoiDiemVongKe => _thoiDiemVongKe as DateTime?;
+
+    private volatile object? _thoiDiemVongKe;
+
+    /// <summary>Đặt / xoá mốc vòng kế. <b>Một cửa duy nhất</b> để không chỗ nào quên bắn
+    /// <see cref="Changed"/>, và để mọi lối ra của vòng nền dọn được mốc bằng đúng một lời gọi.</summary>
+    private void DatThoiDiemVongKe(DateTime? moc)
+    {
+        _thoiDiemVongKe = moc;
+        Changed?.Invoke();
+    }
+
+    public event Action? Changed;
+
+    public Task StartAsync()
+    {
+        lock (_lifecycleLock)
+        {
+            // Idempotent: đang chuẩn bị / đang chạy / ĐANG DỪNG (vòng nền cũ chưa tháo dỡ xong) → bỏ qua để KHÔNG
+            // mở phiên MỚI cùng hồ sơ + cổng 47821 khi phiên cũ còn sống (Lỗi 5). Chỉ Queued/Stopped/Error mới launch.
+            if (State is SessionState.Opening or SessionState.Running or SessionState.Stopping)
+            {
+                return Task.CompletedTask;
+            }
+
+            _cts = new CancellationTokenSource();
+            var ct = _cts.Token;
+            LastError = null;
+            _readyForActions = false; // phiên mới khởi động → CHƯA sẵn sàng (chờ login + đọc số lần đầu)
+            State = SessionState.Opening;
+            // GĐ4: nút "▶ Chạy" nay dùng ĐƯỜNG CẦU NỐI (login Playwright → clean+extension → mọi shop → sync DB →
+            // nghỉ interval → lặp). Luồng Playwright cũ (RunAsync) GIỮ làm đường lui nhưng KHÔNG còn được gọi từ đây.
+            _runTask = Task.Run(() => RunBridgeContinuousAsync(ct));
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Đánh dấu phiên đang <see cref="SessionState.Queued"/> (CHỜ TỚI LƯỢT — do <see cref="AccountSessionManager"/>
+    /// gọi khi Start lúc đã có phiên khác chiếm cầu nối). KHÔNG mở trình duyệt; chỉ đổi trạng thái + StatusText hiển
+    /// thị. Bỏ qua nếu đang chuẩn bị/đang chạy/đang dừng (không hạ cấp một phiên đang hoạt động về hàng đợi).
+    /// </summary>
+    public void MarkQueued()
+    {
+        lock (_lifecycleLock)
+        {
+            if (State is SessionState.Opening or SessionState.Running or SessionState.Stopping)
+            {
+                return; // đang hoạt động → không hạ về hàng đợi
+            }
+            StatusText = "Chờ đến lượt (đã có tài khoản khác đang chạy)...";
+            State = SessionState.Queued;
+        }
+    }
+
+    public async Task StopAsync()
+    {
+        CancellationTokenSource? cts;
+        Task? run;
+        lock (_lifecycleLock)
+        {
+            // Phiên đang CHỜ TỚI LƯỢT (chưa mở trình duyệt) → chỉ hạ về Stopped, không có gì để tháo dỡ.
+            // (Manager tự rút khỏi hàng đợi; OnSessionChanged gỡ khỏi dict khi thấy Stopped.)
+            if (State == SessionState.Queued)
+            {
+                StatusText = null;
+                State = SessionState.Stopped;
+                return;
+            }
+
+            cts = _cts;
+            run = _runTask;
+        }
+
+        // Phản hồi cho người dùng; GIỮ State (Running/Opening) để nút "Mở" còn khóa tới khi vòng nền dừng thật (Lỗi 2).
+        // Ghi LOG ngay khi bấm Dừng (kể cả lúc đang NGHỈ giữa chu kỳ, Brave đã đóng) để panel nhật ký có phản hồi.
+        var wasActive = State is SessionState.Opening or SessionState.Running or SessionState.Stopping;
+        if (wasActive)
+        {
+            StatusText = "Đang dừng...";
+            _services.Log.Append(_logLabel, "Đang dừng phiên (hủy vòng lặp + đóng trình duyệt)...");
+        }
+
+        try { cts?.Cancel(); } catch { /* bỏ qua */ }
+
+        // Kill trình duyệt SẠCH cầu nối NGAY (trước khi chờ) để vòng nền unblock nhanh, không đợi hết 8s.
+        try
+        {
+            var bp = _bridge?.Process;
+            if (bp is { HasExited: false })
+            {
+                bp.Kill(entireProcessTree: true);
+            }
+        }
+        catch { /* bỏ qua */ }
+
+        if (run is not null)
+        {
+            // Chờ vòng nền thoát & dispose trong ~8s. KHÔNG ép Stopped sau đó (Lỗi 5): nếu vòng CHƯA xong (bước
+            // login Playwright có thể sống quá 8s) mà ép Stopped thì OnSessionChanged gỡ phiên khỏi dict → user
+            // bấm Chạy lại tạo phiên MỚI cùng hồ sơ + cùng cổng 47821 trong khi phiên cũ còn tháo dỡ → Error.
+            Task done;
+            try { done = await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(8))).ConfigureAwait(false); }
+            catch { done = run; /* WhenAny không ném; phòng hờ */ }
+
+            if (!ReferenceEquals(done, run))
+            {
+                // Quá 8s mà vòng nền CHƯA hoàn tất → giữ trạng thái "Đang dừng…" (Stopping): nút Chạy còn khóa,
+                // manager giữ phiên trong dict + KHÔNG start phiên kế cho tới khi vòng nền tự đặt Stopped (finally
+                // của RunBridgeContinuousAsync). ct đã hủy + trình duyệt đã kill nên vòng sẽ tự kết thúc.
+                lock (_lifecycleLock)
+                {
+                    if (State is not (SessionState.Stopped or SessionState.Error))
+                    {
+                        StatusText = "Đang dừng… (đang tháo dỡ trình duyệt/đăng nhập — sẽ xong sau giây lát)";
+                        State = SessionState.Stopping;
+                    }
+                }
+                return; // CHƯA dừng hẳn — không log "Đã dừng phiên."
+            }
+        }
+
+        // Vòng nền đã hoàn tất (finally của nó đã đặt Stopped/Error). Chỉ log tổng kết.
+        if (wasActive)
+        {
+            _services.Log.Append(_logLabel, "Đã dừng phiên.");
+        }
+    }
+
+    /// <summary>
+    /// <b>Tải LẠI phiếu MỘT đơn (nút "Tải phiếu" màn Đơn hàng):</b> ĐỊNH TUYẾN qua PHIÊN CẦU NỐI extension đang
+    /// chạy (nút "▶ Chạy" nay dùng đường cầu nối — <see cref="RunBridgeContinuousAsync"/> giữ tham chiếu
+    /// <see cref="_bridge"/>) rồi gọi <see cref="OrdersBridgeSession.RedownloadSlipAsync"/> (extension về danh
+    /// sách "Tất cả", định vị card theo mã, bấm In phiếu giao, tải PDF, C# lưu file). Lưu được → phát
+    /// <see cref="AppServices.RaiseOrdersChanged"/> (cột Phiếu hết đỏ). Graceful — KHÔNG ném:
+    /// <list type="bullet">
+    /// <item>Phiên chưa chạy (không có cầu nối) → <c>false</c> + báo "Hãy bấm Chạy tài khoản rồi mới tải lại phiếu".</item>
+    /// <item>Extension chưa/không còn kết nối (<see cref="InvalidOperationException"/> từ SendAsync) → <c>false</c> +
+    /// báo "extension chưa kết nối" (fail-fast, KHÔNG chờ timeout).</item>
+    /// <item>Không thấy đơn trong shop đang mở / hủy / lỗi khác → <c>false</c> + StatusText/log.</item>
+    /// </list>
+    /// Ràng buộc mô hình cầu nối (user đã chốt): chỉ tải lại được phiếu của đơn thuộc SHOP mà phiên đang mở tab.
+    /// </summary>
+    public async Task<bool> RedownloadSlipAsync(string orderSn)
+    {
+        if (string.IsNullOrWhiteSpace(orderSn))
+        {
+            return false;
+        }
+
+        // Chụp phiên cầu nối + token dưới lock.
+        OrdersBridgeSession? bridge;
+        CancellationToken tok;
+        try
+        {
+            lock (_lifecycleLock)
+            {
+                bridge = _bridge;
+                tok = _cts?.Token ?? default;
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            return false;
+        }
+
+        // Phiên chưa chạy (không có cầu nối đang mở) → hướng dẫn bấm Chạy trước. State phải Running (cầu nối đã lên).
+        if (bridge is null || State != SessionState.Running)
+        {
+            StatusText = State == SessionState.Queued
+                ? "Tài khoản này đang chờ đến lượt, chưa thể tải lại phiếu."
+                : "Hãy bấm Chạy tài khoản rồi mới tải lại phiếu.";
+            _services.Log.Append(_logLabel,
+                $"Tải lại phiếu đơn {orderSn}: phiên chưa chạy hoặc chưa tới lượt.");
+            return false;
+        }
+
+        StatusText = $"Đang tải lại phiếu đơn {orderSn}...";
+        var log = (Action<string>)(m => _services.Log.Append(_logLabel, m));
+        try
+        {
+            var ok = await bridge.RedownloadSlipAsync(orderSn, tok).ConfigureAwait(false);
+            if (ok)
+            {
+                StatusText = $"Đã tải lại phiếu đơn {orderSn}.";
+                _services.RaiseOrdersChanged();
+                return true;
+            }
+
+            StatusText = $"Chưa tải được phiếu đơn {orderSn} — xem nhật ký.";
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return false; // dừng chủ động
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Extension chưa/không còn kết nối (SendAsync fail-fast) hoặc cầu nối chưa khởi động.
+            StatusText = $"Tải lại phiếu đơn {orderSn}: extension chưa kết nối — thử lại sau khi phiên ổn định.";
+            log("Tải lại phiếu (cầu nối) lỗi: " + ex.Message);
+            return false;
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Tải lại phiếu đơn {orderSn} gặp lỗi — xem nhật ký.";
+            log("Lỗi khi tải lại phiếu: " + ex.ToString());
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Số phút NGHỈ NGẮN sau một vòng BỊ CẮT giữa chừng (vòng trả lỗi mà không phải captcha). Vòng cắt để lại
+    /// 6–9 shop không có dữ liệu; bắt chúng chờ trọn interval đầy (mặc định 90') là trả giá hai lần cho cùng một
+    /// sự cố, trong khi nhật ký 11–17/08/2026 cho thấy vòng NGAY SAU một vòng cắt chạy trọn 12/12 shop, 6/6 lần.
+    /// <para>15 = đủ để hạ tầng trình duyệt/Shopee dịu lại, đủ ngắn để phần shop bị bỏ có dữ liệu trong ngày.</para>
+    /// </summary>
+    internal const int PhutNghiSauVongCat = 15;
+
+    /// <summary>
+    /// PURE — nghỉ bao nhiêu phút trước vòng kế. Rút ngắn CHỈ ở vòng cắt ĐẦU TIÊN: vòng cắt thứ hai liên tiếp
+    /// nghĩa là hỏng dai, lúc đó dồn vòng ngắn vào Shopee vừa vô ích vừa giống hành vi bot — quay về interval đầy.
+    /// <para><c>Math.Min</c> chặn ca người dùng đặt interval NGẮN HƠN 15': nghỉ ngắn không bao giờ được phép biến
+    /// thành nghỉ DÀI hơn cấu hình.</para>
+    /// </summary>
+    /// <param name="vongBiCat">Vòng vừa rồi có bị cắt giữa chừng không (trả lỗi, không phải captcha).</param>
+    /// <param name="soVongCatLienTiepTruocDo">Số vòng cắt liên tiếp TRƯỚC vòng vừa rồi (0 = vòng vừa rồi là vòng
+    /// cắt đầu tiên của chuỗi).</param>
+    /// <param name="intervalMin">Interval đầy do người dùng cấu hình.</param>
+    internal static int PhutNghiTruocVongKe(bool vongBiCat, int soVongCatLienTiepTruocDo, int intervalMin)
+        => vongBiCat && soVongCatLienTiepTruocDo == 0
+            ? Math.Min(PhutNghiSauVongCat, intervalMin)
+            : intervalMin;
+
+    /// <summary>
+    /// PURE — vòng vừa rồi có BỊ CẮT giữa chừng không, tức có phần việc CHƯA chạy đáng để quay lại sớm.
+    /// <para>Ba vế, mỗi vế một lý do riêng. <b>Có lỗi</b> thì mới có gì để cứu. <b>Captcha</b> là chuyện của
+    /// Shopee chứ không phải hạ tầng hỏng, mà dồn vòng vào đúng lúc đang bị nghi là bot chỉ làm nặng thêm.
+    /// <b>Lỗi địa chỉ lấy hàng</b> trả <c>Error</c> non-null nhưng vòng đó ĐÃ đi hết mọi shop — nghỉ ngắn để
+    /// "cứu phần chưa chạy" là cứu cái không tồn tại, mà cái giá là một vòng 12 shop thao tác thật lên Shopee
+    /// sớm hơn 75 phút (phản biện 18/08/2026, tái hiện bằng nhật ký 12/08 13:52).</para>
+    /// </summary>
+    /// <param name="coLoi">Vòng trả về <c>Error</c> non-null.</param>
+    /// <param name="captcha">Vòng dừng vì captcha/verify.</param>
+    /// <param name="loiDiaChi">Vòng chạy trọn shop, chỉ bỏ qua shop không đặt được địa chỉ lấy hàng.</param>
+    internal static bool LaVongBiCat(bool coLoi, bool captcha, bool loiDiaChi)
+        => coLoi && !captcha && !loiDiaChi;
+
+    /// <summary>
+    /// PURE — nghỉ bao nhiêu phút VÀ chuỗi vòng cắt mới, trả CÙNG MỘT LÚC.
+    /// <para><b>Vì sao một hàm chứ không phải hai dòng ở chỗ gọi:</b> hai dòng đó buộc phải chạy đúng thứ tự
+    /// (tính phút TRƯỚC khi cộng chuỗi). Đảo thứ tự thì <c>soVongCatLienTiepTruocDo</c> luôn ≥ 1 ở vòng cắt ⇒
+    /// nghỉ ngắn chết IM LẶNG mà không test nào đỏ — đúng lỗ hổng phản biện chỉ ra ngày 18/08/2026. Gộp làm một
+    /// thì không còn thứ tự nào để đảo.</para>
+    /// </summary>
+    internal static (int PhutNghi, int SoVongCatLienTiepMoi) NghiSauVong(
+        bool vongBiCat, int soVongCatLienTiepTruocDo, int intervalMin)
+        => (PhutNghiTruocVongKe(vongBiCat, soVongCatLienTiepTruocDo, intervalMin),
+            vongBiCat ? soVongCatLienTiepTruocDo + 1 : 0);
+
+    /// <summary>
+    /// PURE — câu báo khi tài khoản đang được MÁY KHÁC chạy: có tên máy thì nói TÊN (người dùng biết chỗ nào đang
+    /// chạy để tắt), hub không nói được là máy nào thì "máy khác". Dùng cho cả nhật ký lẫn dòng trạng thái phiên.
+    /// </summary>
+    internal static string CauBiTuChoiKhoa(string? holderMachine)
+        => string.IsNullOrWhiteSpace(holderMachine)
+            ? "Tài khoản đang chạy ở máy khác — bỏ qua lượt này."
+            : $"Tài khoản đang chạy ở máy {holderMachine} — bỏ qua lượt này.";
+
+    /// <summary>
+    /// XIN khóa chạy tài khoản (hook <see cref="AppServices.AcquireAccountLease"/>) — gọi TRƯỚC khi mở trình duyệt
+    /// và trước khi chuyển sang <see cref="SessionState.Running"/>. Trả <c>true</c> = được phép chạy:
+    /// <list type="bullet">
+    /// <item>hook chưa rót (app chạy độc lập / chưa có hub) → chạy như trước, không log gì thêm;</item>
+    /// <item>hook trả <c>Ok</c> → đánh cờ <see cref="_dangGiuKhoa"/> để đường dọn dẹp nhả khóa.</item>
+    /// </list>
+    /// Trả <c>false</c> = MÁY KHÁC đang chạy tài khoản này → phiên BỎ QUA lượt (không xếp hàng chờ, không thử lại),
+    /// ghi nhật ký + dòng trạng thái theo <see cref="CauBiTuChoiKhoa"/>.
+    /// </summary>
+    internal async Task<bool> XinKhoaChayAsync(string login, Action<string> log, CancellationToken ct)
+    {
+        var acquire = _services.AcquireAccountLease;
+        if (acquire is null)
+        {
+            return true; // không có hub → hành vi y như trước
+        }
+
+        var kq = await acquire(login, ct).ConfigureAwait(false);
+        if (!kq.Ok)
+        {
+            var msg = CauBiTuChoiKhoa(kq.HolderMachine);
+            StatusText = msg;
+            log(msg);
+            return false;
+        }
+
+        Interlocked.Exchange(ref _dangGiuKhoa, 1); // đã giữ → finally của vòng chạy PHẢI nhả
+        return true;
+    }
+
+    /// <summary>
+    /// NHẢ khóa chạy tài khoản (hook <see cref="AppServices.ReleaseAccountLease"/>) — gọi ở MỌI lối ra của vòng
+    /// chạy (xong / lỗi / hủy). ĐÚNG MỘT lần nhờ <see cref="_dangGiuKhoa"/>: chưa từng giành được (hook null / bị
+    /// từ chối) hoặc đã nhả rồi → không gọi hook. Nuốt mọi lỗi: nhả hỏng KHÔNG được phá đường dọn dẹp của phiên
+    /// (lease tự hết hạn ~5' phía hub).
+    /// </summary>
+    internal async Task NhaKhoaChayAsync(string login)
+    {
+        if (Interlocked.Exchange(ref _dangGiuKhoa, 0) != 1)
+        {
+            return; // chưa từng giành được / đã nhả
+        }
+
+        var release = _services.ReleaseAccountLease;
+        if (release is null)
+        {
+            return;
+        }
+
+        try { await release(login).ConfigureAwait(false); }
+        catch (Exception ex) { _services.Log.Append(_logLabel, "Nhả khóa tài khoản lỗi: " + ex.ToString()); }
+    }
+
+    /// <summary>
+    /// <b>GĐ4 — Luồng chạy nền của nút "▶ Chạy" (đường CẦU NỐI extension, chạy LIÊN TỤC).</b> Mỗi chu kỳ:
+    /// <see cref="OrdersBridgeSession.RunAllShopsAsync"/> (login Playwright → đóng → clean+extension → SSO picker →
+    /// LẶP mọi shop: đọc đơn → callback <see cref="OrderPersistPipeline.PersistSyncedOrdersAsync"/> lưu DB/GSheet/hub → nếu có đơn chờ
+    /// thì Chuẩn bị hàng + in phiếu + revert địa chỉ → đóng tab shop) → nghỉ <c>GetOrderIntervalMinutes()</c> → lặp.
+    /// Dừng (ct hủy) đóng cả trình duyệt điều khiển (finally trong bridge) lẫn trình duyệt sạch (Stop kill _bridge.Process).
+    /// Vòng chỉ kết thúc khi bị hủy hoặc gặp lỗi không thể tiếp tục; KHÔNG dùng proxy (bridge mở sạch, không CDP).
+    /// </summary>
+    private async Task RunBridgeContinuousAsync(CancellationToken ct)
+    {
+        var acc = _services.Accounts.GetById(_accountId);
+        if (!string.IsNullOrWhiteSpace(acc?.Email))
+        {
+            _logLabel = acc!.Email;
+        }
+        var log = (Action<string>)(m => _services.Log.Append(_logLabel, m));
+
+        if (acc is null)
+        {
+            SetError("Không đọc được tài khoản (đã bị xóa?).");
+            return;
+        }
+
+        try
+        {
+            // KHÓA CHẠY XUYÊN MÁY: xin TRƯỚC khi đụng trình duyệt và trước khi chuyển sang Running. Máy khác đang
+            // chạy tài khoản này → bỏ qua lượt (không xếp hàng chờ) và kết thúc ÊM như người dùng bấm Dừng
+            // (finally đặt Stopped). Không có hub → XinKhoaChayAsync trả true (degrade như một máy).
+            if (!await XinKhoaChayAsync(acc.Email, log, ct).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            var baseDir = Path.GetDirectoryName(_services.Database.Path) ?? ".";
+            var userDataDir = BrowserProfilePaths.ForAccount(baseDir, _accountId, BrowserLocator.LoaiHoSo);
+            Directory.CreateDirectory(userDataDir);
+
+            var invoiceDir = _services.Settings.GetInvoiceFolder();
+            var province = string.IsNullOrWhiteSpace(acc.PickupAddress)
+                ? AccountsViewModel.DefaultPickupAddress
+                : acc.PickupAddress!;
+            var intervalMin = Math.Max(1, _services.Settings.GetOrderIntervalMinutes());
+            var login = new OrdersLoginParams(acc.Email, acc.Password, acc.VerifyEmail, acc.VerifyEmailPassword);
+
+            // Callback lưu DB/GSheet/hub cho MỖI shop (thao tác thuần DTO — dùng chung với đường Playwright).
+            Func<string, string, IReadOnlyList<SyncedOrder>, CancellationToken, Task> syncCallback =
+                (shopId, shopLogin, orders, c) =>
+                {
+                    // Rót shop-context để GSheet lấy đúng Tên Shop + cleanup/GSheet scope theo shop (giống vòng Playwright).
+                    _persist.SetShopContext(shopId, shopLogin);
+                    return _persist.PersistSyncedOrdersAsync(shopId, orders, log, c);
+                };
+
+            SetStatus(SessionState.Running, "Đang chạy (cầu nối extension) — đăng nhập + duyệt mọi shop...");
+
+            while (!ct.IsCancellationRequested)
+            {
+                var bridge = new OrdersBridgeSession(userDataDir, log, invoiceDir, province, syncCallback,
+                    finalDoneSns: () => _services.Orders.GetOrderSnsWithFinalAmount(_accountId),
+                    // Tab "Shops": lưu danh sách shop + tăng đếm mỗi đơn arrange theo (tài khoản, shop, ngày yyyy-MM-dd giờ địa phương).
+                    onShopListRead: shops =>
+                    {
+                        _services.Results.UpsertShops(_accountId, shops);
+                        // Báo tab "Shops" dựng lưới NGAY. Thiếu dòng này thì màn đang mở giữ nguyên kết quả
+                        // rỗng của lần nạp đầu (mở app + chọn tài khoản TRƯỚC khi phiên đọc được shop).
+                        _services.RaiseShopListChanged(_accountId);
+                    },
+                    onOrderPrepared: (shopLogin, orderSn) =>
+                    {
+                        // Đếm CỤC BỘ (dự phòng khi mất hub) — giữ nguyên như cũ.
+                        _services.Results.IncrementPrepared(
+                            _accountId, shopLogin, DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+                        // Đếm CHUNG toàn hệ thống: đánh dấu CHÍNH ĐƠN đó đã chuẩn bị hàng lúc nào → lượt đẩy hub kế
+                        // mang lên, hub đếm từ bảng đơn (mỗi đơn đúng 1 dòng) nên nhiều máy cùng chạy vẫn ra số thật.
+                        // Mã đơn rỗng (extension không trả được) → bỏ qua, vẫn +1 đếm cục bộ như cũ.
+                        if (!string.IsNullOrWhiteSpace(orderSn))
+                        {
+                            _services.Orders.MarkPrepared(_accountId, orderSn, DateTime.UtcNow);
+                        }
+                        // Báo tab "Shops" đang mở tự nạp lại → số nhảy NGAY sau mỗi đơn, không phải đợi
+                        // đổi tài khoản / đổi ngày mới thấy.
+                        _services.RaisePrepareCountChanged(_accountId);
+                    },
+                    // Cột tiến độ tab "Shops": chấm tròn + vòng quay chạy theo shop mà vòng này đang check tới.
+                    onShopCheckStarted: shopLabel => _services.RaiseShopCheckChanged(_accountId, shopLabel, checking: true),
+                    onShopCheckFinished: shopLabel => _services.RaiseShopCheckChanged(_accountId, shopLabel, checking: false),
+                    // Bước CUỐI flow shop — check đơn trả hàng: mốc "số yêu cầu" nhớ THEO SHOP (account_shops), mã
+                    // yêu cầu ghi vào chính đơn (orders.return_request_code) rồi cờ DB lo đẩy GSheet/hub lượt kế.
+                    returnCountLast: shopLabel => _services.Results.GetReturnCount(_accountId, shopLabel),
+                    saveReturnCount: (shopLabel, so) => _services.Results.SetReturnCount(_accountId, shopLabel, so),
+                    // Ghi kho mã + vào đơn, notify phần Hub không tự biết — xem OrderPersistPipeline.LuuMaTraHang.
+                    saveReturnCodes: cap => _persist.LuuMaTraHang(cap, log, ct),
+                    // Bước BÙ cuối flow shop: danh sách đơn của CHÍNH shop đó đang thiếu phiếu (mới nhất trước) để
+                    // phiên tự tải lại ngay trên tab đang mở. Đọc DB đồng bộ (nhanh, đang ở thread nền của phiên).
+                    layDonThieuPhieu: (shopLogin, _) => Task.FromResult(LayDonThieuPhieu(shopLogin, invoiceDir)),
+                    // Tín hiệu quyết định CÒN LẬT TRANG trả hàng nữa hay không: trang vừa đọc còn ra mã MỚI thì
+                    // còn lật. CỐ Ý không suy độ sâu từ mốc "số yêu cầu" — mốc chỉ null ở lần check đầu tiên của
+                    // mỗi shop nên shop đang tồn đọng (nhóm cần quét sâu nhất) sẽ không bao giờ được quét sâu.
+                    demMaTraChuaBiet: cap => _services.ReturnCodes.DemMaChuaBiet(
+                        _accountId, cap.Select(c => (c.MaDon, c.MaYeuCau)).ToList()),
+                    // Shop đang treo banner lỗi địa chỉ ⇒ vòng này vẫn thử lại bước đặt địa chỉ dù 0 đơn Chờ Lấy
+                    // Hàng — nếu không, banner của shop ít đơn không bao giờ tự hết (bước địa chỉ xưa nay chỉ chạy
+                    // khi có đơn để in phiếu). So nhãn KHÔNG phân biệt hoa/thường: khóa SQL so BINARY, C# so
+                    // OrdinalIgnoreCase — cùng cạm bẫy đã ghi ở OrderPersistPipeline.GoBannerLoiDiaChi.
+                    dangCoCanhBaoDiaChi: shopLabel => _services.PickupAlerts.ListActive(_accountId)
+                        .Any(a => string.Equals(a.ShopLogin, shopLabel, StringComparison.OrdinalIgnoreCase)),
+                    // Cờ "còn sót" bền theo shop: lượt chạm trần bỏ lại phần đuôi nằm SAU dải-đã-biết, mà phần đuôi
+                    // đó không bao giờ hiện ở trang đầu ⇒ không có cờ này thì không lượt nào với tới nó nữa.
+                    conSotTraHang: shopLabel => _services.Results.GetTraHangConSot(_accountId, shopLabel),
+                    luuConSotTraHang: (shopLabel, conSot, lyDo) =>
+                        _services.Results.SetTraHangConSot(_accountId, shopLabel, conSot, lyDo),
+                    // Mốc shop đã check xong gần nhất: khi chạy lại bắt đầu từ shop kế tiếp thay vì từ đầu.
+                    layShopDaCheckCuoi: () => _services.Accounts.GetLastCheckedShop(_accountId),
+                    luuShopDaCheckCuoi: shopLogin => _services.Accounts.SetLastCheckedShop(_accountId, shopLogin));
+                _bridge = bridge;
+                OrdersBridgeRunResult result;
+                try
+                {
+                    result = await bridge.RunAllShopsAsync(login, ct).ConfigureAwait(false);
+                }
+                finally
+                {
+                    // Đóng cửa sổ sạch của vòng này + giải phóng cổng cầu nối (vòng sau mở phiên mới). Đóng bằng
+                    // DongTrinhDuyetSach (kill handle RỒI quét theo hồ sơ): kill-theo-handle một mình trượt khi
+                    // trình duyệt fork browser thật sang PID khác ⇒ để lại cửa sổ mồ côi giữ hồ sơ ⇒ vòng SAU chết
+                    // ngay ở bước đăng nhập Playwright.
+                    try { bridge.DongTrinhDuyetSach(); } catch { /* bỏ qua */ }
+                    try { bridge.Dispose(); } catch { /* bỏ qua */ }
+                    _bridge = null;
+                }
+
+                _readyForActions = true; // đã chạy xong ít nhất 1 vòng → nút phụ thuộc phiên mở
+
+                // Vòng vừa rồi CÓ THỂ đã tự tải lại vài phiếu thiếu — mà việc đó chỉ ghi FILE xuống đĩa, không
+                // đụng DB nên không lượt lưu đơn nào bắn sự kiện. Không có dòng này thì lưới Đơn hàng đang mở
+                // vẫn hiện "Tải lại" cho những đơn đã có phiếu, tới khi người dùng tự bấm "Làm mới".
+                _services.RaiseOrdersChanged();
+
+                // Shop lỗi địa chỉ phải được BÁO + GHI BANNER ở MỌI lối ra, kể cả khi vòng kết thúc bằng captcha.
+                // Trước 18/08/2026 hai lời gọi này nằm trong nhánh `else if` sau `if (result.Captcha)`, mà
+                // RunAllShopsAsync có đường trả CẢ Captcha=true LẪN PickupAddressFailed=true (captcha ập tới sau
+                // khi một shop đã hỏng địa chỉ) ⇒ banner của shop đó mất trắng, không ai được báo.
+                if (result.PickupAddressFailed)
+                {
+                    if (result.Captcha)
+                    {
+                        log($"⛔ Vòng dừng vì captcha, nhưng shop {result.PickupFailedShop} đã lỗi địa chỉ lấy hàng "
+                            + "từ trước đó — vẫn ghi banner + cảnh báo.");
+                    }
+                    // Báo người trực — gửi được hay không KHÔNG ảnh hưởng việc bỏ qua / chạy tiếp.
+                    _persist.StartCanhBaoDiaChiInBackground(result.PickupFailedShop, province, log, ct);
+                    // Banner bền trên tab Shops (mỗi shop một dòng) — local + Hub; không phụ thuộc Slack.
+                    _persist.GhiBannerLoiDiaChi(result.PickupFailedShop, province, log, ct);
+                }
+
+                if (result.Captcha)
+                {
+                    log("Gặp captcha/verify — dừng vòng này, sẽ thử lại sau khi nghỉ.");
+                }
+                else if (result.PickupAddressFailed)
+                {
+                    // Có shop bị bỏ qua vì địa chỉ; các shop khác trong vòng đã chạy (nếu còn).
+                    log($"⛔ {result.Error} Đã bỏ qua shop lỗi địa chỉ; các shop khác trong vòng này vẫn chạy.");
+                    log($"Vòng xong: {result.ShopsDone}/{result.ShopCount} shop, {result.TotalOrders} đơn, {result.TotalSlips} phiếu.");
+                }
+                else if (result.Error is not null)
+                {
+                    log("Vòng cầu nối chưa trọn: " + result.Error);
+                }
+                else
+                {
+                    SetStatus(SessionState.Running,
+                        $"Vòng xong: {result.ShopsDone}/{result.ShopCount} shop, {result.TotalOrders} đơn, {result.TotalSlips} phiếu — nghỉ {intervalMin}'.");
+                }
+
+                // Shop nào vòng này ĐẶT ĐƯỢC địa chỉ mà còn banner cũ → tự gỡ (người dùng chốt 08/08/2026). Chạy
+                // ở MỌI nhánh, kể cả nhánh có shop khác lỗi địa chỉ: shop A hết lỗi thì gỡ banner A, không liên
+                // quan shop B đang lỗi. Đặt SAU GhiBannerLoiDiaChi để giữ đúng nghĩa "ghi cái mới rồi gỡ cái cũ".
+                _persist.GoBannerLoiDiaChi(result.PickupOkShops, log, ct);
+
+                // Vòng BỊ CẮT — luật ở LaVongBiCat. Cả phút nghỉ lẫn chuỗi mới lấy từ MỘT lời gọi NghiSauVong
+                // để không còn thứ tự hai dòng nào có thể đảo.
+                var vongBiCat = LaVongBiCat(
+                    result.Error is not null, result.Captcha, result.PickupAddressFailed);
+                var (phutNghi, soVongCatMoi) = NghiSauVong(vongBiCat, _soVongCatLienTiep, intervalMin);
+                _soVongCatLienTiep = soVongCatMoi;
+                if (phutNghi < intervalMin)
+                {
+                    log($"Vòng vừa rồi bị cắt giữa chừng — nghỉ NGẮN {phutNghi}' (thay vì {intervalMin}') để cứu "
+                        + "phần shop chưa chạy; vòng cắt tiếp theo sẽ quay về interval đầy.");
+                }
+
+                // Nghỉ trước chu kỳ kế (hủy giữa chừng → thoát vòng). Ghi mốc dự kiến để nhật ký cho
+                // biết phiên vẫn sống trong lúc không có hoạt động trình duyệt.
+                var nextRunAt = DateTime.Now.AddMinutes(phutNghi);
+
+                // NHƯỜNG KHUNG 2–6h SÁNG CHO LUỒNG KM. Người dùng chốt: "tới gần 2h sáng thì không tự đặt vòng
+                // kế nữa, phải đặt sau 6h". Ba điều kiện của lượt nhường (bật tự động · máy này chủ trì · đêm
+                // nay thực sự tới hạn) nằm trọn trong `NenNhuongKhung` — đọc xmldoc ở đó TRƯỚC khi sửa, nhất là
+                // vế "máy chủ trì" vì nó là CHẶN TẠM của pha A mà pha B (hạng mục B1) phải gỡ.
+                //
+                // Vì sao dời điểm BẮT ĐẦU chứ không cắt vòng đang chạy: hai luồng tranh nhau MỘT hồ sơ Brave và
+                // MỘT cổng cầu nối 47821, nên chúng loại trừ nhau về mặt vật lý. Nhưng luồng KM có đường mượn hồ
+                // sơ (tạm dừng check đơn rồi chạy lại) nên va chạm không mất dữ liệu — dời trước chỉ để khỏi
+                // phải dùng tới đường đó mỗi đêm.
+                var nhuongKhung = KmLichTuDong.NenNhuongKhung(
+                    _services.KmConfig.Get(_accountId), _services.MayNay?.Invoke(), nextRunAt, DateTime.Now);
+                var sauKhiNhuong = KmLichTuDong.HoanVongCheckDon(nextRunAt, nhuongKhung);
+                if (sauKhiNhuong != nextRunAt)
+                {
+                    log(KmLichTuDong.CauHoanVong(nextRunAt, sauKhiNhuong));
+                    phutNghi = (int)Math.Ceiling((sauKhiNhuong - DateTime.Now).TotalMinutes);
+                    nextRunAt = sauKhiNhuong;
+                }
+
+                log($"Vòng kế tiếp dự kiến bắt đầu lúc {nextRunAt:HH:mm:ss}.");
+
+                // ĐANG NGHỈ, và khe nghỉ kéo dài tới `nextRunAt` — phơi mốc cho nhịp lịch Flash Sale (từ
+                // 01/09/2026 mỗi gói flash chiếm đúng một khe nghỉ). Đặt SAU `HoanVongCheckDon` là bắt buộc:
+                // mốc trước khi dời không phải mốc thật, xem `IAccountSession.ThoiDiemVongKe`.
+                //
+                // ⚠ ĐẶT CẢ KHI `phutNghi` là kỳ nghỉ NGẮN 15' sau một vòng bị cắt. Nghỉ vẫn là nghỉ, và mốc
+                // phải nói thật; việc "khe này quá ngắn, đừng chen gói vào" là quyết định của nhịp flash
+                // (`KmLichTuDong.PhutKheToiThieuChoGoi` = 60'), không phải của chỗ này. Giấu mốc ở đây là giấu
+                // một trạng thái CÓ THẬT khỏi mọi người đọc khác.
+                DatThoiDiemVongKe(nextRunAt);
+                try { await Task.Delay(TimeSpan.FromMinutes(phutNghi), ct).ConfigureAwait(false); }
+                catch (OperationCanceledException) { break; }
+                finally { DatThoiDiemVongKe(null); }   // hết nghỉ / bị huỷ ⇒ KHÔNG còn đang nghỉ nữa
+                log("Hết thời gian nghỉ — bắt đầu vòng mới.");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // Dừng chủ động — không phải lỗi.
+        }
+        catch (Exception ex)
+        {
+            // ══ NHẢ KHOÁ **TRƯỚC** SetError. ĐỪNG ĐẢO. ══
+            // `SetError` đặt State = Error VÀ `_bridge = null` ngay lập tức, tức từ giây đó ra ngoài phiên trông
+            // như đã dừng hẳn (`IsRunning == false && BraveProcess == null`) — trong khi khoá chạy xuyên máy vẫn
+            // đang giữ và chỉ được nhả ở `finally` bên dưới. Nút "Mở list shop" chờ đúng hai tín hiệu đó rồi đi
+            // xin khoá: hub thấy CÙNG machine_id nên CẤP, xong lượt DELETE của phiên này (tới 8s) hạ cánh và xoá
+            // đúng dòng vừa cấp — `HeartbeatLeases` là UPDATE thuần nên không hồi phục. Đây là lần thứ TƯ cùng
+            // một cơ chế "một khoá hai chủ" cắn, nên vá ở GỐC chứ không vá bên phía người đọc.
+            // Gọi thêm ở `finally` vẫn an toàn: `NhaKhoaChayAsync` idempotent bằng Interlocked.
+            await NhaKhoaChayAsync(acc.Email).ConfigureAwait(false);
+            SetError(ex.Message);
+        }
+        finally
+        {
+            ResetBridgeState();
+
+            // Nhả khóa chạy tài khoản trên MỌI lối ra (xong / lỗi / hủy) — đúng MỘT lần, và không nhả khi chưa
+            // từng giành được. Nhả TRƯỚC khi đặt Stopped: manager thấy Stopped là start ngay account kế trong hàng
+            // đợi, khóa phải trống trước lúc đó (bấm Dừng rồi Chạy lại cùng tài khoản cũng vậy).
+            await NhaKhoaChayAsync(acc.Email).ConfigureAwait(false);
+
+            lock (_lifecycleLock)
+            {
+                if (State != SessionState.Error)
+                {
+                    State = SessionState.Stopped;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Danh sách <c>order_sn</c> của MỘT shop (thuộc tài khoản này) đang <b>THIẾU PHIẾU</b>: đã có mã vận đơn
+    /// nhưng chưa có file PDF hợp lệ trong <paramref name="invoiceDir"/>. Xếp MỚI NHẤT TRƯỚC — phiên cầu nối tự
+    /// tải lại tối đa <c>ShopFlowRunner.TranTaiLaiPhieuMoiShop</c> đơn đầu ngay trong vòng check shop đó.
+    /// <para>
+    /// Dùng ĐÚNG bộ luật của nút "Tải lại" trên lưới Đơn hàng: cùng công thức đường dẫn
+    /// (<see cref="SlipFiles.SlipPath"/>) + cùng phép kiểm (<see cref="SlipFiles.SlipFileIsValidPdf"/>). Hai nơi
+    /// tự tính riêng là lệch — dòng hiện nút mà vòng không tải, hoặc ngược lại.
+    /// </para>
+    /// Chỉ mở file của đơn ĐÃ có mã vận đơn (đơn chưa chuẩn bị hàng thì khỏi đụng đĩa). Luật lọc/xếp thuần nằm ở
+    /// <see cref="DonThieuPhieu.ChonDonThieuPhieu"/>.
+    /// </summary>
+    private IReadOnlyList<string> LayDonThieuPhieu(string shopLogin, string? invoiceDir)
+    {
+        if (string.IsNullOrWhiteSpace(shopLogin) || string.IsNullOrWhiteSpace(invoiceDir))
+        {
+            return Array.Empty<string>();
+        }
+
+        try
+        {
+            var rows = _services.Orders.Query(accountId: _accountId, shopLogin: shopLogin, shopExact: true);
+            var ungVien = new List<DonUngVienTaiLaiPhieu>(rows.Count);
+            foreach (var r in rows)
+            {
+                if (string.IsNullOrWhiteSpace(r.OrderSn) || string.IsNullOrWhiteSpace(r.TrackingNumber))
+                {
+                    continue; // chưa chuẩn bị hàng → chưa có phiếu để tải lại
+                }
+                var coFile = SlipFiles.SlipFileIsValidPdf(SlipFiles.SlipPath(invoiceDir!, r.OrderSn));
+                var daHuy = ShopeeShippingNav.LaDonHuy(r.Status, r.StatusDescription, r.CancelReason);
+                ungVien.Add(new DonUngVienTaiLaiPhieu(r.OrderSn, r.TrackingNumber, coFile, r.Id, daHuy));
+            }
+            return DonThieuPhieu.ChonDonThieuPhieu(ungVien);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort: đọc DB/đĩa hỏng KHÔNG được phá vòng check shop — bỏ lượt tải lại của shop này.
+            _services.Log.Append(_logLabel, "Đọc danh sách đơn thiếu phiếu lỗi: " + ex.ToString());
+            return Array.Empty<string>();
+        }
+    }
+
+    private void SetStatus(SessionState state, string text)
+    {
+        StatusText = text;
+        State = state;
+        _services.Log.Append(_logLabel, text);
+    }
+
+    private void ResetBridgeState()
+    {
+        _readyForActions = false;
+        _bridge = null;
+        // Phiên không còn chạy ⇒ nó KHÔNG đang nghỉ giữa hai vòng. Để sót mốc ở đây là nhịp lịch flash thấy một
+        // phiên đã chết vẫn "đang nghỉ tới 21:30" ⇒ tưởng khe còn rộng và mở gói đè lên đúng lúc người dùng
+        // bấm Chạy lại. Chạy ở MỌI lối ra: `finally` của vòng nền và `SetError`.
+        DatThoiDiemVongKe(null);
+    }
+
+    private void SetError(string message)
+    {
+        ResetBridgeState();
+        LastError = message;
+        StatusText = message;
+        State = SessionState.Error;
+        _services.Log.Append(_logLabel, "LỖI: " + message);
+    }
+}

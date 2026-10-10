@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Shopee.Core</RootNamespace>
+    <AssemblyName>Shopee.Core</AssemblyName>
+    <!-- TFM OS-neutral: analyzer CA1416 tự bật → mọi API chỉ-Windows PHẢI nằm sau facade
+         (Platform/Windows/* gắn [SupportedOSPlatform("windows")] + gọi trong OperatingSystem.IsWindows()).
+         Coi CA1416 là LỖI để bất kỳ call Windows lọt ra ngoài guard đều fail build (giữ kỷ luật lâu dài). -->
+    <WarningsAsErrors>CA1416</WarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="10.0.0" />
+    <PackageReference Include="ClosedXML" Version="0.105.0" />
+    <!-- Playwright cho lõi login BigSeller dùng chung (BigSellerLoginForm). Khớp version module (1.60.0). -->
+    <PackageReference Include="Microsoft.Playwright" Version="1.60.0" />
+    <!-- DPAPI cho WindowsOsCrypt (giải key os_crypt Chromium). -->
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+    <!-- Registry cho WindowsBrowserLocator (App Paths\brave.exe). Không còn implicit khi bỏ -windows. -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" />
+    <!-- SQLite để đọc/ghi DB chung ShopeeBackend (bảng Accounts, Proxies). -->
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="9.0.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Hạ tầng thuần BCL dùng chung với module Đơn hàng (orders KHÔNG ref Shopee.Core để né dây Avalonia):
+         BraveArgs, BrowserLocator, WebSocketServer, selector đăng nhập Microsoft. -->
+    <ProjectReference Include="..\..\shared\Shopee.Toolkit\Shopee.Toolkit.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Cho phép bộ test đọc thành viên `internal` của Core. -->
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Shopee.Core.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>Shopee.Workspace.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+</Project>
