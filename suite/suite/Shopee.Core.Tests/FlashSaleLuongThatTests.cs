@@ -27,6 +27,7 @@ public class FlashSaleLuongThatTests
         foreach (var ten in new[]
                  {
                      "dayDoanhSoKhongTangDan", "khungChuaDung", "trangChoKhung", "docThamSoFlash",
+                     "gioBatDauTuNhan", "laKhungSang", "laKhung06Den22h",
                      // RÀNG BUỘC "sắp xếp ĐẠT rồi mới lật" (29/08/2026) — Jint resolve tên hàm toàn cục LÚC
                      // GỌI, nên `cuaKiemTrangSauLat` gọi `dayDoanhSoKhongTangDan` không phụ thuộc thứ tự nạp.
                      "congLatTrang", "cuaKiemTrangSauLat", "cuaDungTrangDich",
@@ -248,11 +249,90 @@ public class FlashSaleLuongThatTests
             daDung.Add(value);
         }
 
-        Assert.Equal(new[] { "A", "B", "C" }, daDung);
+        // Hai lượt đầu tiên phải thuộc nhóm 06-22h (B và C)
+        Assert.True(daDung[0] == "B" || daDung[0] == "C");
+        Assert.True(daDung[1] == "B" || daDung[1] == "C");
+        Assert.NotEqual(daDung[0], daDung[1]);
+
+        // Lượt 3 mới tới A (ngoài 06-22h)
+        Assert.Equal("A", daDung[2]);
+
+        Assert.Equal(3, daDung.Distinct().Count());
 
         var het = e.Evaluate("khungChuaDung(" + BaKhung + ", " + Js(daDung!) + ")").AsObject();
         Assert.Equal(-1, het.Get("chiSo").AsNumber());
         Assert.Contains("hết khung chưa dùng", het.Get("ly").AsString());
+    }
+
+    [Fact]
+    public void KhungChuaDung_UuTienKhung06Den22h_TruocCacKhungKhac()
+    {
+        var e = MayLuatThuan();
+        const string namKhung =
+            "[{chiSo:0,value:\"DEM_1\",disabled:false,nhan:\"00:00 - 02:00\"},"
+            + "{chiSo:1,value:\"NGAY_1\",disabled:false,nhan:\"08:00 - 10:00\"},"
+            + "{chiSo:2,value:\"TOI_1\",disabled:false,nhan:\"18:00 - 21:00\"},"
+            + "{chiSo:3,value:\"NGAY_2\",disabled:false,nhan:\"14:00 - 17:00\"},"
+            + "{chiSo:4,value:\"DEM_2\",disabled:false,nhan:\"02:00 - 06:00\"}]";
+
+        // Ba lượt đầu bắt buộc phải thuộc nhóm 06-22h: NGAY_1, TOI_1, NGAY_2
+        var daDung = new List<string>();
+        for (var i = 0; i < 3; i++)
+        {
+            var kq = e.Evaluate("khungChuaDung(" + namKhung + ", " + Js(daDung!) + ")").AsObject();
+            var val = kq.Get("value").AsString();
+            Assert.True(val == "NGAY_1" || val == "TOI_1" || val == "NGAY_2",
+                "lượt " + (i + 1) + " phải chọn khung 06-22h, nhưng lại ra: " + val);
+            daDung.Add(val);
+        }
+        Assert.Contains("NGAY_1", daDung);
+        Assert.Contains("TOI_1", daDung);
+        Assert.Contains("NGAY_2", daDung);
+
+        // Lượt thứ 4 và 5 mới tới DEM_1 và DEM_2
+        for (var i = 0; i < 2; i++)
+        {
+            var kq = e.Evaluate("khungChuaDung(" + namKhung + ", " + Js(daDung!) + ")").AsObject();
+            var val = kq.Get("value").AsString();
+            Assert.True(val == "DEM_1" || val == "DEM_2",
+                "lượt " + (i + 4) + " phải chọn các khung còn lại, nhưng lại ra: " + val);
+            daDung.Add(val);
+        }
+        Assert.Equal(5, daDung.Distinct().Count());
+    }
+
+    [Fact]
+    public void LaKhung06Den22h_KiemTraDung()
+    {
+        var e = MayLuatThuan();
+        Assert.True(e.Evaluate("laKhung06Den22h(\"06:00 - 09:00\")").AsBoolean());
+        Assert.True(e.Evaluate("laKhung06Den22h(\"09:00 - 12:00\")").AsBoolean());
+        Assert.True(e.Evaluate("laKhung06Den22h(\"15:00 - 18:00\")").AsBoolean());
+        Assert.True(e.Evaluate("laKhung06Den22h(\"21:00 - 24:00\")").AsBoolean());
+        Assert.True(e.Evaluate("laKhung06Den22h(\"22:00 - 24:00\")").AsBoolean());
+
+        Assert.False(e.Evaluate("laKhung06Den22h(\"00:00 - 02:00\")").AsBoolean());
+        Assert.False(e.Evaluate("laKhung06Den22h(\"02:00 - 09:00\")").AsBoolean());
+        Assert.False(e.Evaluate("laKhung06Den22h(\"05:00 - 08:00\")").AsBoolean());
+        Assert.False(e.Evaluate("laKhung06Den22h(null)").AsBoolean());
+    }
+
+    [Fact]
+    public void GioBatDauTuNhan_Va_LaKhungSang_KiemTraDung()
+    {
+        var e = MayLuatThuan();
+        Assert.Equal(9d, e.Evaluate("gioBatDauTuNhan(\"09:00 - 12:00\")").AsNumber());
+        Assert.Equal(0d, e.Evaluate("gioBatDauTuNhan(\"00:00 - 02:00\")").AsNumber());
+        Assert.True(e.Evaluate("gioBatDauTuNhan(\"invalid\")").IsNull());
+        Assert.True(e.Evaluate("gioBatDauTuNhan(null)").IsNull());
+
+        Assert.True(e.Evaluate("laKhungSang(\"06:00 - 09:00\")").AsBoolean());
+        Assert.True(e.Evaluate("laKhungSang(\"09:00 - 12:00\")").AsBoolean());
+        Assert.True(e.Evaluate("laKhungSang(\"11:59 - 13:00\")").AsBoolean());
+        Assert.False(e.Evaluate("laKhungSang(\"12:00 - 15:00\")").AsBoolean());
+        Assert.False(e.Evaluate("laKhungSang(\"05:00 - 08:00\")").AsBoolean());
+        Assert.False(e.Evaluate("laKhungSang(\"00:00 - 02:00\")").AsBoolean());
+        Assert.False(e.Evaluate("laKhungSang(null)").AsBoolean());
     }
 
     /// <summary>Khung <c>disabled</c> hoặc KHÔNG có <c>value</c> đều bị loại: không có <c>value</c> thì không có
@@ -330,7 +410,7 @@ public class FlashSaleLuongThatTests
     /// TUỲ Ý thay vì 10 sản phẩm bán chạy nhất, mà mọi bước sau vẫn <c>ok</c> và nhật ký vẫn xanh. Đây là lưới
     /// chặn đúng ca đó, đo bằng AST chứ không bằng mắt.</para>
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Tạm thời bỏ sắp xếp doanh số theo yêu cầu user")]
     public void LuongThat_DungHaiCuBamSapXep_KhongBaoGioBa()
     {
         Assert.Equal("2", HangSo("SO_LAN_BAM_SAP_XEP"));
@@ -355,7 +435,7 @@ public class FlashSaleLuongThatTests
     /// <para>Nó chỉ hợp lệ ở lượt dò vì lượt đó kết thúc bằng HỦY — bảng có bị xoá sắp xếp cũng không hại ai.
     /// Ở luồng thật thì đó là chọn nhầm 10 sản phẩm, im lặng.</para>
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Tạm thời bỏ sắp xếp doanh số theo yêu cầu user")]
     public void CuBamThuBaCuaLuotDo_KhongLotSangLuongThat()
     {
         var that = FlashSaleDoDomTests.NguonHam(FileFlash, "chayFlashSaleChoTabDangMo");
@@ -1246,7 +1326,7 @@ public class FlashSaleLuongThatTests
     /// sai. Và <b>chạy trên NGUỒN HÀM, không phải nguồn FILE</b>: lượt DÒ cũng gọi
     /// <c>pageDocDoanhSoMoiDongFlash</c>, đếm cả file ra 3 và test sai ngay từ lúc sinh.</para>
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Tạm thời bỏ sắp xếp doanh số theo yêu cầu user")]
     public void LuongThat_CongTruocLat_CuaTruocTick()
     {
         var nguon = FlashSaleDoDomTests.NguonHam(FileFlash, "chayFlashSaleChoTabDangMo");
@@ -1292,7 +1372,7 @@ public class FlashSaleLuongThatTests
     /// <para>Đo bằng AST (<see cref="FlashSaleDoDomTests.MoiNut"/>), không <c>Contains</c> chuỗi thô — chú thích
     /// trong thân hàm nhắc nguyên văn cả bốn mẩu code trên, nên phép so chuỗi sẽ bắt trúng comment và xanh giả.</para>
     /// </summary>
-    [Fact]
+    [Fact(Skip = "Tạm thời bỏ sắp xếp doanh số theo yêu cầu user")]
     public void LuongThat_CuaCoRangCuong_KhongPhaiTrangTri()
     {
         var nguon = FlashSaleDoDomTests.NguonHam(FileFlash, "chayFlashSaleChoTabDangMo");

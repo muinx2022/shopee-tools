@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using Shopee.Core.BigSeller;
 using Shopee.Core.Browser;
 using Shopee.Core.Infrastructure;
@@ -18,8 +18,7 @@ public sealed partial class ScrapeViewModel
         {
             var inst = Instances.FirstOrDefault(x => x.Key == K(key));
             var text = $"[{bigSellerName}][{inst?.Label ?? key}] {line}";
-            LogLines.Add(text);
-            AccountLogs.Get(account.Id, bigSellerName).Add(text);
+            LogAcc(account.Id, bigSellerName, text);
         });
         runner.InstanceStatus += (key, st) => OnUi(() =>
         {
@@ -39,8 +38,7 @@ public sealed partial class ScrapeViewModel
             OnUi(() =>
             {
                 var text = $"🚫 [{bigSellerName}] Tk Shopee \"{label}\" dính captcha → loại khỏi khung, xóa profile (login mới lần sau), đổi tk khác chạy tiếp.";
-                LogLines.Add(text);
-                AccountLogs.Get(account.Id, bigSellerName).Add(text);
+                LogAcc(account.Id, bigSellerName, text);
             });
             // Xóa profile trên luồng nền (best-effort, không chặn UI, tự nuốt lỗi) — Brave của chunk đã StopAsync.
             _ = Task.Run(() => DeleteAccountProfilesBestEffort(id, label, account.Id, bigSellerName));
@@ -53,8 +51,7 @@ public sealed partial class ScrapeViewModel
             OnUi(() =>
             {
                 var text = $"⛔ [{bigSellerName}] DỪNG job: {reason} — mọi tk Shopee dùng CHUNG key proxy này nên đổi tk vô ích. Gia hạn key rồi Tiếp tục.";
-                LogLines.Add(text);
-                AccountLogs.Get(account.Id, bigSellerName).Add(text);
+                LogAcc(account.Id, bigSellerName, text);
             });
         };
         runner.BigSellerNeedLogin += reason =>
@@ -68,8 +65,7 @@ public sealed partial class ScrapeViewModel
             OnUi(() =>
             {
                 var text = $"⚠ [{bigSellerName}] BigSeller mất đăng nhập: {reason} — đã DỪNG job tài khoản này. Hãy ĐĂNG NHẬP LẠI BigSeller rồi chạy lại.";
-                LogLines.Add(text);
-                AccountLogs.Get(account.Id, bigSellerName).Add(text);
+                LogAcc(account.Id, bigSellerName, text);
             });
         };
     }  // WireRunner

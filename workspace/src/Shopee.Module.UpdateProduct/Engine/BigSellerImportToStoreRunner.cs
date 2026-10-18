@@ -183,6 +183,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         // danh sách (coi như hỏng hẳn). Cơ chế chống import-trùng (committed/claim) GIỮ NGUYÊN.
         var consecutiveErrors = 0;
         var tabSkips = 0;            // số lượt liên tiếp bị đưa về SAI tab (reload đổi ngôn ngữ) — quá ngưỡng thì dừng
+        var emptySheetPageStreak = 0;
         string? abortReason = null;  // lý do dừng "cứng" (thoát while rồi ném để tầng trên báo lỗi, không nuốt)
         const int maxConsecutiveErrors = 8;
         while (!cancellationToken.IsCancellationRequested)
@@ -190,6 +191,12 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
             try
             {
                 await WaitIfNotPausedAsync(cancellationToken).ConfigureAwait(false);
+                if (_importedIds.Count >= _importIds.Count)
+                {
+                    _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, bỏ qua các trang tiếp theo.");
+                    LogLedgerSummary();
+                    return;
+                }
                 await MaybeWriteBackBigSellerTokenAsync(cancellationToken).ConfigureAwait(false);
                 _log("");
 
@@ -242,6 +249,35 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
                 if (checkedIds.Length == 0)
                 {
+                    if (_importedIds.Count >= _importIds.Count)
+                    {
+                        _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, bỏ qua các trang tiếp theo.");
+                        LogLedgerSummary();
+                        return;
+                    }
+
+                    var (_, coveredKeys, sheetRows) = await InspectPageSheetCoverageAsync(page);
+                    if (coveredKeys > 0 && sheetRows == 0)
+                    {
+                        emptySheetPageStreak++;
+                        if (_importedIds.Count > 0)
+                        {
+                            _log($"✔ Trang hiện tại không còn SP nào thuộc sheet '{_settings.DataSheet}' (đã import {_importedIds.Count}/{_importIds.Count} SP) — dừng ngay, bỏ qua các trang tiếp theo.");
+                            LogLedgerSummary();
+                            return;
+                        }
+                        if (!_settings.ImportFromClaimedTab || emptySheetPageStreak >= 2)
+                        {
+                            _log($"✔ Trang hiện tại không có SP nào thuộc sheet '{_settings.DataSheet}' — dừng ngay, bỏ qua các trang tiếp theo.");
+                            LogLedgerSummary();
+                            return;
+                        }
+                    }
+                    else if (sheetRows > 0)
+                    {
+                        emptySheetPageStreak = 0;
+                    }
+
                     // Trang hiện tại không còn item id cần import → sang trang kế (KHÔNG reload để giữ vị trí trang).
                     if (await BigSellerCrawlHelper.ClickNextCrawlPageAsync(page, _log))
                         continue;
@@ -255,6 +291,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                     LogLedgerSummary();
                     return;   // → RunOneWorkflowAsync: "✔ xong" + PublishCompletion("completed") ⇒ báo Hub finished
                 }
+                emptySheetPageStreak = 0;
 
                 _log($"Trang có {rowCount} SP — {checkedIds.Length} SP khớp item id → Import to Stores…");
 
@@ -321,6 +358,19 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
                 await DelayAsync(2000, cancellationToken);
                 await BigSellerCrawlHelper.DismissPostImportDialogsAsync(page, _log);
+
+                if (_settings.ImportFromClaimedTab)
+                {
+                    // Ở tab "Đã nhận", SP sau khi import KHÔNG rời khỏi danh sách. Nếu forceReload sẽ bị quay về trang 1
+                    // và phải lật lại từ đầu. Chuyển thẳng sang trang kế tiếp (nếu hết trang thì kết thúc luôn).
+                    if (await BigSellerCrawlHelper.ClickNextCrawlPageAsync(page, _log))
+                        continue;
+
+                    _log($"✔ Hết trang tab Đã nhận — đã import {_importedIds.Count}/{_importIds.Count} SP. Kết thúc.");
+                    LogLedgerSummary();
+                    return;
+                }
+
                 _log($"Reload màn import sau {cycleSec}s…");
                 await DelayAsync(TimeSpan.FromSeconds(cycleSec), cancellationToken);
                 await BigSellerCrawlHelper.GoToCrawlPageAsync(page, forceReload: true, targetUrl: crawlUrl, log: _log);
@@ -647,6 +697,32 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
             if (covered) return;
             await DelayAsync(300, ct);
         }
+    }
+
+    // Kiểm tra trên trang hiện tại có bao nhiêu dòng đã đọc được ID từ API (coveredKeys) và bao nhiêu dòng
+    // thuộc danh sách _importIds của sheet đang chạy (sheetRows).
+    private async Task<(int visibleKeys, int coveredKeys, int sheetRows)> InspectPageSheetCoverageAsync(IPage page)
+    {
+        string[] keys;
+        try { keys = await GetVisibleImageKeysAsync(page); }
+        catch { return (0, 0, 0); }
+        if (keys.Length == 0) return (0, 0, 0);
+
+        var covered = 0;
+        var inSheet = 0;
+        lock (_apiLock)
+        {
+            foreach (var k in keys)
+            {
+                if (_apiImageKeyToShopeeId.TryGetValue(k, out var id))
+                {
+                    covered++;
+                    if (_importIds.Contains(id))
+                        inSheet++;
+                }
+            }
+        }
+        return (keys.Length, covered, inSheet);
     }
 
     private static Task<string[]> GetVisibleImageKeysAsync(IPage page) =>

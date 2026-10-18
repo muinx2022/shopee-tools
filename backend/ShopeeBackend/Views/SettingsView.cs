@@ -62,9 +62,9 @@ namespace ShopeeBackend.Views
 
                 CreateSettingCard(
                     "Th\u01B0 m\u1EE5c Shopee Extension",
-                    @"D:\Projects\phan-tich-shopee\ShopeeExt",
+                    SuiteSearchSession.ShopeeExtPath,
                     "Extension t\u1EF1 \u0111\u1ED9ng load c\u00F9ng Brave \u0111\u1EC3 x\u1EED l\u00FD \u0111\u0103ng nh\u1EADp, bypass v\u00E0 c\u00E0o d\u1EEF li\u1EC7u danh m\u1EE5c.",
-                    () => OpenFolder(@"D:\Projects\phan-tich-shopee\ShopeeExt")),
+                    () => OpenFolder(SuiteSearchSession.ShopeeExtPath)),
 
                 CreateSettingCard(
                     "Th\u01B0 m\u1EE5c d\u1EEF li\u1EC7u & profile (AppData)",
@@ -106,7 +106,7 @@ namespace ShopeeBackend.Views
             };
             var lblDesc = new Label
             {
-                Text      = "Tự động tải và lưu ảnh sản phẩm vào ổ đĩa máy tính khi quét danh mục (mặc định: e:\\images\\phan-tich-shopee). Ảnh lưu định dạng JPEG (.jpg) theo Item ID giúp hiển thị offline siêu tốc, tiết kiệm băng thông và không phụ thuộc mạng. Nếu thư mục chưa tồn tại, hệ thống sẽ tự động tạo mới.",
+                Text      = "Tự động tải và lưu ảnh sản phẩm vào ổ đĩa máy tính khi quét danh mục (mặc định: d:\\shopee-images). Ảnh lưu định dạng JPEG (.jpg) theo Item ID giúp hiển thị offline siêu tốc, tiết kiệm băng thông và không phụ thuộc mạng. Nếu thư mục chưa tồn tại, hệ thống sẽ tự động tạo mới.",
                 Font      = UiTheme.FontCaption,
                 ForeColor = UiTheme.TextSecondary,
                 AutoSize  = false

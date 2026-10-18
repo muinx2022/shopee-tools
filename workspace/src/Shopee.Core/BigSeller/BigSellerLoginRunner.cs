@@ -42,6 +42,7 @@ public static class BigSellerLoginRunner
         var launcher = new BrowserLauncher(BrowserKind.Brave);
         CdpSession? cdp = null;
         var saved = false;
+        var lastSavedCount = -1;
         try
         {
             // Có proxy riêng cho tk BigSeller → ĐĂNG NHẬP cũng qua proxy đó (cùng IP với lúc scrape, vì
@@ -77,6 +78,16 @@ public static class BigSellerLoginRunner
                 {
                     aliveKept = true;
                     log("✔ Phiên BigSeller còn sống — GIỮ cookie, không cần đăng nhập lại. Bấm Dừng để đóng.");
+                    var (initCookies, ok) = await GetBigSellerCookiesAsync(cdp, ct).ConfigureAwait(false);
+                    if (ok && HasAuthCookie(initCookies))
+                    {
+                        if (TryWriteCookieFile(cookieFile, initCookies, log))
+                        {
+                            saved = true;
+                            lastSavedCount = initCookies.Count;
+                            try { onSaved?.Invoke(); } catch { }
+                        }
+                    }
                 }
             }
             catch (OperationCanceledException) { throw; }
@@ -98,6 +109,16 @@ public static class BigSellerLoginRunner
                         {
                             aliveKept = true;
                             log("✔ Phiên BigSeller (từ cookie đã đồng bộ) còn sống — không cần đăng nhập lại. Bấm Dừng để đóng.");
+                            var (initCookies, ok) = await GetBigSellerCookiesAsync(cdp, ct).ConfigureAwait(false);
+                            if (ok && HasAuthCookie(initCookies))
+                            {
+                                if (TryWriteCookieFile(cookieFile, initCookies, log))
+                                {
+                                    saved = true;
+                                    lastSavedCount = initCookies.Count;
+                                    try { onSaved?.Invoke(); } catch { }
+                                }
+                            }
                         }
                     }
                 }
@@ -142,7 +163,6 @@ public static class BigSellerLoginRunner
             var lastCookieCount = -1;
             var stablePolls = 0;
             var pollsSinceLogin = 0;
-            var lastSavedCount = -1;
             // Cookie analytics/tracking (_ga, _fbp, _tt, ttcsid, _gcl_au, __lt__cid…) nạp BẤT ĐỒNG BỘ,
             // chậm hơn cookie phiên. Phải chờ số cookie NGỪNG TĂNG đủ lâu (~15s) rồi mới lưu — nếu lưu vội
             // (sau ~6s) thì file chỉ có ~9 cookie lõi (thiếu ~30) → phiên import vào browser "trống trải"
@@ -190,7 +210,7 @@ public static class BigSellerLoginRunner
                     else { stablePolls = 0; lastCookieCount = n; }
 
                     var fullyLoaded = stablePolls >= requiredStablePolls || pollsSinceLogin >= maxWaitPolls;
-                    if (fullyLoaded && (!saved || n > lastSavedCount))
+                    if (!saved || (fullyLoaded && n > lastSavedCount))
                     {
                         // Lưu BỘ ĐẦY ĐỦ; nếu sau đó cookie còn tăng thì lưu đè (file luôn = bộ lớn nhất).
                         if (TryWriteCookieFile(cookieFile, cookies, log))
@@ -230,6 +250,22 @@ public static class BigSellerLoginRunner
         {
             // Bấm Dừng → đóng Brave GRACEFUL (CDP Browser.close) để Chromium flush phiên xuống
             // profile → lần đăng nhập sau KHÔNG hiện lại form login. Hard-kill ngay sẽ mất phiên.
+            if (!saved && cdp is not null)
+            {
+                try
+                {
+                    var (lastCookies, ok) = await GetBigSellerCookiesAsync(cdp, CancellationToken.None).ConfigureAwait(false);
+                    if (ok && HasAuthCookie(lastCookies))
+                    {
+                        if (TryWriteCookieFile(cookieFile, lastCookies, log))
+                        {
+                            saved = true;
+                            try { onSaved?.Invoke(); } catch { }
+                        }
+                    }
+                }
+                catch { }
+            }
             log("■ Đang đóng cửa sổ BigSeller…");
             await CloseBrowserGracefullyAsync(cdp).ConfigureAwait(false);
             return saved;

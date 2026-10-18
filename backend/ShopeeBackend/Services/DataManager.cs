@@ -272,6 +272,9 @@ namespace ShopeeBackend.Services
                 }
             } catch { }
 
+            // 3c. Cleanup orphan products (only keep products for existing categories/keywords)
+            CleanupOrphanProducts();
+
             // 4. Load ScrapedProducts
             LoadScrapedProducts();
 
@@ -346,7 +349,6 @@ namespace ShopeeBackend.Services
                         p.DailyVelocity = p.DaysTracked >= 1 ? (double)p.SoldDelta / p.DaysTracked : 0;
                     }
 
-                    p.EvaluateOpportunity();
                     GlobalState.ScrapedProducts.Add(p);
                 }
             }
@@ -752,8 +754,6 @@ namespace ShopeeBackend.Services
                         snapCmd.Parameters.AddWithValue("$time", p.ScrapedAt);
                         snapCmd.ExecuteNonQuery();
                     }
-
-                    p.EvaluateOpportunity();
                 }
 
                 transaction.Commit();
@@ -810,6 +810,208 @@ namespace ShopeeBackend.Services
             var cmd = connection.CreateCommand();
             cmd.CommandText = "DELETE FROM ScrapedProducts";
             cmd.ExecuteNonQuery();
+        }
+
+        public static int CleanupOrphanProducts()
+        {
+            int deletedCount = 0;
+            try
+            {
+                using var connection = new SqliteConnection(ConnectionString);
+                connection.Open();
+                using var transaction = connection.BeginTransaction();
+
+                try
+                {
+                    // 1. Delete orphan products from ScrapedProducts whose CategoryUrl is not in Categories
+                    // and not belonging to existing Keywords.
+                    using var cmdProd = connection.CreateCommand();
+                    cmdProd.Transaction = transaction;
+                    cmdProd.CommandText = @"
+                        DELETE FROM ScrapedProducts 
+                        WHERE CategoryUrl NOT IN (SELECT Url FROM Categories)
+                          AND (
+                              CategoryUrl NOT LIKE 'https://shopee.vn/search?keyword=%'
+                              OR (
+                                  NOT EXISTS (SELECT 1 FROM Keywords)
+                                  OR (
+                                      CategoryUrl NOT IN (SELECT 'https://shopee.vn/search?keyword=' || Keyword FROM Keywords)
+                                      AND CategoryUrl NOT IN (SELECT 'https://shopee.vn/search?keyword=' || replace(Keyword, ' ', '%20') FROM Keywords)
+                                  )
+                              )
+                          );";
+                    deletedCount = cmdProd.ExecuteNonQuery();
+
+                    // 2. Delete orphan SubCategories whose ParentUrl is not in Categories
+                    using var cmdSub = connection.CreateCommand();
+                    cmdSub.Transaction = transaction;
+                    cmdSub.CommandText = "DELETE FROM SubCategories WHERE ParentUrl NOT IN (SELECT Url FROM Categories);";
+                    cmdSub.ExecuteNonQuery();
+
+                    // 3. Delete orphan ProductSnapshots
+                    using var cmdSnap = connection.CreateCommand();
+                    cmdSnap.Transaction = transaction;
+                    cmdSnap.CommandText = @"
+                        DELETE FROM ProductSnapshots 
+                        WHERE (ShopId || '_' || ItemId) NOT IN (SELECT Id FROM ScrapedProducts);";
+                    cmdSnap.ExecuteNonQuery();
+
+                    transaction.Commit();
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[CleanupOrphanProducts] DB Error: {ex.Message}");
+            }
+
+            // 4. Synchronize in RAM: remove orphan products from GlobalState.ScrapedProducts
+            try
+            {
+                if (GlobalState.ScrapedProducts.Count > 0)
+                {
+                    var validCatUrls = new HashSet<string>(
+                        GlobalState.Categories.Select(c => c.Url).Where(u => !string.IsNullOrEmpty(u)),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                    var validKeywords = new HashSet<string>(
+                        GlobalState.Keywords.Select(k => k.Keyword).Where(k => !string.IsNullOrEmpty(k)),
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                    bool IsValidProduct(ScrapedProduct p)
+                    {
+                        if (string.IsNullOrEmpty(p.CategoryUrl)) return false;
+                        if (validCatUrls.Contains(p.CategoryUrl)) return true;
+
+                        if (p.CategoryUrl.StartsWith("https://shopee.vn/search?keyword=", StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (validKeywords.Count == 0) return false;
+                            string kwPart = p.CategoryUrl.Substring("https://shopee.vn/search?keyword=".Length);
+                            string decoded = Uri.UnescapeDataString(kwPart);
+                            return validKeywords.Contains(kwPart) || validKeywords.Contains(decoded);
+                        }
+
+                        return false;
+                    }
+
+                    var remaining = GlobalState.ScrapedProducts.Where(IsValidProduct).ToList();
+                    if (remaining.Count != GlobalState.ScrapedProducts.Count)
+                    {
+                        GlobalState.ScrapedProducts.RaiseListChangedEvents = false;
+                        try
+                        {
+                            GlobalState.ScrapedProducts.Clear();
+                            foreach (var p in remaining)
+                            {
+                                GlobalState.ScrapedProducts.Add(p);
+                            }
+                        }
+                        finally
+                        {
+                            GlobalState.ScrapedProducts.RaiseListChangedEvents = true;
+                            GlobalState.ScrapedProducts.ResetBindings();
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[CleanupOrphanProducts] RAM Error: {ex.Message}");
+            }
+
+            return deletedCount;
+        }
+
+        public static void DeleteProductsByCategories(IEnumerable<string> categoryUrls)
+        {
+            var urlList = categoryUrls?.Where(u => !string.IsNullOrWhiteSpace(u)).Distinct().ToList();
+            if (urlList == null || urlList.Count == 0) return;
+
+            try
+            {
+                using var connection = new SqliteConnection(ConnectionString);
+                connection.Open();
+                using var transaction = connection.BeginTransaction();
+
+                try
+                {
+                    foreach (var url in urlList)
+                    {
+                        // 1. Delete products in ScrapedProducts
+                        using var cmdProd = connection.CreateCommand();
+                        cmdProd.Transaction = transaction;
+                        cmdProd.CommandText = "DELETE FROM ScrapedProducts WHERE CategoryUrl = $url;";
+                        cmdProd.Parameters.AddWithValue("$url", url);
+                        cmdProd.ExecuteNonQuery();
+
+                        // 2. Delete subcategories in SubCategories
+                        using var cmdSub = connection.CreateCommand();
+                        cmdSub.Transaction = transaction;
+                        cmdSub.CommandText = "DELETE FROM SubCategories WHERE ParentUrl = $url;";
+                        cmdSub.Parameters.AddWithValue("$url", url);
+                        cmdSub.ExecuteNonQuery();
+                    }
+
+                    // 3. Delete orphan ProductSnapshots whose products were deleted
+                    using var cmdSnap = connection.CreateCommand();
+                    cmdSnap.Transaction = transaction;
+                    cmdSnap.CommandText = @"
+                        DELETE FROM ProductSnapshots 
+                        WHERE (ShopId || '_' || ItemId) NOT IN (SELECT Id FROM ScrapedProducts);";
+                    cmdSnap.ExecuteNonQuery();
+
+                    transaction.Commit();
+                }
+                catch
+                {
+                    transaction.Rollback();
+                    throw;
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[DeleteProductsByCategories] DB Error: {ex.Message}");
+            }
+
+            // 4. Synchronize in RAM: remove products from GlobalState.ScrapedProducts
+            try
+            {
+                if (GlobalState.ScrapedProducts.Count > 0)
+                {
+                    var targetUrls = new HashSet<string>(urlList, StringComparer.OrdinalIgnoreCase);
+                    var remaining = GlobalState.ScrapedProducts
+                        .Where(p => !targetUrls.Contains(p.CategoryUrl))
+                        .ToList();
+
+                    if (remaining.Count != GlobalState.ScrapedProducts.Count)
+                    {
+                        GlobalState.ScrapedProducts.RaiseListChangedEvents = false;
+                        try
+                        {
+                            GlobalState.ScrapedProducts.Clear();
+                            foreach (var p in remaining)
+                            {
+                                GlobalState.ScrapedProducts.Add(p);
+                            }
+                        }
+                        finally
+                        {
+                            GlobalState.ScrapedProducts.RaiseListChangedEvents = true;
+                            GlobalState.ScrapedProducts.ResetBindings();
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[DeleteProductsByCategories] RAM Error: {ex.Message}");
+            }
         }
 
         public static string GetSetting(string key, string defaultValue = "")
@@ -922,15 +1124,19 @@ namespace ShopeeBackend.Services
 
         public static string GetImageStorageFolder()
         {
-            string val = GetSetting("ImageStorageFolder", @"e:\images\phan-tich-shopee");
-            if (string.IsNullOrWhiteSpace(val)) val = @"e:\images\phan-tich-shopee";
+            string val = GetSetting("ImageStorageFolder", @"d:\shopee-images");
+            if (string.IsNullOrWhiteSpace(val) || val.Contains("phan-tich-shopee", StringComparison.OrdinalIgnoreCase))
+            {
+                val = @"d:\shopee-images";
+                SetSetting("ImageStorageFolder", val);
+            }
             EnsureFolderExists(val);
             return val;
         }
 
         public static void SetImageStorageFolder(string folder)
         {
-            if (string.IsNullOrWhiteSpace(folder)) folder = @"e:\images\phan-tich-shopee";
+            if (string.IsNullOrWhiteSpace(folder)) folder = @"d:\shopee-images";
             EnsureFolderExists(folder);
             SetSetting("ImageStorageFolder", folder);
             GlobalState.ImageStorageFolder = folder;

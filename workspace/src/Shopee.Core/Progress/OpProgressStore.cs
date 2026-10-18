@@ -139,6 +139,18 @@ public sealed class OpProgressStore
         Changed?.Invoke();
     }
 
+    /// <summary>Xoá toàn bộ tiến độ của 1 shop (mọi op) cho accountId + sheet.</summary>
+    public void ClearAllOps(string accountId, string sheet)
+    {
+        lock (_lock)
+        {
+            _items.RemoveAll(x => string.Equals(x.AccountId, accountId, StringComparison.OrdinalIgnoreCase)
+                               && string.Equals(x.Sheet, sheet, StringComparison.OrdinalIgnoreCase));
+            SaveLocked();
+        }
+        Changed?.Invoke();
+    }
+
     /// <summary>Danh sách gọn (acc, sheet, op, status) mọi key đang có — cho UI liệt kê tiến độ.</summary>
     public List<(string acc, string sheet, string op, string status)> Snapshot()
     {

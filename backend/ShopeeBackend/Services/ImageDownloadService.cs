@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,18 +42,67 @@ namespace ShopeeBackend.Services
             return url;
         }
 
+        public static string GetProductImageDirectory(ScrapedProduct p)
+        {
+            string baseFolder = GlobalState.ImageStorageFolder;
+            if (string.IsNullOrWhiteSpace(baseFolder)) baseFolder = @"d:\shopee-images";
+
+            DateTime date = p.ScrapedAt != default ? p.ScrapedAt : DateTime.Now;
+            string dateFolder = date.ToString("dd-MM-yyyy");
+
+            string id = !string.IsNullOrWhiteSpace(p.ItemId) && p.ItemId != "0" ? p.ItemId : p.Id;
+            if (string.IsNullOrWhiteSpace(id)) id = Guid.NewGuid().ToString("N");
+            foreach (char c in Path.GetInvalidFileNameChars())
+                id = id.Replace(c, '_');
+
+            return Path.Combine(baseFolder, dateFolder, id);
+        }
+
         public static string GetLocalImageFileName(ScrapedProduct p)
         {
             string id = !string.IsNullOrWhiteSpace(p.ItemId) && p.ItemId != "0" ? p.ItemId : p.Id;
             if (string.IsNullOrWhiteSpace(id)) id = Guid.NewGuid().ToString("N");
+            foreach (char c in Path.GetInvalidFileNameChars())
+                id = id.Replace(c, '_');
             return $"{id}.jpg";
         }
 
         public static string GetLocalImagePath(ScrapedProduct p)
         {
-            string folder = GlobalState.ImageStorageFolder;
-            if (string.IsNullOrWhiteSpace(folder)) folder = @"e:\images\phan-tich-shopee";
-            return Path.Combine(folder, GetLocalImageFileName(p));
+            string dir = GetProductImageDirectory(p);
+            string fileName = GetLocalImageFileName(p);
+            string standardPath = Path.Combine(dir, fileName);
+
+            if (File.Exists(standardPath) && new FileInfo(standardPath).Length > 0)
+                return standardPath;
+
+            if (Directory.Exists(dir))
+            {
+                try
+                {
+                    var existing = Directory.EnumerateFiles(dir, "*.*")
+                        .FirstOrDefault(f => f.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+                                             f.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+                                             f.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+                                             f.EndsWith(".webp", StringComparison.OrdinalIgnoreCase));
+                    if (existing != null && new FileInfo(existing).Length > 0)
+                        return existing;
+                }
+                catch { }
+            }
+
+            // Fallback legacy paths if old image exists on disk
+            string baseFolder = GlobalState.ImageStorageFolder;
+            if (string.IsNullOrWhiteSpace(baseFolder)) baseFolder = @"d:\shopee-images";
+            string legacyInBase = Path.Combine(baseFolder, fileName);
+            if (File.Exists(legacyInBase) && new FileInfo(legacyInBase).Length > 0)
+                return legacyInBase;
+
+            string legacyOldFolder = Path.Combine(@"e:\images\phan-tich-shopee", fileName);
+            if (File.Exists(legacyOldFolder) && new FileInfo(legacyOldFolder).Length > 0)
+                return legacyOldFolder;
+
+            return standardPath;
         }
 
         public static bool HasLocalImage(ScrapedProduct p)
@@ -122,13 +172,13 @@ namespace ShopeeBackend.Services
 
             try
             {
-                string folder = GlobalState.ImageStorageFolder;
-                if (string.IsNullOrWhiteSpace(folder)) folder = @"e:\images\phan-tich-shopee";
-                DataManager.EnsureFolderExists(folder);
-
                 string filePath = GetLocalImagePath(product);
                 if (File.Exists(filePath) && new FileInfo(filePath).Length > 0)
                     return true;
+
+                string? dir = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrWhiteSpace(dir))
+                    DataManager.EnsureFolderExists(dir);
 
                 string downloadUrl = NormalizeImageUrlToJpeg(product.ImageUrl);
                 var bytes = await _httpClient.GetByteArrayAsync(downloadUrl);

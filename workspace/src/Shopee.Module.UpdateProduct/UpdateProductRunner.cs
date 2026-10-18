@@ -173,13 +173,20 @@ public sealed class UpdateProductRunner
         // chung 1 store). Runner bỏ qua SP đã update ĐÚNG tên hiện tại; MarkDone lúc save gọi thẳng OpProgressStore
         // singleton (thread-safe) nên snapshot này chỉ để SKIP, không cần refresh trong lượt.
         var updateDone = OpProgressStore.Shared.GetDone(wf.AccountId, wf.ProgressKey, AssignmentOps.Update);
-        Log?.Invoke($"Shop \"{wf.ShopName}\": {updateDone.Count} id đã update của riêng shop này. Shop khác không dùng list này.");
+        var importDone = OpProgressStore.Shared.GetDone(wf.AccountId, wf.ProgressKey, AssignmentOps.Import);
+        var targetTracker = new UpdateTargetTracker(records.Records, updateDone, importDone);
+        Log?.Invoke($"Shop \"{wf.ShopName}\": tiến độ đã update {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP mục tiêu (sheet {records.Records.Count} dòng).");
+        if (targetTracker.IsAllCompleted)
+        {
+            Log?.Invoke($"✔ Shop \"{wf.ShopName}\": Đã update đủ {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP theo tiến độ đã lưu — bỏ qua, không mở Brave.");
+            return;
+        }
         // Điều phối dọn Material Center DÙNG CHUNG mọi lane (1 account): đếm bắt-đầu-sửa TOÀN account (quota kho
         // per-account, đếm per-lane là lệch) + cổng pause-all khi kho đầy. Sống ở facade → xuyên qua lane-restart.
         var mediaCoord = new MediaCleanupCoordinator();
         if (n == 1)
         {
-            await using var runner = new BigSellerProductUpdateRunner(wf, m => Log?.Invoke(m), _pause, mediaCoord: mediaCoord, sharedRecords: records, updateDone: updateDone);
+            await using var runner = new BigSellerProductUpdateRunner(wf, m => Log?.Invoke(m), _pause, mediaCoord: mediaCoord, sharedRecords: records, updateDone: updateDone, targetTracker: targetTracker);
             runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
             runner.RowOpening += row => RowOpening?.Invoke(0, row);
             await runner.RunAsync(ct);
@@ -188,7 +195,7 @@ public sealed class UpdateProductRunner
         Log?.Invoke($"▶ Update SONG SONG {n} lane (claim chống trùng SP; mỗi lane 1 Brave/profile/port riêng).");
         await RunLanesAsync(wf, n, ct, async (laneWf, lane, count, claim, export, c) =>
         {
-            await using var runner = new BigSellerProductUpdateRunner(laneWf, m => Log?.Invoke($"[L{lane}] {m}"), _pause, claim, mediaCoord, export, records, updateDone);
+            await using var runner = new BigSellerProductUpdateRunner(laneWf, m => Log?.Invoke($"[L{lane}] {m}"), _pause, claim, mediaCoord, export, records, updateDone, targetTracker);
             runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
             runner.RowOpening += row => RowOpening?.Invoke(lane, row);
             await runner.RunAsync(c);

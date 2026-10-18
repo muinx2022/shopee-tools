@@ -282,9 +282,9 @@ public sealed class InstanceConfig
 
     public bool TryValidateRunRow(int row, out string? error)
     {
-        if (row < 2)
+        if (row < 1)
         {
-            error = "Dòng chạy phải ≥ 2.";
+            error = "Dòng chạy phải ≥ 1.";
             return false;
         }
 

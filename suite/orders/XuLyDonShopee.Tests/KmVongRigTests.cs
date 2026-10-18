@@ -558,6 +558,133 @@ public class KmVongRigTests
         Assert.Null(await ThuNhanThemLenhAsync(rig)); // KHÔNG đụng tới shop #2
     }
 
+    // ══════════ BỎ QUA SHOP ĐÃ XONG TRONG CHU KỲ (boQuaShop) & MỞ LẠI SAU CAPTCHA GIỮA VÒNG ══════════
+
+    /// <summary>
+    /// <c>ChayKmSauPickerAsync</c> và <c>ChayComboSauPickerAsync</c> khi nhận <c>boQuaShop</c> phải bỏ qua đúng
+    /// các shop đã xong trong chu kỳ và bắt đầu chạy từ shop chưa xong kế tiếp.
+    /// </summary>
+    [Fact]
+    public async Task BoQuaShop_KmVaCombo_BoQuaShopDaXong_VaChayTuShopChuaXongKeTiep()
+    {
+        var boQua = new HashSet<string>(["shop.mot", "SHOP.HAI"], StringComparer.OrdinalIgnoreCase);
+
+        // 1) Vòng KM:
+        await using (var rigKm = await BridgeTestRig.StartAsync())
+        {
+            var chayKm = OrdersBridgeSession.ChayKmSauPickerAsync(
+                rigKm.Channel, null, rigKm.Log, ThamSo,
+                vePicker: _ => Task.FromResult(KetQuaVePicker.VeDuoc),
+                nghiGiuaShop: _ => Task.CompletedTask,
+                hanChot: null,
+                dongHo: () => TruocMocBatDau,
+                ct: CancellationToken.None,
+                boQuaShop: boQua);
+
+            Assert.Equal("readShopList", await NhanTenLenhAsync(rigKm));
+            await rigKm.GuiAsync(new { action = "pageData", kind = "shopList", data = BaShop });
+
+            using (var moShop = await rigKm.NhanLenhAsync())
+            {
+                Assert.Equal("openShopDetail", moShop.RootElement.GetProperty("action").GetString());
+                Assert.Equal("333", moShop.RootElement.GetProperty("shopId").GetString());
+            }
+            await rigKm.GuiAsync(new { action = "shopOpened" });
+
+            using (var lenhKm = await rigKm.NhanLenhAsync())
+            {
+                Assert.Equal("chayKm", lenhKm.RootElement.GetProperty("action").GetString());
+                Assert.Equal("333", lenhKm.RootElement.GetProperty("token").GetString());
+            }
+            await rigKm.GuiAsync(new { action = "pageData", kind = "kmKetQua", token = "333", data = GoiTao(45) });
+
+            var kqKm = await chayKm;
+            Assert.Single(kqKm.Shops);
+            Assert.Equal("333", kqKm.Shops[0].ShopId);
+            Assert.Equal(45, kqKm.Shops[0].SoSanPham);
+        }
+
+        // 2) Vòng Combo:
+        var thamSoCombo = new ThamSoCombo(
+            "Combo 25-09", new DateTime(2026, 9, 25), new DateTime(2027, 3, 24), "09:30",
+            Loai: 2, MuaSl: 2, Giam: 5, GioiHan: 100);
+        await using (var rigCombo = await BridgeTestRig.StartAsync())
+        {
+            var chayCombo = OrdersBridgeSession.ChayComboSauPickerAsync(
+                rigCombo.Channel, null, rigCombo.Log, thamSoCombo,
+                vePicker: _ => Task.FromResult(KetQuaVePicker.VeDuoc),
+                nghiGiuaShop: _ => Task.CompletedTask,
+                hanChot: null,
+                dongHo: () => TruocMocBatDau,
+                ct: CancellationToken.None,
+                boQuaShop: boQua);
+
+            Assert.Equal("readShopList", await NhanTenLenhAsync(rigCombo));
+            await rigCombo.GuiAsync(new { action = "pageData", kind = "shopList", data = BaShop });
+
+            using (var moShop = await rigCombo.NhanLenhAsync())
+            {
+                Assert.Equal("openShopDetail", moShop.RootElement.GetProperty("action").GetString());
+                Assert.Equal("333", moShop.RootElement.GetProperty("shopId").GetString());
+            }
+            await rigCombo.GuiAsync(new { action = "shopOpened" });
+
+            using (var lenhCombo = await rigCombo.NhanLenhAsync())
+            {
+                Assert.Equal("chayCombo", lenhCombo.RootElement.GetProperty("action").GetString());
+                Assert.Equal("333", lenhCombo.RootElement.GetProperty("token").GetString());
+            }
+            await rigCombo.GuiAsync(new { action = "pageData", kind = "kmKetQua", token = "333", data = GoiTao(30) });
+
+            var kqCombo = await chayCombo;
+            Assert.Single(kqCombo.Shops);
+            Assert.Equal("333", kqCombo.Shops[0].ShopId);
+            Assert.Equal(30, kqCombo.Shops[0].SoSanPham);
+        }
+    }
+
+    /// <summary>
+    /// Kiểm tra bộ hàm thuần quyết định mở lại trình duyệt sạch 1 lần khi gặp Captcha giữa vòng:
+    /// chỉ mở lại khi đã có shop xong ở lượt đầu, không đưa shop bị Captcha vào <c>boQuaTiep</c>,
+    /// và gộp đúng danh sách shop đã xong của lượt đầu với lượt sau.
+    /// </summary>
+    [Fact]
+    public void MoLaiSauCaptchaGiuaVong_TapShopDaXong_VaGopKetQuaDung()
+    {
+        var kqDau = new KetQuaKm(
+            [
+                new KetQuaKmMotShop("s1", "Six6 Store", false, 0, "modal KHÔNG còn sản phẩm", null, ShopLogin: "six6.store"),
+                new KetQuaKmMotShop("s8", "Delica Store", true, 155, null, null, ShopLogin: "delica.store"),
+                new KetQuaKmMotShop("s9", "Minoa Store", false, 0, null, "verify/traffic", Captcha: true, ShopLogin: "minoa.store"),
+            ],
+            Captcha: true, Loi: "Rơi captcha ở Minoa Store", SoShopChuaChay: 7);
+
+        Assert.True(OrdersBridgeSession.NenThuMoLaiSauCaptchaGiuaVong(
+            kqDau, hanChot: new DateTime(2026, 10, 17, 4, 0, 0), phaiNhuongSauShop: () => false,
+            bayGio: new DateTime(2026, 10, 17, 1, 38, 0)));
+
+        var boQuaTiep = OrdersBridgeSession.TapShopDaXongSauCaptcha(null, kqDau.Shops);
+        Assert.Contains("six6.store", boQuaTiep);
+        Assert.Contains("delica.store", boQuaTiep);
+        Assert.DoesNotContain("minoa.store", boQuaTiep);
+
+        var kqSau = new KetQuaKm(
+            [
+                new KetQuaKmMotShop("s9", "Minoa Store", false, 0, "modal KHÔNG còn sản phẩm", null, ShopLogin: "minoa.store"),
+                new KetQuaKmMotShop("s16", "Babysak Store", true, 88, null, null, ShopLogin: "babysak.store"),
+            ],
+            Captcha: false, Loi: null, SoShopChuaChay: 0);
+
+        var gop = OrdersBridgeSession.GopKetQuaSauMoLai(kqDau, kqSau);
+        Assert.False(gop.Captcha);
+        Assert.Null(gop.Loi);
+        Assert.Equal(0, gop.SoShopChuaChay);
+        Assert.Equal(4, gop.Shops.Count);
+        Assert.Equal(2, gop.SoTao);
+        Assert.Equal(2, gop.SoBoQua);
+        Assert.True(KmLichTuDong.NenGhiMoc(gop));
+    }
+
     // ══════════ Hạ tầng chung ══════════
 
     /// <summary>

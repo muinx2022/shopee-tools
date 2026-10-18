@@ -23,7 +23,9 @@ internal static class BigSellerContextFactory
         return new BigSellerWorkflowSettings
         {
             BravePath = settings.BraveExe.Trim(),
-            ProfileDir = Path.GetFullPath(AppSession.ResolvePersistentDataPath(shop.BigSellerProfileRelativePath)),
+            ProfileDir = Path.IsPathRooted(shop.BigSellerProfileRelativePath)
+                ? shop.BigSellerProfileRelativePath
+                : Path.GetFullPath(AppSession.ResolvePersistentDataPath(shop.BigSellerProfileRelativePath)),
             DebugPort = shop.BigSellerDebugPort,
             AccountId = account.Id,
             Email = account.Email,

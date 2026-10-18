@@ -7,6 +7,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 using ShopeeBackend.Models;
 using ShopeeBackend.Services;
@@ -15,7 +16,7 @@ namespace ShopeeBackend.Views
 {
     public partial class ProductDataView : UserControl
     {
-        private enum FilterMode { All, GoldenOpp, HasDelta, Rescanned, FirstScan, LowVoteHighSold, TopRated, Disqualified }
+        private enum FilterMode { All, Trending, HasDelta, Rescanned, FirstScan, LowVoteHighSold, TopRated }
 
         private FilterMode currentFilter = FilterMode.All;
         private List<ScrapedProduct> allProducts        = new();
@@ -44,18 +45,18 @@ namespace ShopeeBackend.Views
         private Action? relayoutKpis;
 
         // Toolbar controls
-        private RoundedButton btnFilterAll          = null!;
-        private RoundedButton btnFilterGoldenOpp    = null!;
-        private RoundedButton btnFilterHasDelta     = null!;
-        private RoundedButton btnFilterRescanned    = null!;
-        private RoundedButton btnFilterFirstScan    = null!;
-        private RoundedButton btnFilterLowVote      = null!;
-        private RoundedButton btnFilterTopRated     = null!;
-        private RoundedButton btnFilterDisqualified = null!;
-        private SuiteCombo    cboParentCategory     = null!;
+        private RoundedButton btnFilterAll       = null!;
+        private RoundedButton btnFilterTrending  = null!;
+        private RoundedButton btnFilterHasDelta  = null!;
+        private RoundedButton btnFilterRescanned = null!;
+        private RoundedButton btnFilterFirstScan = null!;
+        private RoundedButton btnFilterLowVote   = null!;
+        private RoundedButton btnFilterTopRated  = null!;
+        private SuiteCombo    cboParentCategory  = null!;
         private SuiteCombo    cboCategory           = null!;
         private RoundedButton btnExportExcel        = null!;
         private RoundedButton btnRefresh            = null!;
+        private RoundedButton btnCleanOrphans        = null!;
         private RoundedButton btnDelete             = null!;
         private RoundedButton btnClearAll           = null!;
 
@@ -78,6 +79,38 @@ namespace ShopeeBackend.Views
             this.AutoScaleMode = AutoScaleMode.None;
 
             InitializeLayout();
+
+            var ctxMenu = new ContextMenuStrip();
+            ctxMenu.Items.Add(new ToolStripMenuItem("🌐 Mở link Shopee", null, (s, e) =>
+            {
+                if (dgvProducts.CurrentRow?.DataBoundItem is ScrapedProduct p && !string.IsNullOrEmpty(p.ProductUrl))
+                    try { Process.Start(new ProcessStartInfo(p.ProductUrl) { UseShellExecute = true }); } catch { }
+            }));
+            ctxMenu.Items.Add(new ToolStripSeparator());
+            ctxMenu.Items.Add(new ToolStripMenuItem("🔎 Tìm nguồn 1688 (Hình ảnh)", null, (s, e) =>
+            {
+                if (dgvProducts.CurrentRow?.DataBoundItem is ScrapedProduct p)
+                {
+                    SearchSourceByImage(p, "1688", "https://1688.com/");
+                }
+            }));
+            ctxMenu.Items.Add(new ToolStripMenuItem("🔎 Tìm nguồn Taobao (Hình ảnh)", null, (s, e) =>
+            {
+                if (dgvProducts.CurrentRow?.DataBoundItem is ScrapedProduct p)
+                {
+                    SearchSourceByImage(p, "Taobao", "https://taobao.com/");
+                }
+            }));
+            dgvProducts.ContextMenuStrip = ctxMenu;
+
+            dgvProducts.CellMouseDown += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Right && e.RowIndex >= 0 && e.ColumnIndex >= 0)
+                {
+                    dgvProducts.CurrentCell = dgvProducts.Rows[e.RowIndex].Cells[e.ColumnIndex];
+                }
+            };
+
             ReloadData();
 
             reloadDebounceTimer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -462,23 +495,21 @@ namespace ShopeeBackend.Views
             };
 
             // Row 1: filter buttons + search + combo
-            btnFilterAll          = new RoundedButton { Text = "T\u1EA5t c\u1EA3" };
-            btnFilterGoldenOpp    = new RoundedButton { Text = "\uD83C\uDFAF C\u01A1 h\u1ED9i v\u00E0ng" };
-            btnFilterHasDelta     = new RoundedButton { Text = "\uD83D\uDCC8 C\u00F3 ph\u00E1t sinh" };
-            btnFilterRescanned    = new RoundedButton { Text = "\uD83D\uDD04 SP qu\u00E9t l\u1EA1i" };
-            btnFilterFirstScan    = new RoundedButton { Text = "\uD83C\uDD95 SP l\u1EA7n \u0111\u1EA7u" };
-            btnFilterLowVote      = new RoundedButton { Text = "Vote th\u1EA5p" };
-            btnFilterTopRated     = new RoundedButton { Text = "\u0110\u00E1nh gi\u00E1 cao" };
-            btnFilterDisqualified = new RoundedButton { Text = "\u26D4 \u0110\u00E3 lo\u1EA1i" };
+            btnFilterAll       = new RoundedButton { Text = "T\u1EA5t c\u1EA3" };
+            btnFilterTrending  = new RoundedButton { Text = "\uD83D\uDD25 Trending" };
+            btnFilterHasDelta  = new RoundedButton { Text = "\uD83D\uDCC8 C\u00F3 ph\u00E1t sinh" };
+            btnFilterRescanned = new RoundedButton { Text = "\uD83D\uDD04 SP qu\u00E9t l\u1EA1i" };
+            btnFilterFirstScan = new RoundedButton { Text = "\uD83C\uDD95 SP l\u1EA7n \u0111\u1EA7u" };
+            btnFilterLowVote   = new RoundedButton { Text = "Vote th\u1EA5p" };
+            btnFilterTopRated  = new RoundedButton { Text = "\u0110\u00E1nh gi\u00E1 cao" };
 
-            btnFilterAll.Click          += (s, e) => SetFilterMode(FilterMode.All);
-            btnFilterGoldenOpp.Click    += (s, e) => SetFilterMode(FilterMode.GoldenOpp);
-            btnFilterHasDelta.Click     += (s, e) => SetFilterMode(FilterMode.HasDelta);
-            btnFilterRescanned.Click    += (s, e) => SetFilterMode(FilterMode.Rescanned);
-            btnFilterFirstScan.Click    += (s, e) => SetFilterMode(FilterMode.FirstScan);
-            btnFilterLowVote.Click      += (s, e) => SetFilterMode(FilterMode.LowVoteHighSold);
-            btnFilterTopRated.Click     += (s, e) => SetFilterMode(FilterMode.TopRated);
-            btnFilterDisqualified.Click += (s, e) => SetFilterMode(FilterMode.Disqualified);
+            btnFilterAll.Click       += (s, e) => SetFilterMode(FilterMode.All);
+            btnFilterTrending.Click  += (s, e) => SetFilterMode(FilterMode.Trending);
+            btnFilterHasDelta.Click  += (s, e) => SetFilterMode(FilterMode.HasDelta);
+            btnFilterRescanned.Click += (s, e) => SetFilterMode(FilterMode.Rescanned);
+            btnFilterFirstScan.Click += (s, e) => SetFilterMode(FilterMode.FirstScan);
+            btnFilterLowVote.Click   += (s, e) => SetFilterMode(FilterMode.LowVoteHighSold);
+            btnFilterTopRated.Click  += (s, e) => SetFilterMode(FilterMode.TopRated);
 
             cboParentCategory = new SuiteCombo { Width = 180 };
             cboParentCategory.SelectedIndexChanged += (s, e) => OnParentCategoryChanged();
@@ -506,6 +537,14 @@ namespace ShopeeBackend.Views
             };
             btnRefresh.Click += (s, e) => ReloadData(preservePage: false);
 
+            btnCleanOrphans = new RoundedButton
+            {
+                IconGlyph = "\uE74C",   // Cleanup / Filter
+                IconRole  = ButtonIconRole.Warning,
+                Text      = "Lọc & Dọn dẹp SP"
+            };
+            btnCleanOrphans.Click += BtnCleanOrphans_Click;
+
             btnDelete = new RoundedButton
             {
                 IconGlyph = "\uE74D",   // Delete
@@ -524,9 +563,9 @@ namespace ShopeeBackend.Views
 
             pnl.Controls.AddRange(new Control[]
             {
-                btnFilterAll, btnFilterGoldenOpp, btnFilterHasDelta, btnFilterRescanned, btnFilterFirstScan, btnFilterLowVote, btnFilterTopRated, btnFilterDisqualified,
+                btnFilterAll, btnFilterTrending, btnFilterHasDelta, btnFilterRescanned, btnFilterFirstScan, btnFilterLowVote, btnFilterTopRated,
                 cboParentCategory, cboCategory,
-                btnExportExcel, btnRefresh, btnDelete, btnClearAll
+                btnExportExcel, btnRefresh, btnCleanOrphans, btnDelete, btnClearAll
             });
 
             void UpdateToolbarLayout()
@@ -534,7 +573,7 @@ namespace ShopeeBackend.Views
                 int y1 = 12;
                 int y2 = 50;
                 int x = 12;
-                foreach (var b in new[] { btnFilterAll, btnFilterGoldenOpp, btnFilterHasDelta, btnFilterRescanned, btnFilterFirstScan, btnFilterLowVote, btnFilterTopRated, btnFilterDisqualified })
+                foreach (var b in new[] { btnFilterAll, btnFilterTrending, btnFilterHasDelta, btnFilterRescanned, btnFilterFirstScan, btnFilterLowVote, btnFilterTopRated })
                 {
                     b.Location = new Point(x, y1);
                     x += b.Width + 6;
@@ -545,6 +584,8 @@ namespace ShopeeBackend.Views
                 right = btnClearAll.Left - 8;
                 btnDelete.Location = new Point(right - btnDelete.Width, y2);
                 right = btnDelete.Left - 8;
+                btnCleanOrphans.Location = new Point(right - btnCleanOrphans.Width, y2);
+                right = btnCleanOrphans.Left - 8;
                 btnRefresh.Location = new Point(right - btnRefresh.Width, y2);
                 right = btnRefresh.Left - 8;
                 btnExportExcel.Location = new Point(right - btnExportExcel.Width, y2);
@@ -559,15 +600,15 @@ namespace ShopeeBackend.Views
 
             pnl.Resize                    += (s, e) => UpdateToolbarLayout();
             btnFilterAll.SizeChanged      += (s, e) => UpdateToolbarLayout();
-            btnFilterGoldenOpp.SizeChanged += (s, e) => UpdateToolbarLayout();
+            btnFilterTrending.SizeChanged += (s, e) => UpdateToolbarLayout();
             btnFilterHasDelta.SizeChanged += (s, e) => UpdateToolbarLayout();
             btnFilterRescanned.SizeChanged += (s, e) => UpdateToolbarLayout();
             btnFilterFirstScan.SizeChanged += (s, e) => UpdateToolbarLayout();
             btnFilterLowVote.SizeChanged   += (s, e) => UpdateToolbarLayout();
             btnFilterTopRated.SizeChanged  += (s, e) => UpdateToolbarLayout();
-            btnFilterDisqualified.SizeChanged += (s, e) => UpdateToolbarLayout();
             btnExportExcel.SizeChanged     += (s, e) => UpdateToolbarLayout();
             btnRefresh.SizeChanged         += (s, e) => UpdateToolbarLayout();
+            btnCleanOrphans.SizeChanged    += (s, e) => UpdateToolbarLayout();
             btnDelete.SizeChanged          += (s, e) => UpdateToolbarLayout();
             btnClearAll.SizeChanged        += (s, e) => UpdateToolbarLayout();
 
@@ -586,12 +627,6 @@ namespace ShopeeBackend.Views
                   ToolTipText = "Bấm để xem ảnh đã tải về" });
             dgvProducts.Columns.Add(new DataGridViewTextBoxColumn
                 { Name = "ColScanType", HeaderText = "L\u1EA7n qu\u00E9t", DataPropertyName = "ScanTypeDisplay", Width = 95,
-                  DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter } });
-            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn
-                { Name = "ColTag", HeaderText = "Khuy\u1EBFn ngh\u1ECB", DataPropertyName = "RecommendationTag", Width = 140,
-                  DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter } });
-            dgvProducts.Columns.Add(new DataGridViewTextBoxColumn
-                { Name = "ColScore", HeaderText = "\u0110i\u1EC3m", DataPropertyName = "FormattedScore", Width = 65,
                   DefaultCellStyle = { Alignment = DataGridViewContentAlignment.MiddleCenter } });
             dgvProducts.Columns.Add(new DataGridViewTextBoxColumn
                 { Name = "ColName", HeaderText = "T\u00EAn s\u1EA3n ph\u1EA9m", DataPropertyName = "Name", Width = 380, AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 280 });
@@ -682,28 +717,6 @@ namespace ShopeeBackend.Views
                 }
             }
 
-            if (e.CellStyle != null && dgvProducts.Columns[e.ColumnIndex].Name == "ColTag" && e.Value is string tag)
-            {
-                if (tag.Contains("C\u01A1 h\u1ED9i v\u00E0ng"))
-                {
-                    e.CellStyle.ForeColor = Color.FromArgb(16, 137, 62);
-                    e.CellStyle.Font = new Font(dgvProducts.Font, FontStyle.Bold);
-                }
-                else if (tag.Contains("Hot Trend"))
-                {
-                    e.CellStyle.ForeColor = Color.FromArgb(0, 120, 212);
-                    e.CellStyle.Font = new Font(dgvProducts.Font, FontStyle.Bold);
-                }
-                else if (tag.Contains("Lo\u1EA1i"))
-                {
-                    e.CellStyle.ForeColor = Color.FromArgb(209, 52, 56);
-                }
-                else if (tag.Contains("Ch\u1EDD theo d\u00F5i"))
-                {
-                    e.CellStyle.ForeColor = Color.FromArgb(202, 80, 16);
-                }
-            }
-
             if (dgvProducts.Columns[e.ColumnIndex].Name == "ColLink")
             {
                 // Dòng đang chọn bị DataGridView tách khỏi hàng dùng chung, ô link mất chữ cột.
@@ -732,7 +745,7 @@ namespace ShopeeBackend.Views
                     else
                     {
                         e.Value = ImageCache.GetPlaceholder();
-                        ImageCache.LoadThumbnailAsync(product.ImageUrl, product.ItemId, dgvProducts, () =>
+                        ImageCache.LoadThumbnailAsync(product, dgvProducts, () =>
                         {
                             if (dgvProducts.IsHandleCreated && !dgvProducts.IsDisposed)
                             {
@@ -1062,23 +1075,21 @@ namespace ShopeeBackend.Views
 
         private void HighlightFilterButton()
         {
-            btnFilterAll.Active          = currentFilter == FilterMode.All;
-            btnFilterGoldenOpp.Active    = currentFilter == FilterMode.GoldenOpp;
-            btnFilterHasDelta.Active     = currentFilter == FilterMode.HasDelta;
-            btnFilterRescanned.Active    = currentFilter == FilterMode.Rescanned;
-            btnFilterFirstScan.Active    = currentFilter == FilterMode.FirstScan;
-            btnFilterLowVote.Active      = currentFilter == FilterMode.LowVoteHighSold;
-            btnFilterTopRated.Active     = currentFilter == FilterMode.TopRated;
-            btnFilterDisqualified.Active = currentFilter == FilterMode.Disqualified;
+            btnFilterAll.Active       = currentFilter == FilterMode.All;
+            btnFilterTrending.Active  = currentFilter == FilterMode.Trending;
+            btnFilterHasDelta.Active  = currentFilter == FilterMode.HasDelta;
+            btnFilterRescanned.Active = currentFilter == FilterMode.Rescanned;
+            btnFilterFirstScan.Active = currentFilter == FilterMode.FirstScan;
+            btnFilterLowVote.Active   = currentFilter == FilterMode.LowVoteHighSold;
+            btnFilterTopRated.Active  = currentFilter == FilterMode.TopRated;
 
             btnFilterAll.Invalidate();
-            btnFilterGoldenOpp.Invalidate();
+            btnFilterTrending.Invalidate();
             btnFilterHasDelta.Invalidate();
             btnFilterRescanned.Invalidate();
             btnFilterFirstScan.Invalidate();
             btnFilterLowVote.Invalidate();
             btnFilterTopRated.Invalidate();
-            btnFilterDisqualified.Invalidate();
         }
 
         private void ApplyFilter(bool resetPage = true)
@@ -1087,14 +1098,10 @@ namespace ShopeeBackend.Views
 
             switch (currentFilter)
             {
-                case FilterMode.GoldenOpp:
-                    query = query.Where(p => p.RecommendationTag.Contains("C\u01A1 h\u1ED9i v\u00E0ng"))
-                                 .OrderByDescending(p => p.OpportunityScore)
-                                 .ThenByDescending(p => p.DailyVelocity);
-                    break;
-                case FilterMode.Disqualified:
-                    query = query.Where(p => p.RecommendationTag.Contains("Lo\u1EA1i"))
-                                 .OrderBy(p => p.OpportunityScore);
+                case FilterMode.Trending:
+                    query = query.Where(p => p.DailyVelocity > 0)
+                                 .OrderByDescending(p => p.DailyVelocity)
+                                 .ThenByDescending(p => p.SoldDelta);
                     break;
                 case FilterMode.HasDelta:
                     query = query.Where(p => p.SoldDelta > 0)
@@ -1287,6 +1294,78 @@ namespace ShopeeBackend.Views
             GlobalState.ScrapedProducts.Clear();
             currentPage = 1;
             ReloadData(preservePage: false);
+        }
+
+        private void BtnCleanOrphans_Click(object? sender, EventArgs e)
+        {
+            if (SuiteDialog.Confirm(this,
+                "Xác nhận lọc & dọn dẹp",
+                "Hệ thống sẽ lọc lại dữ liệu và xóa toàn bộ sản phẩm không thuộc danh mục nào trong danh sách đang quản lý.\n\nBạn có chắc chắn muốn thực hiện không?",
+                "Dọn dẹp", DialogTone.Danger) != DialogResult.Yes) return;
+
+            int deleted = DataManager.CleanupOrphanProducts();
+            ReloadData(preservePage: false);
+
+            if (deleted > 0)
+            {
+                SuiteDialog.Alert(this, "Hoàn tất dọn dẹp",
+                    $"Đã dọn dẹp và xóa thành công {deleted:N0} sản phẩm không thuộc danh mục trong danh sách.");
+            }
+            else
+            {
+                SuiteDialog.Alert(this, "Dữ liệu sạch sẽ",
+                    $"Dữ liệu hiện tại hoàn toàn sạch sẽ!\n\nToàn bộ {GlobalState.ScrapedProducts.Count:N0} sản phẩm hiển thị đều thuộc {GlobalState.Categories.Count} danh mục đang quản lý.\n(Toàn bộ sản phẩm của các danh mục bạn đã xóa trước đó đều đã được hệ thống tự động loại bỏ).");
+            }
+        }
+
+        private void SearchSourceByImage(ScrapedProduct p, string platformName, string targetUrl)
+        {
+            var localPath = ImageDownloadService.GetLocalImagePath(p);
+            if (!File.Exists(localPath) || new FileInfo(localPath).Length == 0)
+            {
+                try
+                {
+                    Task.Run(async () => await ImageDownloadService.DownloadProductImageAsync(p)).Wait(4000);
+                }
+                catch { }
+            }
+
+            Image? img = null;
+            if (File.Exists(localPath))
+            {
+                try
+                {
+                    using var ms = new MemoryStream(File.ReadAllBytes(localPath));
+                    img = new Bitmap(ms);
+                }
+                catch { }
+            }
+            if (img == null && !string.IsNullOrWhiteSpace(p.ImageUrl))
+            {
+                img = ImageCache.GetCached(p.ImageUrl);
+            }
+
+            ClipboardHelper.SetImageAndFileRobust(localPath, img);
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(targetUrl) { UseShellExecute = true });
+            }
+            catch { }
+
+            if (File.Exists(localPath))
+            {
+                try
+                {
+                    Process.Start("explorer.exe", $"/select,\"{localPath}\"");
+                }
+                catch { }
+            }
+
+            SuiteDialog.Alert(
+                this,
+                $"Tìm nguồn {platformName}",
+                $"Đã sao chép ảnh và mở thư mục chứa ảnh.\n\nCách 1: Kéo thả file ảnh đang được chọn vào thanh tìm kiếm của {platformName}.\nCách 2: Bấm icon máy ảnh 📷 trên web {platformName} rồi ấn Ctrl+V (Dán đường dẫn) và Enter!");
         }
     }
 }

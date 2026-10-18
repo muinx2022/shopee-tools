@@ -351,6 +351,19 @@ namespace ShopeeBackend.Views
                 DataSource         = GlobalState.Categories
             };
             UiTheme.StyleSuiteDataGrid(dgvCategories);
+            var colCheck = new DataGridViewCheckBoxColumn
+            {
+                Name = "ColCheck",
+                DataPropertyName = nameof(CategoryInfo.IsSelected),
+                HeaderText = "",
+                Width = 46,
+                MinimumWidth = 46,
+                Resizable = DataGridViewTriState.False,
+                SortMode = DataGridViewColumnSortMode.NotSortable
+            };
+            colCheck.DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleCenter;
+            colCheck.DefaultCellStyle.Padding = Padding.Empty;
+            dgvCategories.Columns.Add(colCheck);
             dgvCategories.Columns.Add(new DataGridViewTextBoxColumn
                 { DataPropertyName = "Name", HeaderText = "T\u00EAn danh m\u1EE5c / nh\u00E3n", Width = 280, MinimumWidth = 220 });
             dgvCategories.Columns.Add(new DataGridViewTextBoxColumn
@@ -358,6 +371,33 @@ namespace ShopeeBackend.Views
             dgvCategories.Columns.Add(new DataGridViewTextBoxColumn
                 { DataPropertyName = "Url", HeaderText = "\u0110\u01B0\u1EDDng d\u1EABn Shopee (URL)",
                   AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 250 });
+
+            dgvCategories.CurrentCellDirtyStateChanged += (s, e) =>
+            {
+                if (dgvCategories.CurrentCell is DataGridViewCheckBoxCell)
+                {
+                    dgvCategories.CommitEdit(DataGridViewDataErrorContexts.Commit);
+                }
+            };
+            dgvCategories.CellValueChanged += (s, e) =>
+            {
+                if (e.RowIndex >= 0 && e.ColumnIndex >= 0 && dgvCategories.Columns[e.ColumnIndex].Name == "ColCheck")
+                {
+                    dgvCategories.InvalidateCell(e.ColumnIndex, -1);
+                }
+            };
+            dgvCategories.ColumnHeaderMouseClick += (s, e) =>
+            {
+                if (e.ColumnIndex >= 0 && dgvCategories.Columns[e.ColumnIndex].Name == "ColCheck")
+                {
+                    bool targetState = !GlobalState.Categories.All(c => c.IsSelected);
+                    foreach (var cat in GlobalState.Categories)
+                    {
+                        cat.IsSelected = targetState;
+                    }
+                    dgvCategories.Refresh();
+                }
+            };
 
             dgvCategories.CellFormatting += (s, e) =>
             {
@@ -590,7 +630,7 @@ namespace ShopeeBackend.Views
             _mainForm?.UpdateStatusBarStats();
         }
 
-        public void SelectTab(int index, bool notifyMain = true)
+        public void SelectTab(int index)
         {
             if (_activeTab == index && pnlCatCard != null && pnlCatCard.Visible == (index == 0)) return;
             _activeTab = index;
@@ -604,11 +644,6 @@ namespace ShopeeBackend.Views
                 lblPageSubtitle.Text = index == 0
                     ? "Qu\u1EA3n l\u00FD danh m\u1EE5c qu\u00E9t, lu\u00E2n phi\u00EAn t\u00E0i kho\u1EA3n v\u00E0 theo d\u00F5i ti\u1EBFn tr\u00ECnh c\u00E0o d\u1EEF li\u1EC7u."
                     : "Qu\u00E9t s\u1EA3n ph\u1EA9m theo t\u1EEB kh\u00F3a t\u00ECm ki\u1EBFm (like human typing), s\u1EAFp x\u1EBFp b\u00E1n ch\u1EA1y v\u00E0 c\u00E0o d\u1EEF li\u1EC7u.";
-            }
-
-            if (notifyMain)
-            {
-                _mainForm?.SyncTopTab(index);
             }
         }
 
@@ -749,34 +784,41 @@ namespace ShopeeBackend.Views
 
         private void BtnDeleteCat_Click(object? sender, EventArgs e)
         {
-            if (dgvCategories.SelectedRows.Count > 0)
+            var selectedCats = GetSelectedCategories(fallbackToRowSelection: true);
+            if (selectedCats.Count > 0)
             {
                 if (SuiteDialog.Confirm(this,
                     "X\u00E1c nh\u1EADn x\u00F3a",
-                    $"B\u1EA1n c\u00F3 ch\u1EAFc ch\u1EAFn mu\u1ED1n x\u00F3a {dgvCategories.SelectedRows.Count} danh m\u1EE5c \u0111\u00E3 ch\u1ECDn kh\u00F4ng?",
+                    $"B\u1EA1n c\u00F3 ch\u1EAFc ch\u1EAFn mu\u1ED1n x\u00F3a {selectedCats.Count} danh m\u1EE5c \u0111\u00E3 ch\u1ECDn kh\u00F4ng?",
                     "X\u00F3a", DialogTone.Danger) != DialogResult.Yes) return;
 
-                foreach (DataGridViewRow row in dgvCategories.SelectedRows)
+                var deletedUrls = selectedCats.Select(c => c.Url).Where(u => !string.IsNullOrEmpty(u)).ToList();
+                foreach (var cat in selectedCats)
                 {
-                    if (row.DataBoundItem is CategoryInfo cat)
-                        GlobalState.Categories.Remove(cat);
+                    GlobalState.Categories.Remove(cat);
                 }
+                DataManager.DeleteProductsByCategories(deletedUrls);
+                DataManager.SaveData();
+                RefreshCategoriesGrid();
+
+                SuiteDialog.Alert(this, "Đã xóa danh mục",
+                    $"Đã xóa thành công {selectedCats.Count} danh mục và tự động xóa toàn bộ sản phẩm thuộc các danh mục này khỏi hệ thống.");
             }
         }
 
         private void BtnResetCat_Click(object? sender, EventArgs e)
         {
-            if (dgvCategories.SelectedRows.Count > 0)
+            var selectedCats = GetSelectedCategories(fallbackToRowSelection: true);
+            if (selectedCats.Count > 0)
             {
                 if (SuiteDialog.Confirm(this,
                     "\u0110\u1EB7t l\u1EA1i ti\u1EBFn \u0111\u1ED9",
-                    $"B\u1EA1n c\u00F3 mu\u1ED1n \u0111\u1EB7t l\u1EA1i ti\u1EBFn \u0111\u1ED9 {dgvCategories.SelectedRows.Count} danh m\u1EE5c \u0111\u00E3 ch\u1ECDn v\u1EC1 ban \u0111\u1EA7u \u0111\u1EC3 qu\u00E9t l\u1EA1i t\u1EEB \u0111\u1EA7u kh\u00F4ng?",
+                    $"B\u1EA1n c\u00F3 mu\u1ED1n \u0111\u1EB7t l\u1EA1i ti\u1EBFn \u0111\u1ED9 {selectedCats.Count} danh m\u1EE5c \u0111\u00E3 ch\u1ECDn v\u1EC1 ban \u0111\u1EA7u \u0111\u1EC3 qu\u00E9t l\u1EA1i t\u1EEB \u0111\u1EA7u kh\u00F4ng?",
                     "\u0110\u1EB7t l\u1EA1i", DialogTone.Primary) == DialogResult.Yes)
                 {
-                    foreach (DataGridViewRow row in dgvCategories.SelectedRows)
+                    foreach (var cat in selectedCats)
                     {
-                        if (row.DataBoundItem is CategoryInfo cat)
-                            DataManager.ResetCategoryProgress(cat.Url);
+                        DataManager.ResetCategoryProgress(cat.Url);
                     }
                     dgvCategories.Refresh();
                 }
@@ -795,30 +837,38 @@ namespace ShopeeBackend.Views
             }
         }
 
-        private List<CategoryInfo> GetSelectedCategories()
+        private List<CategoryInfo> GetSelectedCategories(bool fallbackToRowSelection = false)
         {
-            var seen = new HashSet<string>();
-            if (dgvCategories.SelectedRows.Count > 0)
+            var checkedCats = GlobalState.Categories.Where(c => c.IsSelected).ToList();
+            if (checkedCats.Count > 0)
+                return checkedCats;
+
+            if (fallbackToRowSelection)
             {
-                foreach (DataGridViewRow row in dgvCategories.SelectedRows)
+                var seen = new HashSet<string>();
+                if (dgvCategories.SelectedRows.Count > 0)
                 {
-                    if (row.DataBoundItem is CategoryInfo cat && !string.IsNullOrWhiteSpace(cat.Url))
-                        seen.Add(cat.Url);
-                }
-            }
-            else if (dgvCategories.SelectedCells.Count > 0)
-            {
-                foreach (DataGridViewCell cell in dgvCategories.SelectedCells)
-                {
-                    if (cell.RowIndex >= 0 && cell.RowIndex < dgvCategories.Rows.Count)
+                    foreach (DataGridViewRow row in dgvCategories.SelectedRows)
                     {
-                        if (dgvCategories.Rows[cell.RowIndex].DataBoundItem is CategoryInfo cat && !string.IsNullOrWhiteSpace(cat.Url))
+                        if (row.DataBoundItem is CategoryInfo cat && !string.IsNullOrWhiteSpace(cat.Url))
                             seen.Add(cat.Url);
                     }
                 }
+                else if (dgvCategories.SelectedCells.Count > 0)
+                {
+                    foreach (DataGridViewCell cell in dgvCategories.SelectedCells)
+                    {
+                        if (cell.RowIndex >= 0 && cell.RowIndex < dgvCategories.Rows.Count)
+                        {
+                            if (dgvCategories.Rows[cell.RowIndex].DataBoundItem is CategoryInfo cat && !string.IsNullOrWhiteSpace(cat.Url))
+                                seen.Add(cat.Url);
+                        }
+                    }
+                }
+                return GlobalState.Categories.Where(c => seen.Contains(c.Url)).ToList();
             }
 
-            return GlobalState.Categories.Where(c => seen.Contains(c.Url)).ToList();
+            return new List<CategoryInfo>();
         }
 
         private void SetRunningUiState(bool running)
@@ -868,11 +918,11 @@ namespace ShopeeBackend.Views
         {
             if (_activeTab == 0)
             {
-                var selectedCats = GetSelectedCategories();
+                var selectedCats = GetSelectedCategories(fallbackToRowSelection: false);
                 if (selectedCats.Count == 0)
                 {
                     SuiteDialog.Alert(this, "Thông báo",
-                        "Vui lòng chọn ít nhất một danh mục trong bảng để bắt đầu chạy.");
+                        "Vui lòng tích chọn ít nhất một danh mục trong bảng để bắt đầu chạy.");
                     return;
                 }
 
@@ -954,11 +1004,11 @@ namespace ShopeeBackend.Views
 
             if (_activeTab == 0)
             {
-                var selectedCats = GetSelectedCategories();
+                var selectedCats = GetSelectedCategories(fallbackToRowSelection: false);
                 if (selectedCats.Count == 0)
                 {
                     SuiteDialog.Alert(this, "Thông báo",
-                        "Vui lòng chọn ít nhất một danh mục trong bảng để dừng flow.");
+                        "Vui lòng tích chọn ít nhất một danh mục trong bảng để dừng flow.");
                     return;
                 }
 
@@ -1552,6 +1602,49 @@ namespace ShopeeBackend.Views
 
         private void DgvCategories_CellPainting(object? sender, DataGridViewCellPaintingEventArgs e)
         {
+            if (e.RowIndex == -1 && e.ColumnIndex >= 0 && e.ColumnIndex < dgvCategories.Columns.Count
+                && dgvCategories.Columns[e.ColumnIndex].Name == "ColCheck")
+            {
+                e.PaintBackground(e.CellBounds, true);
+
+                bool allChecked = GlobalState.Categories.Count > 0 && GlobalState.Categories.All(c => c.IsSelected);
+                bool someChecked = GlobalState.Categories.Any(c => c.IsSelected);
+
+                Size cbSize = new Size(16, 16);
+                Rectangle cbRect = new Rectangle(
+                    e.CellBounds.Left + (e.CellBounds.Width - cbSize.Width) / 2,
+                    e.CellBounds.Top + (e.CellBounds.Height - cbSize.Height) / 2,
+                    cbSize.Width,
+                    cbSize.Height
+                );
+
+                var state = allChecked
+                    ? System.Windows.Forms.VisualStyles.CheckBoxState.CheckedNormal
+                    : (someChecked
+                        ? System.Windows.Forms.VisualStyles.CheckBoxState.MixedNormal
+                        : System.Windows.Forms.VisualStyles.CheckBoxState.UncheckedNormal);
+
+                if (e.Graphics == null) return;
+
+                if (Application.RenderWithVisualStyles)
+                {
+                    CheckBoxRenderer.DrawCheckBox(e.Graphics, cbRect.Location, state);
+                }
+                else
+                {
+                    ControlPaint.DrawCheckBox(e.Graphics, cbRect,
+                        allChecked ? ButtonState.Checked : (someChecked ? ButtonState.Pushed : ButtonState.Normal));
+                }
+
+                using (var borderPen = new Pen(UiTheme.BorderLightest, 1))
+                {
+                    e.Graphics.DrawLine(borderPen, e.CellBounds.Left, e.CellBounds.Bottom - 1, e.CellBounds.Right, e.CellBounds.Bottom - 1);
+                }
+
+                e.Handled = true;
+                return;
+            }
+
             if (e.RowIndex < 0 || e.ColumnIndex < 0 || e.RowIndex >= GlobalState.Categories.Count) return;
             if (dgvCategories.Columns[e.ColumnIndex].DataPropertyName != "ProgressDisplay") return;
 

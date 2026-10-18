@@ -139,4 +139,102 @@ public class KmMocLanChayCuoiTests
 
         Assert.Null(services.KmConfig.Get(id).LanChayCuoi);
     }
+
+    /// <summary>
+    /// Ca thực tế đêm 17/10/2026: đã tạo được ở một số shop đầu (<c>SoTao &gt; 0</c>) nhưng gặp
+    /// <c>verify/traffic/error</c> giữa vòng (<c>Captcha: true</c>, còn shop chưa chạy) ⇒ <b>KHÔNG</b> được ghi
+    /// <c>LanChayCuoi</c> / <c>ComboLanChayCuoi</c>, đồng thời lưu đúng các shop đã xong (<c>DaTao</c> / <c>BoQua</c>)
+    /// vào <c>ShopKmComboDaXong</c> (không lưu shop bị Captcha).
+    /// </summary>
+    [StaFact]
+    public void CoShopTaoDuoc_NhungBiCatBoiCaptcha_ThiKhongGhiMoc_VaGiuTienDoShopDaXong()
+    {
+        var (temp, services, vm, id) = DungVm("km-moc-captcha-giua-vong@mail.com");
+        using var db = temp;
+
+        var shops = new List<KetQuaKmMotShop>
+        {
+            new("s1", "Six6 Store", DaTao: false, SoSanPham: 0, BoQua: "modal KHÔNG còn sản phẩm", Loi: null, ShopLogin: "six6.store"),
+            new("s8", "Delica Store", DaTao: true, SoSanPham: 155, BoQua: null, Loi: null, ShopLogin: "delica.store"),
+            new("s9", "Minoa Store", DaTao: false, SoSanPham: 0, BoQua: null, Loi: "rơi trang verify/captcha", Captcha: true, ShopLogin: "minoa.store"),
+        };
+        var kq = new KetQuaKm(shops, Captcha: true, Loi: "Rơi captcha khi chạy KM ở shop Minoa Store — dừng cả lượt.", SoShopChuaChay: 7);
+
+        vm.ChotLuotKm(id, kq, Luc);
+        Assert.Null(services.KmConfig.Get(id).LanChayCuoi);
+        var daXongKm = vm.ShopKmComboDaXong(id, LoaiChuongTrinh.ChuongTrinhShop);
+        Assert.Contains("six6.store", daXongKm);
+        Assert.Contains("delica.store", daXongKm);
+        Assert.DoesNotContain("minoa.store", daXongKm);
+
+        // Tương tự cho Combo:
+        vm.ChotLuotCombo(id, kq, Luc);
+        Assert.Null(services.KmConfig.Get(id).ComboLanChayCuoi);
+        var daXongCombo = vm.ShopKmComboDaXong(id, LoaiChuongTrinh.Combo);
+        Assert.Contains("six6.store", daXongCombo);
+        Assert.Contains("delica.store", daXongCombo);
+        Assert.DoesNotContain("minoa.store", daXongCombo);
+    }
+
+    /// <summary>
+    /// Khi lượt chạy bị dừng giữa chừng vì <c>NhuongChoCheckDon</c>, <c>Loi != null</c>, <c>MocBatDauDaTroiQua != null</c>
+    /// hoặc <c>TranThuDaCham &gt; 0</c> thì dù <c>SoTao &gt; 0</c> vẫn KHÔNG ghi mốc.
+    /// </summary>
+    [StaFact]
+    public void CoShopTaoDuoc_NhungDungGiuaChung_ViNhuongHoacLoiHoacMocQuaHoacTran_ThiKhongGhiMoc()
+    {
+        var (temp, services, vm, id) = DungVm("km-moc-dung-som@mail.com");
+        using var db = temp;
+
+        var shopTao = new KetQuaKmMotShop("s1", "Shop 1", DaTao: true, SoSanPham: 10, BoQua: null, Loi: null, ShopLogin: "shop.1");
+
+        vm.ChotLuotKm(id, new KetQuaKm([shopTao], false, null, SoShopChuaChay: 5, NhuongChoCheckDon: true), Luc);
+        Assert.Null(services.KmConfig.Get(id).LanChayCuoi);
+
+        vm.ChotLuotKm(id, new KetQuaKm([shopTao], false, "Không về được trang chọn shop", SoShopChuaChay: 5), Luc);
+        Assert.Null(services.KmConfig.Get(id).LanChayCuoi);
+
+        vm.ChotLuotKm(id, new KetQuaKm([shopTao], false, null, SoShopChuaChay: 5, MocBatDauDaTroiQua: Luc), Luc);
+        Assert.Null(services.KmConfig.Get(id).LanChayCuoi);
+
+        vm.ChotLuotCombo(id, new KetQuaKm([shopTao], false, null, SoShopChuaChay: 5, TranThuDaCham: 2), Luc);
+        Assert.Null(services.KmConfig.Get(id).ComboLanChayCuoi);
+    }
+
+    /// <summary>
+    /// Khi lượt kế tiếp chạy nốt các shop còn lại và hoàn tất chu kỳ (<c>NenGhiMoc == true</c>),
+    /// <c>ChotLuotKm</c> và <c>ChotLuotCombo</c> ghi mốc chạy cuối và xóa sạch <c>ShopKmComboDaXong</c>.
+    /// </summary>
+    [StaFact]
+    public void LuotKeTiepHoanTat_ThiGhiMoc_VaXoaSachTienDoShopDaXong()
+    {
+        var (temp, services, vm, id) = DungVm("km-moc-hoantat-luot2@mail.com");
+        using var db = temp;
+
+        // Lượt 1 bị cắt bởi Captcha sau khi xong shop 1:
+        var kq1 = new KetQuaKm(
+            [new KetQuaKmMotShop("s1", "Delica Store", DaTao: true, SoSanPham: 155, BoQua: null, Loi: null, ShopLogin: "delica.store")],
+            Captcha: true, Loi: "Rơi captcha", SoShopChuaChay: 2);
+        vm.ChotLuotKm(id, kq1, Luc);
+        vm.ChotLuotCombo(id, kq1, Luc);
+        Assert.Single(vm.ShopKmComboDaXong(id, LoaiChuongTrinh.ChuongTrinhShop));
+        Assert.Single(vm.ShopKmComboDaXong(id, LoaiChuongTrinh.Combo));
+
+        // Lượt 2 chạy nốt 2 shop còn lại thành công:
+        var luc2 = Luc.AddHours(1);
+        var kq2 = new KetQuaKm(
+            [
+                new KetQuaKmMotShop("s2", "Minoa Store", DaTao: false, SoSanPham: 0, BoQua: "modal KHÔNG còn sản phẩm", Loi: null, ShopLogin: "minoa.store"),
+                new KetQuaKmMotShop("s3", "Babysak Store", DaTao: true, SoSanPham: 42, BoQua: null, Loi: null, ShopLogin: "babysak.store"),
+            ],
+            Captcha: false, Loi: null, HetKhung: false, SoShopChuaChay: 0);
+
+        vm.ChotLuotKm(id, kq2, luc2);
+        vm.ChotLuotCombo(id, kq2, luc2);
+
+        Assert.Equal(luc2, services.KmConfig.Get(id).LanChayCuoi);
+        Assert.Equal(luc2, services.KmConfig.Get(id).ComboLanChayCuoi);
+        Assert.Empty(vm.ShopKmComboDaXong(id, LoaiChuongTrinh.ChuongTrinhShop));
+        Assert.Empty(vm.ShopKmComboDaXong(id, LoaiChuongTrinh.Combo));
+    }
 }

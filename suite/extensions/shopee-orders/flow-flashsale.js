@@ -2724,32 +2724,87 @@ export function cuaDungTrangDich(trangHienTai, trangDich) {
 }
 
 /**
+ * PURE — đọc giờ bắt đầu từ nhãn khung giờ dạng `HH:mm - HH:mm`.
+ * @param {string|null|undefined} nhan
+ * @returns {number|null} Giờ bắt đầu (0-23) hoặc null nếu không đọc được.
+ */
+export function gioBatDauTuNhan(nhan) {
+  if (!nhan || typeof nhan !== "string") { return null; }
+  const m = nhan.match(/(\d{1,2}):(\d{2})/);
+  if (!m) { return null; }
+  const g = parseInt(m[1], 10);
+  return (isFinite(g) && g >= 0 && g <= 23) ? g : null;
+}
+
+/**
+ * PURE — kiểm tra một nhãn khung giờ có thuộc khoảng 06:00 đến 22:00 hay không.
+ * @param {string|null|undefined} nhan
+ * @returns {boolean}
+ */
+export function laKhung06Den22h(nhan) {
+  const g = gioBatDauTuNhan(nhan);
+  return g !== null && g >= 6 && g <= 22;
+}
+
+/**
+ * PURE — kiểm tra một nhãn khung giờ có thuộc buổi sáng (06:00 đến trước 12:00) hay không.
+ * @param {string|null|undefined} nhan
+ * @returns {boolean}
+ */
+export function laKhungSang(nhan) {
+  const g = gioBatDauTuNhan(nhan);
+  return g !== null && g >= 6 && g < 12;
+}
+
+/**
  * PURE — **khung giờ nào của ngày đích còn CHƯA DÙNG trong lượt này.**
- *
- * <p>"Ghi nhớ trong lượt" là thứ DUY NHẤT luồng này phải nhớ (plan §4) — và nó sống trong bộ nhớ của lượt,
- * <b>KHÔNG ghi DB</b>. Một con trỏ tiến độ dưới DB sẽ trôi lệch ngay khi một máy bỏ lỡ một đêm.</p>
- *
- * <p>Loại cả khung `disabled` (Shopee đã khoá) lẫn khung không đọc được `value` — không có `value` thì không
- * có cách nào ghi nhớ là đã dùng, và bấm mù là bấm lại đúng khung vừa tạo.</p>
+ * 
+ * <p>ƯU TIÊN KHUNG 06:00 - 22:00 + RANDOM: lọc các khung hợp lệ chưa dùng, ưu tiên random chọn trong nhóm
+ * khung giờ 06:00 - 22:00 (buổi sáng, trưa, chiều, tối) trước để sản phẩm mới ở các trang đầu rơi vào
+ * giờ có lượng người xem đông. Khi hết khung 06-22h thì mới random chọn trong các khung còn lại (đêm/khuya).</p>
  *
  * @param {Array<{chiSo:number, value:string|null, disabled:boolean, nhan:string|null}>} dsKhung
  * @param {Array<string>} daDung Các `value` đã dùng trong lượt.
+ * @param {Function} [rng=Math.random] Hàm sinh số ngẫu nhiên [0, 1), phục vụ cả chạy thật và test.
  * @returns {{chiSo:number, value:string|null, nhan:string|null, ly:string}}
  */
-export function khungChuaDung(dsKhung, daDung) {
+export function khungChuaDung(dsKhung, daDung, rng = Math.random) {
   const ds = Array.isArray(dsKhung) ? dsKhung : [];
   const da = Array.isArray(daDung) ? daDung.map((v) => String(v)) : [];
+
+  const hopLe = [];
   for (const k of ds) {
     if (!k || k.disabled === true) { continue; }
     const v = k.value === null || k.value === undefined ? null : String(k.value);
     if (v === null || v.length === 0) { continue; }
     if (da.indexOf(v) >= 0) { continue; }
-    return { chiSo: k.chiSo, value: v, nhan: k.nhan === undefined ? null : k.nhan,
-             ly: "khung '" + (k.nhan || v) + "' chưa dùng trong lượt này" };
+    hopLe.push({ k, v });
   }
+
+  if (hopLe.length === 0) {
+    return {
+      chiSo: -1, value: null, nhan: null,
+      ly: "hết khung chưa dùng (tổng " + ds.length + " khung, đã dùng " + da.length + ")",
+    };
+  }
+
+  const khungUuTien = hopLe.filter((item) => laKhung06Den22h(item.k.nhan));
+  const khungConLai = hopLe.filter((item) => !laKhung06Den22h(item.k.nhan));
+
+  const pool = khungUuTien.length > 0 ? khungUuTien : khungConLai;
+  const randFn = typeof rng === "function" ? rng : Math.random;
+  const r = randFn();
+  const idx = Math.floor((isFinite(r) && r >= 0 && r < 1 ? r : 0) * pool.length);
+  const chon = pool[Math.min(idx, pool.length - 1)];
+  const isUuTien = khungUuTien.length > 0;
+
   return {
-    chiSo: -1, value: null, nhan: null,
-    ly: "hết khung chưa dùng (tổng " + ds.length + " khung, đã dùng " + da.length + ")",
+    chiSo: chon.k.chiSo,
+    value: chon.v,
+    nhan: chon.k.nhan === undefined ? null : chon.k.nhan,
+    ly: isUuTien
+      ? "khung 06-22h '" + (chon.k.nhan || chon.v) + "' (ưu tiên 06-22h, random trong " + khungUuTien.length + " khung)"
+      : "khung ngoài 06-22h '" + (chon.k.nhan || chon.v) + "' (hết khung 06-22h, random trong " + khungConLai.length + " khung còn lại)",
   };
 }
 
@@ -4010,6 +4065,7 @@ export async function chayFlashSaleChoTabDangMo(ts) {
       }
       const choBang = await choBangSanPhamLang(chay);
 
+      /* TẠM THỜI BỎ SẮP XẾP DOANH SỐ (chỉ tạm bỏ, đừng xóa đi)
       const vanTay = async () => {
         const d = await chay(pageVanTayModalSanPham, []);
         return d ? d.van : null;
@@ -4034,10 +4090,18 @@ export async function chayFlashSaleChoTabDangMo(ts) {
         ghiChu: "Đúng " + SO_LAN_BAM_SAP_XEP + " cú 'down' = giảm dần (số đo lượt 11). KHÔNG có cú thứ ba, và "
           + "KHÔNG có cơ chế thử lại quanh cú bấm.",
       };
+      */
+      return {
+        selectorDung: sel,
+        sau: { choBangSanPham: choBang },
+        kyVong: "co", docLai: soDong > 0 ? "co" : "khong",
+        ghiChu: "Tạm thời bỏ sắp xếp doanh số, mở modal sp xong chọn luôn.",
+      };
     }, tabId, NHAN);
     if (!bD.ok) { return ketThuc({ soSanPham: soSpDaNap, daTao: soKhungDaTao > 0 || soTaiChe > 0, soKhungDaTao, soTaiChe }); }
 
     // ── E) CỬA KIỂM: dãy Doanh số phải KHÔNG TĂNG DẦN ────────────────────────────────────────────────
+    /* TẠM THỜI BỎ CỬA KIỂM DOANH SỐ (chỉ tạm bỏ, đừng xóa đi)
     const bE = await buoc(ds, `${K}.5 CỬA KIỂM Doanh số (phải KHÔNG tăng dần)`, async () => {
       const cua = dayDoanhSoKhongTangDan(docDoanhSo);
       cuaTrang1 = cua;
@@ -4059,6 +4123,7 @@ export async function chayFlashSaleChoTabDangMo(ts) {
       };
     }, tabId, NHAN);
     if (!bE.ok) { return ketThuc({ soSanPham: soSpDaNap, daTao: soKhungDaTao > 0 || soTaiChe > 0, soKhungDaTao, soTaiChe }); }
+    */
 
     // ── F) Lật tới TRANG thứ k → tick "chọn tất cả" → Xác nhận modal sản phẩm ────────────────────────
     // ⚠ ĐỌC SỐ TRANG THẬT TRƯỚC KHI ĐẶT TÊN BƯỚC — modal sản phẩm đang mở từ K*.4/K*.5, pager của nó là chỗ
@@ -4085,11 +4150,13 @@ export async function chayFlashSaleChoTabDangMo(ts) {
     const bF = await buoc(ds, `${K}.6 Trang ${trangDich}/${soTrang} + chọn tất cả + Xác nhận modal`, async () => {
       // ── CỔNG: chưa có cửa kiểm sắp xếp ĐẠT cho trang 1 thì KHÔNG lật, KHÔNG tick ──────────────────────
       // Fail-closed cả ca "cửa đỏ" lẫn ca "quên gọi cửa" — xem {@link congLatTrang}.
+      /* TẠM THỜI BỎ CỔNG DOANH SỐ KHI BỎ SẮP XẾP (chỉ tạm bỏ, đừng xóa đi)
       const cong = congLatTrang(cuaTrang1);
       if (!cong.dat) {
         return { sau: { cong, trangDich }, loi: cong.ly, kyVong: "co", docLai: "khong" };
       }
       let soCuoiTrangTruoc = cong.soCuoi;
+      */
 
       const nhatKyLat = [];
       for (let t = 1; t < trangDich; t++) {
@@ -4112,6 +4179,7 @@ export async function chayFlashSaleChoTabDangMo(ts) {
         }
 
         // ⚠ ĐỌC SAU KHI BẢNG ĐÃ LẮNG (`choBangDoiRoiLang` ngay trên) — đọc sớm là đọc bảng đang vẽ.
+        /* TẠM THỜI BỎ CỬA KIỂM DOANH SỐ SAU LẬT (chỉ tạm bỏ, đừng xóa đi)
         const docTrang = await chay(pageDocDoanhSoMoiDongFlash, []);
         const cuaTrang = cuaKiemTrangSauLat(docTrang, soCuoiTrangTruoc);
         // GÁN BỔ SUNG vào ĐÚNG phần tử vừa push ở trên — KHÔNG push phần tử thứ hai cho cùng một cú lật, dump
@@ -4132,6 +4200,7 @@ export async function chayFlashSaleChoTabDangMo(ts) {
                    kyVong: "co", docLai: "khong" };
         }
         soCuoiTrangTruoc = cuaTrang.soCuoi;
+        */
       }
 
       // ── CỬA: đang đứng ĐÚNG trang k chứ? CHỈ hỏi khi có lật — khung 1 không thêm một lượt gọi nào ───────

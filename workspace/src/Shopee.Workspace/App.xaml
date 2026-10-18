@@ -1,4 +1,4 @@
-﻿<Application x:Class="Shopee.Workspace.App"
+<Application x:Class="Shopee.Workspace.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:ws="clr-namespace:Shopee.Workspace.Modules.Workspace"
@@ -33,6 +33,9 @@
             </DataTemplate>
             <DataTemplate DataType="{x:Type ws:WorkspaceViewModel}">
                 <ws:WorkspaceView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type ws:AutoRunViewModel}">
+                <ws:AutoRunView />
             </DataTemplate>
             <DataTemplate DataType="{x:Type ca:CheckAccountViewModel}">
                 <ca:CheckAccountView />

@@ -213,6 +213,8 @@ public partial class AccountsViewModel
         // nên một lượt hoãn đã nhường xong vẫn để nó bật cho tới lượt kế; quên reset là vòng KM dừng ngay sau
         // shop đầu, im lặng.
         _nhuongChoCheckDon = false;
+        var boQuaShop = new HashSet<string>(
+            TapShopXongKmCombo(accountId, LoaiChuongTrinh.ChuongTrinhShop), StringComparer.OrdinalIgnoreCase);
         return ChayLatCatAsync(
             tenViec: "KM của Shop",
             cauBatDau: $"KM của Shop: mở Brave sạch → SSO → lặp qua MỌI shop, mỗi shop tạo chương trình \"{thamSo.Ten}\" "
@@ -224,7 +226,7 @@ public partial class AccountsViewModel
             than: async (phien, login, ct) =>
             {
                 var kq = await phien.ChayKmMoiShopAsync(
-                    login, thamSo, hanChot, ct, () => _nhuongChoCheckDon);
+                    login, thamSo, hanChot, ct, () => _nhuongChoCheckDon, boQuaShop);
                 return ChotLuotKm(accountId, kq, System.DateTime.Now);
             },
             dongCuaSoKhiXong: true,
@@ -258,12 +260,20 @@ public partial class AccountsViewModel
     /// <param name="luc">Mốc ghi (nhận từ ngoài để test được, production truyền <c>DateTime.Now</c>).</param>
     internal KetLuanLatCat ChotLuotKm(long accountId, KetQuaKm kq, DateTime luc)
     {
+        var xong = TapShopXongKmCombo(accountId, LoaiChuongTrinh.ChuongTrinhShop);
+        foreach (var s in kq.Shops)
+        {
+            var khoa = KhoaTienDo(s);
+            if (khoa.Length > 0 && ShopDaXongKmCombo(s)) { xong.Add(khoa); }
+        }
+
         if (KmLichTuDong.NenGhiMoc(kq))
         {
             var cu = _services.KmConfig.Get(accountId);
             _services.KmConfig.Save(cu with { LanChayCuoi = luc });
             // Mốc CHUNG của tài khoản, không phải của máy: máy khác phải biết đêm nay đã chạy rồi.
             _services.KmHoSoDaDoi?.Invoke();
+            xong.Clear();
         }
         // `_dsTkDaDung` là tập phiên check đơn mà CHÍNH lượt này đã tạm dừng — nó còn nguyên tới lượt
         // `TraHoSo` ở `finally`, nên đọc ở đây là đọc đúng sự thật sắp xảy ra.
@@ -410,6 +420,8 @@ public partial class AccountsViewModel
     {
         // RESET CỜ NHƯỜNG ngay trước lượt — cùng lý do với `ChayKmAsync`, xem `_nhuongChoCheckDon`.
         _nhuongChoCheckDon = false;
+        var boQuaShop = new HashSet<string>(
+            TapShopXongKmCombo(accountId, LoaiChuongTrinh.Combo), StringComparer.OrdinalIgnoreCase);
         return ChayLatCatAsync(
             tenViec: "Combo Khuyến Mãi",
             // Mô tả chương trình đọc TỪ CHÍNH `thamSo` (`ThamSoCombo.MoTa`) — không ghép lại từ biến rời.
@@ -421,7 +433,7 @@ public partial class AccountsViewModel
             than: async (phien, login, ct) =>
             {
                 var kq = await phien.ChayComboMoiShopAsync(
-                    login, thamSo, hanChot, ct, () => _nhuongChoCheckDon);
+                    login, thamSo, hanChot, ct, () => _nhuongChoCheckDon, boQuaShop);
                 return ChotLuotCombo(accountId, kq, System.DateTime.Now);
             },
             dongCuaSoKhiXong: true,
@@ -442,12 +454,20 @@ public partial class AccountsViewModel
     /// </summary>
     internal KetLuanLatCat ChotLuotCombo(long accountId, KetQuaKm kq, DateTime luc)
     {
+        var xong = TapShopXongKmCombo(accountId, LoaiChuongTrinh.Combo);
+        foreach (var s in kq.Shops)
+        {
+            var khoa = KhoaTienDo(s);
+            if (khoa.Length > 0 && ShopDaXongKmCombo(s)) { xong.Add(khoa); }
+        }
+
         if (KmLichTuDong.NenGhiMoc(kq))
         {
             var cu = _services.KmConfig.Get(accountId);
             _services.KmConfig.Save(cu with { ComboLanChayCuoi = luc });
             // Mốc CHUNG của tài khoản, không phải của máy: máy khác phải biết đêm nay đã chạy rồi.
             _services.KmHoSoDaDoi?.Invoke();
+            xong.Clear();
         }
         return new KetLuanLatCat(
             CauTongKetCombo(kq, _dsTkDaDung.Count > 0), CauTrangThaiKm(kq, LoaiChuongTrinh.Combo));
@@ -882,6 +902,29 @@ public partial class AccountsViewModel
     /// thái trong bộ nhớ, không xuống DB, nên đây là cửa duy nhất đo được nó.</summary>
     internal IReadOnlyCollection<string> ShopFlashDaXong(long accountId, DateTime ngayDich)
         => TapShopXongFlash(accountId, DateOnly.FromDateTime(ngayDich));
+
+    /// <summary>
+    /// (tài khoản, LOẠI CHƯƠNG TRÌNH KM/Combo) → tập KHÓA SHOP đã XONG trong chu kỳ hiện tại.
+    /// Giữ lại khi lượt bị cắt dở (Captcha / lỗi / nhường check đơn) để lượt chạy tiếp theo bỏ qua các shop đã xong;
+    /// xóa sạch ngay khi chu kỳ hoàn tất và ghi <c>LanChayCuoi</c> / <c>ComboLanChayCuoi</c>.
+    /// </summary>
+    private readonly Dictionary<(long AccountId, LoaiChuongTrinh Loai), HashSet<string>> _kmComboTienDo = new();
+
+    private HashSet<string> TapShopXongKmCombo(long accountId, LoaiChuongTrinh loai)
+    {
+        var khoa = (accountId, loai);
+        if (!_kmComboTienDo.TryGetValue(khoa, out var tap))
+        {
+            tap = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _kmComboTienDo[khoa] = tap;
+        }
+        return tap;
+    }
+
+    private static bool ShopDaXongKmCombo(KetQuaKmMotShop s) => s.DaTao || s.BoQua is not null;
+
+    internal IReadOnlyCollection<string> ShopKmComboDaXong(long accountId, LoaiChuongTrinh loai)
+        => TapShopXongKmCombo(accountId, loai);
 
     /// <summary>
     /// GHI số shop vừa đọc được từ picker cho (tài khoản, ngày đích) — chỉ giữ lại số LỚN NHẤT của ngày.
@@ -1664,8 +1707,9 @@ public partial class AccountsViewModel
     /// <param name="tuChayLaiKhiXong">Lát cắt TỰ kết thúc và tự trả hồ sơ (KM của Shop) — câu log phải nói
     /// "xong lượt là tự chạy lại", chứ không phải "đóng cửa sổ xong sẽ chạy lại" (nút "Mở list shop").</param>
     /// <param name="ct">Token huỷ.</param>
+    /// <param name="accountId">Mã tài khoản chỉ định của lượt mượn (nếu có).</param>
     private async Task<bool> MuonHoSoAsync(
-        string email, string tenViec, bool tuChayLaiKhiXong, System.Threading.CancellationToken ct)
+        string email, string tenViec, bool tuChayLaiKhiXong, System.Threading.CancellationToken ct, long? accountId = null)
     {
         // Lượt mượn TRƯỚC còn treo (bấm "Mở list shop" lần hai, cho tài khoản KHÁC) ⇒ nhả khoá cũ trước khi xin
         // khoá mới. Không nhả là lease của tài khoản trước rò lại vĩnh viễn — `_loginKhoaXem` chỉ giữ được MỘT
@@ -1742,11 +1786,26 @@ public partial class AccountsViewModel
         var ds = _dsTkDaDung.Where(id => !_dsTkNguoiDungDungTay.Contains(id)).ToList();
         var boQua = _dsTkDaDung.Where(_dsTkNguoiDungDungTay.Contains).ToList();
         _dsTkDaDung.Clear();
-        _dsTkNguoiDungDungTay.Clear();
+
         // ĐỌC RỒI XOÁ NGAY: mốc hoãn là của ĐÚNG lượt vừa xong. Để sót thì lượt mượn hồ sơ SAU đó (nút "Mở list
         // shop", một lượt KM…) cũng bị hoãn theo, không vì cái gì.
         var hoanToi = MocChayLaiCheckDonSauFlash;
         MocChayLaiCheckDonSauFlash = null;
+
+        // CHỐT AN TOÀN: Nếu ds rỗng mà có mốc hoãn từ Flash Sale vừa xong:
+        // Lấy danh sách tài khoản hợp lệ chưa bị dừng tay để lên lịch chạy lại tới mốc hoãn thay vì vứt bỏ mốc hoãn.
+        if (ds.Count == 0 && hoanToi.HasValue && hoanToi.Value > DongHoHoanChayLai())
+        {
+            var tkHopLe = _services.Accounts.GetAll()
+                .Where(a => !_dsTkNguoiDungDungTay.Contains(a.Id))
+                .Select(a => a.Id)
+                .ToList();
+            if (tkHopLe.Count > 0)
+            {
+                ds = tkHopLe;
+            }
+        }
+        _dsTkNguoiDungDungTay.Clear();
 
         // Nhả khoá: NỐI ĐUÔI vào chuỗi thay vì bắn tự do. `TraHoSo` chạy đồng bộ trên UI thread (từ các nút)
         // nên không await được, mà thả tự do thì lượt DELETE có thể còn đang bay khi lượt MƯỢN kế xin khoá mới
@@ -1818,8 +1877,27 @@ public partial class AccountsViewModel
                 continue;
             }
 
+            // NHƯỜNG KHUNG ĐÊM 01:00-04:00 CHO KM/COMBO
+            var bayGio = DongHoHoanChayLai();
+            var mayNay = _services.MayNay?.Invoke();
+            if (KmLichTuDong.NenNhuongKhung(_services.KmConfig.Get(id), mayNay, bayGio, bayGio))
+            {
+                var mocHetKhungDem = KmLichTuDong.HoanVongCheckDon(bayGio, true);
+                if (mocHetKhungDem > bayGio)
+                {
+                    _services.Log.Append(email,
+                        $"Đã đóng cửa sổ — HOÃN chạy lại check đơn tới {mocHetKhungDem:HH:mm dd/MM} (nhường khung đêm 01:00–04:00 cho KM/Combo).");
+                    _ctsHoanChayLai ??= new System.Threading.CancellationTokenSource();
+                    var luotId = Guid.NewGuid();
+                    lock (_khoaHoan) { _dsTkDangHoanChayLai[id] = luotId; }
+                    DatMocHoanDangCho(id, mocHetKhungDem);
+                    LuotHoanGanNhat = ChayLaiCheckDonSauKhiChoAsync(id, luotId, email, mocHetKhungDem - bayGio, _ctsHoanChayLai.Token);
+                    continue;
+                }
+            }
+
             _services.Log.Append(email, "Đã đóng cửa sổ — chạy lại check đơn.");
-            _services.Sessions.Start(id);
+            ChayLaiPhienCheckDon(id);
         }
         UpdateSelectedSessionStatus();
     }
@@ -3490,7 +3568,7 @@ public partial class AccountsViewModel
                 }
             }
 
-            if (!await MuonHoSoAsync(email, tenViec, dongCuaSoKhiXong, _bridgeCts.Token))
+            if (!await MuonHoSoAsync(email, tenViec, dongCuaSoKhiXong, _bridgeCts.Token, accountId))
             {
                 return;
             }

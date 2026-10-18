@@ -42,6 +42,7 @@ namespace ShopeeBackend.Services
     public static class KiotProxyClient
     {
         private static readonly HttpClient Http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, KiotProxyInfo> _proxyCache = new();
 
         /// <summary>
         /// Lấy thông tin Proxy hiện tại được gán với Key (GET /api/v1/proxies/current?key=...)
@@ -56,7 +57,12 @@ namespace ShopeeBackend.Services
                 return CreateStaticProxyInfo(key);
 
             string url = $"https://api.kiotproxy.com/api/v1/proxies/current?key={Uri.EscapeDataString(key)}";
-            return await QueryKiotApiAsync(url);
+            var result = await QueryKiotApiAsync(url);
+            if (result.Success && !string.IsNullOrWhiteSpace(result.Http))
+            {
+                _proxyCache[key] = result;
+            }
+            return result;
         }
 
         /// <summary>
@@ -72,7 +78,12 @@ namespace ShopeeBackend.Services
                 return CreateStaticProxyInfo(key);
 
             string url = $"https://api.kiotproxy.com/api/v1/proxies/new?key={Uri.EscapeDataString(key)}&region={Uri.EscapeDataString(region)}";
-            return await QueryKiotApiAsync(url);
+            var result = await QueryKiotApiAsync(url);
+            if (result.Success && !string.IsNullOrWhiteSpace(result.Http))
+            {
+                _proxyCache[key] = result;
+            }
+            return result;
         }
 
         /// <summary>
@@ -82,6 +93,8 @@ namespace ShopeeBackend.Services
         {
             if (string.IsNullOrWhiteSpace(key) || IsStaticIpPort(key))
                 return true;
+
+            _proxyCache.TryRemove(key.Trim(), out _);
 
             try
             {
@@ -122,6 +135,7 @@ namespace ShopeeBackend.Services
             var current = await GetCurrentProxyAsync(key);
             if (current.Success && !string.IsNullOrWhiteSpace(current.Http))
             {
+                _proxyCache[key] = current;
                 int rem = current.SecondsRemaining;
                 if (rem >= safeSecondsThreshold)
                 {
@@ -133,7 +147,64 @@ namespace ShopeeBackend.Services
             }
             else
             {
-                logCallback?.Invoke($"Chưa có proxy gắn với key ({current.ErrorMessage}). Đang yêu cầu cấp IP mới...");
+                // Khi current trả về không thành công:
+                // Kiểm tra xem current.ErrorMessage có phải là bị giới hạn gọi API (Rate limit) không
+                if (IsRateLimitError(current.ErrorMessage, current.ErrorCode))
+                {
+                    // Nếu bị giới hạn VÀ trong _proxyCache có proxy cho key đó mà cached.SecondsRemaining >= safeSecondsThreshold (hoặc > 60s):
+                    if (_proxyCache.TryGetValue(key, out var cached)
+                        && cached.Success
+                        && !string.IsNullOrWhiteSpace(cached.Http)
+                        && (cached.SecondsRemaining >= safeSecondsThreshold || cached.SecondsRemaining > 60))
+                    {
+                        logCallback?.Invoke($"⚠️ KiotProxy bị giới hạn tần suất gọi API, tiếp tục sử dụng proxy đã cấp ({cached.SecondsRemaining}s còn lại): {cached.Http}");
+                        return cached;
+                    }
+
+                    // Nếu bị giới hạn nhưng chưa có cache hoặc cache sắp hết hạn:
+                    // Thử delay 3 giây rồi gọi lại GetCurrentProxyAsync(key) một lần nữa trước khi quyết định.
+                    logCallback?.Invoke("⚠️ KiotProxy bị giới hạn tần suất gọi API. Đang chờ 3s để thử kiểm tra lại proxy hiện tại...");
+                    await Task.Delay(3000);
+                    if (isStopRequested?.Invoke() == true)
+                        return new KiotProxyInfo { ErrorMessage = "Tiến trình đã bị dừng bởi người dùng." };
+
+                    current = await GetCurrentProxyAsync(key);
+                    if (current.Success && !string.IsNullOrWhiteSpace(current.Http))
+                    {
+                        _proxyCache[key] = current;
+                        int rem = current.SecondsRemaining;
+                        if (rem >= safeSecondsThreshold || rem > 60)
+                        {
+                            logCallback?.Invoke($"Proxy hiện tại còn sống an toàn ({rem}s / TTL {current.Ttl}s): {current.Http}");
+                            return current;
+                        }
+
+                        logCallback?.Invoke($"Proxy sắp hết hạn ({rem}s <= {safeSecondsThreshold}s, TTC={current.Ttc}s). Đang yêu cầu cấp IP mới...");
+                    }
+                    else if (IsRateLimitError(current.ErrorMessage, current.ErrorCode))
+                    {
+                        // Lần 2 vẫn bị rate limit!
+                        // TUYỆT ĐỐI KHÔNG nhảy vào gọi GetNewProxyAsync khi bị dính rate limit của API current,
+                        // vì gọi /new lúc này sẽ lập tức dính TTC cooldown (114s).
+                        if (_proxyCache.TryGetValue(key, out var fallbackCached)
+                            && fallbackCached.Success
+                            && !string.IsNullOrWhiteSpace(fallbackCached.Http)
+                            && fallbackCached.SecondsRemaining > 0)
+                        {
+                            logCallback?.Invoke($"⚠️ KiotProxy vẫn bị giới hạn gọi API, tận dụng proxy hiện có trong cache ({fallbackCached.SecondsRemaining}s còn lại): {fallbackCached.Http}");
+                            return fallbackCached;
+                        }
+
+                        logCallback?.Invoke($"⚠️ KiotProxy bị giới hạn tần suất gọi API ({current.ErrorMessage}). Không gọi đổi proxy mới để tránh dính TTC cooldown.");
+                        return current;
+                    }
+                }
+
+                // Chỉ gọi GetNewProxyAsync khi KiotProxy thực sự xác nhận không có proxy gắn với key (hoặc sau khi đã thử lại mà vẫn không có)
+                if (!current.Success)
+                {
+                    logCallback?.Invoke($"Chưa có proxy gắn với key ({current.ErrorMessage}). Đang yêu cầu cấp IP mới...");
+                }
             }
 
             // Bước 2: Yêu cầu cấp IP mới với cơ chế chờ TTC cooldown & tự động thử lại
@@ -150,6 +221,7 @@ namespace ShopeeBackend.Services
 
                 if (newProxy.Success && !string.IsNullOrWhiteSpace(newProxy.Http))
                 {
+                    _proxyCache[key] = newProxy;
                     logCallback?.Invoke($"🎉 Đã cấp IP mới thành công: {newProxy.Http} (Sống {newProxy.SecondsRemaining}s, Khu vực: {newProxy.Location})");
                     return newProxy;
                 }
@@ -157,8 +229,16 @@ namespace ShopeeBackend.Services
                 // Nếu xin mới chưa được nhưng proxy hiện tại vẫn còn sống tương đối an toàn (> 45s)
                 if (current.Success && current.SecondsRemaining > 45 && !string.IsNullOrWhiteSpace(current.Http))
                 {
+                    _proxyCache[key] = current;
                     logCallback?.Invoke($"⚠️ Chưa thể đổi IP mới ({newProxy.ErrorMessage}). Tạm thời tiếp tục dùng proxy hiện tại ({current.SecondsRemaining}s còn lại)...");
                     return current;
+                }
+
+                // Nếu trong cache có proxy còn sống tương đối an toàn (> 45s)
+                if (_proxyCache.TryGetValue(key, out var cachedFallback) && cachedFallback.Success && cachedFallback.SecondsRemaining > 45 && !string.IsNullOrWhiteSpace(cachedFallback.Http))
+                {
+                    logCallback?.Invoke($"⚠️ Chưa thể đổi IP mới ({newProxy.ErrorMessage}). Tạm thời tiếp tục dùng proxy trong cache ({cachedFallback.SecondsRemaining}s còn lại)...");
+                    return cachedFallback;
                 }
 
                 // Kiểm tra nếu KiotProxy yêu cầu chờ do TTC cooldown (TIME_TO_CHANGE_INVALID)
@@ -350,6 +430,20 @@ namespace ShopeeBackend.Services
                 result.ErrorMessage = ex.Message;
             }
             return result;
+        }
+
+        private static bool IsRateLimitError(string? message, string? code)
+        {
+            string msg = (message ?? "").ToLowerInvariant();
+            string c = (code ?? "").ToLowerInvariant();
+            return msg.Contains("giới hạn")
+                || msg.Contains("thời gian ngắn")
+                || msg.Contains("quá nhiều lần")
+                || msg.Contains("quá nhiều")
+                || msg.Contains("quá nhanh")
+                || msg.Contains("rate limit")
+                || c.Contains("rate_limit")
+                || c.Contains("too_many_requests");
         }
     }
 }

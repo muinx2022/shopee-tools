@@ -593,7 +593,7 @@ public class LenhTuHubUuTienFlashTests
             // Brave), nên không bài nào phụ thuộc cửa `KiemTraMocTuongLai` — thứ vốn so với đồng hồ THẬT và sẽ
             // biến cả lớp thành bom hẹn giờ nếu ai đó dựa vào nó.
 
-            ban.Vm.ChayLaiPhienCheckDon = x => ban.DaChayLai.Add(x);
+            ban.Vm.ChayLaiPhienCheckDon = x => { ban.DaChayLai.Add(x); ban.Services.Sessions.Start(x); };
             ban.Vm.DongHoHoanChayLai = () => BayGio;
             ban.Vm.DangChayFlashHoacCauNoi = () => ban._dangChay;
             // Nhịp chờ nhường do bài test lái; vẫn NGHE token để cú Dừng cắt được (y production `Task.Delay`).

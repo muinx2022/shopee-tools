@@ -113,13 +113,14 @@ namespace ShopeeBackend
             // Activate initial view from command-line args
             string[] args = Environment.GetCommandLineArgs();
             int viewIdx = 0;
+            int workspaceSubTab = 0;
             if (args.Length > 1)
             {
-                if      (args[1] == "--keywords") viewIdx = 1;
-                else if (args[1] == "--products") viewIdx = 2;
-                else if (args[1] == "--accounts") viewIdx = 3;
-                else if (args[1] == "--proxies")  viewIdx = 4;
-                else if (args[1] == "--settings") viewIdx = 5;
+                if      (args[1] == "--keywords") { viewIdx = 0; workspaceSubTab = 1; }
+                else if (args[1] == "--products") viewIdx = 1;
+                else if (args[1] == "--accounts") viewIdx = 2;
+                else if (args[1] == "--proxies")  viewIdx = 3;
+                else if (args[1] == "--settings") viewIdx = 4;
             }
 
             if (tabButtons.Count > viewIdx)
@@ -127,17 +128,16 @@ namespace ShopeeBackend
                 UserControl target = viewIdx switch
                 {
                     0 => viewWorkspace,
-                    1 => viewWorkspace,
-                    2 => viewProducts,
-                    3 => viewAccounts,
-                    4 => viewProxies,
-                    5 => viewSettings,
+                    1 => viewProducts,
+                    2 => viewAccounts,
+                    3 => viewProxies,
+                    4 => viewSettings,
                     _ => viewWorkspace
                 };
                 ActivateTab(tabButtons[viewIdx], target);
-                if (viewIdx == 0 || viewIdx == 1)
+                if (viewIdx == 0)
                 {
-                    (viewWorkspace as WorkspaceView)?.SelectTab(viewIdx, notifyMain: false);
+                    (viewWorkspace as WorkspaceView)?.SelectTab(workspaceSubTab);
                 }
             }
         }
@@ -177,9 +177,8 @@ namespace ShopeeBackend
             panelTabStrip.Controls.Add(flowTabs);
             panelTabStrip.Resize += (s, e) => LayoutTabStrip(brandPanel, flowTabs);
 
-            // Create tab buttons (Category search and Keyword search are tab 0 and tab 1)
-            AddTabButton(flowTabs, "Search theo danh m\u1EE5c", viewWorkspace, () => (viewWorkspace as WorkspaceView)?.SelectTab(0, notifyMain: false));
-            AddTabButton(flowTabs, "Search theo t\u1EEB kh\u00F3a",  viewWorkspace, () => (viewWorkspace as WorkspaceView)?.SelectTab(1, notifyMain: false));
+            // Create tab buttons
+            AddTabButton(flowTabs, "Tìm kiếm",           viewWorkspace);
             AddTabButton(flowTabs, "D\u1EEF li\u1EC7u s\u1EA3n ph\u1EA9m", viewProducts);
             AddTabButton(flowTabs, "T\u00E0i kho\u1EA3n",        viewAccounts);
             AddTabButton(flowTabs, "Proxy",                      viewProxies);
@@ -222,7 +221,7 @@ namespace ShopeeBackend
                 if (tabButtons.Count > 0)
                 {
                     ActivateTab(tabButtons[0], viewWorkspace);
-                    (viewWorkspace as WorkspaceView)?.SelectTab(0, notifyMain: false);
+                    (viewWorkspace as WorkspaceView)?.SelectTab(0);
                 }
             };
             return pnl;
@@ -367,8 +366,8 @@ namespace ShopeeBackend
         // ── Public navigation ─────────────────────────────────────────────
         public void NavigateToProducts()
         {
-            if (tabButtons.Count > 2)
-                ActivateTab(tabButtons[2], viewProducts);
+            if (tabButtons.Count > 1)
+                ActivateTab(tabButtons[1], viewProducts);
         }
     }
 }

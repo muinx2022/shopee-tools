@@ -899,7 +899,7 @@ public sealed class OrdersBridgeSession : IDisposable
     /// giữ hồ sơ Brave + cổng 47821 y hệt một gói flash.</param>
     public async Task<KetQuaKm> ChayKmMoiShopAsync(
         OrdersLoginParams login, ThamSoKm thamSo, DateTime? hanChot = null, CancellationToken ct = default,
-        Func<bool>? phaiNhuongSauShop = null)
+        Func<bool>? phaiNhuongSauShop = null, IReadOnlySet<string>? boQuaShop = null)
     {
         try
         {
@@ -910,7 +910,7 @@ public sealed class OrdersBridgeSession : IDisposable
             }
             if (err is not null) { return new KetQuaKm(Array.Empty<KetQuaKmMotShop>(), false, err); }
 
-            return await ChayKmSauPickerAsync(
+            var kqDau = await ChayKmSauPickerAsync(
                 _channel, _onShopListRead, _log, thamSo,
                 vePicker: c => _flow.DongTabShopAsync(c),
                 nghiGiuaShop: NghiGiuaShopAsync,
@@ -918,7 +918,36 @@ public sealed class OrdersBridgeSession : IDisposable
                 dongHo: () => DateTime.Now,
                 ct: ct,
                 onShopChuongTrinh: _onShopChuongTrinh,
-                phaiNhuongSauShop: phaiNhuongSauShop).ConfigureAwait(false);
+                phaiNhuongSauShop: phaiNhuongSauShop,
+                boQuaShop: boQuaShop).ConfigureAwait(false);
+
+            if (NenThuMoLaiSauCaptchaGiuaVong(kqDau, hanChot, phaiNhuongSauShop))
+            {
+                var boQuaTiep = TapShopDaXongSauCaptcha(boQuaShop, kqDau.Shops);
+                L($"[KM] Gặp verify/captcha giữa vòng sau khi đã xong {boQuaTiep.Count} shop (còn {kqDau.SoShopChuaChay} shop chưa chạy) — đóng trình duyệt sạch, nghỉ giữa shop rồi mở lại trình duyệt mới để chạy tiếp 1 lần...");
+                DongTrinhDuyetSach();
+                Process = null;
+                await NghiGiuaShopAsync(ct).ConfigureAwait(false);
+
+                var errSau = await LoginAndReachPickerAsync(login, ct).ConfigureAwait(false);
+                if (!_channel.CaptchaSeen && errSau is null)
+                {
+                    var kqSau = await ChayKmSauPickerAsync(
+                        _channel, _onShopListRead, _log, thamSo,
+                        vePicker: c => _flow.DongTabShopAsync(c),
+                        nghiGiuaShop: NghiGiuaShopAsync,
+                        hanChot: hanChot,
+                        dongHo: () => DateTime.Now,
+                        ct: ct,
+                        onShopChuongTrinh: _onShopChuongTrinh,
+                        phaiNhuongSauShop: phaiNhuongSauShop,
+                        boQuaShop: boQuaTiep).ConfigureAwait(false);
+                    return GopKetQuaSauMoLai(kqDau, kqSau);
+                }
+                L("[KM] Mở lại trình duyệt sạch không vào được trang chọn shop — giữ kết quả lượt đầu để lượt sau chạy tiếp.");
+            }
+
+            return kqDau;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -941,7 +970,7 @@ public sealed class OrdersBridgeSession : IDisposable
     /// <see cref="ChayKmMoiShopAsync"/>.</param>
     public async Task<KetQuaKm> ChayComboMoiShopAsync(
         OrdersLoginParams login, ThamSoCombo thamSo, DateTime? hanChot = null, CancellationToken ct = default,
-        Func<bool>? phaiNhuongSauShop = null)
+        Func<bool>? phaiNhuongSauShop = null, IReadOnlySet<string>? boQuaShop = null)
     {
         try
         {
@@ -956,7 +985,7 @@ public sealed class OrdersBridgeSession : IDisposable
             // `KmLichTuDong.TranShopLuotCombo`, nên cả hai đường của vòng combo (nút bấm tay và lịch tự động
             // 06–08h) đi qua đây đều nhận đúng một con số. Test rig gọi `ChayComboSauPickerAsync` KHÔNG truyền
             // tham số đó chính là đo đường này.
-            return await ChayComboSauPickerAsync(
+            var kqDau = await ChayComboSauPickerAsync(
                 _channel, _onShopListRead, _log, thamSo,
                 vePicker: c => _flow.DongTabShopAsync(c),
                 nghiGiuaShop: NghiGiuaShopAsync,
@@ -964,7 +993,36 @@ public sealed class OrdersBridgeSession : IDisposable
                 dongHo: () => DateTime.Now,
                 ct: ct,
                 onShopChuongTrinh: _onShopChuongTrinh,
-                phaiNhuongSauShop: phaiNhuongSauShop).ConfigureAwait(false);
+                phaiNhuongSauShop: phaiNhuongSauShop,
+                boQuaShop: boQuaShop).ConfigureAwait(false);
+
+            if (NenThuMoLaiSauCaptchaGiuaVong(kqDau, hanChot, phaiNhuongSauShop))
+            {
+                var boQuaTiep = TapShopDaXongSauCaptcha(boQuaShop, kqDau.Shops);
+                L($"[Combo] Gặp verify/captcha giữa vòng sau khi đã xong {boQuaTiep.Count} shop (còn {kqDau.SoShopChuaChay} shop chưa chạy) — đóng trình duyệt sạch, nghỉ giữa shop rồi mở lại trình duyệt mới để chạy tiếp 1 lần...");
+                DongTrinhDuyetSach();
+                Process = null;
+                await NghiGiuaShopAsync(ct).ConfigureAwait(false);
+
+                var errSau = await LoginAndReachPickerAsync(login, ct).ConfigureAwait(false);
+                if (!_channel.CaptchaSeen && errSau is null)
+                {
+                    var kqSau = await ChayComboSauPickerAsync(
+                        _channel, _onShopListRead, _log, thamSo,
+                        vePicker: c => _flow.DongTabShopAsync(c),
+                        nghiGiuaShop: NghiGiuaShopAsync,
+                        hanChot: hanChot,
+                        dongHo: () => DateTime.Now,
+                        ct: ct,
+                        onShopChuongTrinh: _onShopChuongTrinh,
+                        phaiNhuongSauShop: phaiNhuongSauShop,
+                        boQuaShop: boQuaTiep).ConfigureAwait(false);
+                    return GopKetQuaSauMoLai(kqDau, kqSau);
+                }
+                L("[Combo] Mở lại trình duyệt sạch không vào được trang chọn shop — giữ kết quả lượt đầu để lượt sau chạy tiếp.");
+            }
+
+            return kqDau;
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -1000,7 +1058,8 @@ public sealed class OrdersBridgeSession : IDisposable
         Func<DateTime> dongHo,
         CancellationToken ct,
         Action<LoaiChuongTrinh, string, bool, int?>? onShopChuongTrinh = null,
-        Func<bool>? phaiNhuongSauShop = null)
+        Func<bool>? phaiNhuongSauShop = null,
+        IReadOnlySet<string>? boQuaShop = null)
         => ChayVongTaoChuongTrinhAsync(
             channel, onShopListRead, log,
             loai: LoaiChuongTrinh.ChuongTrinhShop,
@@ -1015,6 +1074,7 @@ public sealed class OrdersBridgeSession : IDisposable
             // Mốc bắt đầu đọc từ CHÍNH gói sắp gửi đi — cùng lý do "một object, một nguồn" với `moTaChuongTrinh`.
             mocBatDau: thamSo.MocBatDau(),
             vePicker, nghiGiuaShop, hanChot, dongHo, ct, onShopChuongTrinh,
+            boQuaShop: boQuaShop,
             phaiNhuongSauShop: phaiNhuongSauShop);
 
     /// <summary>
@@ -1037,7 +1097,8 @@ public sealed class OrdersBridgeSession : IDisposable
         CancellationToken ct,
         int tranShop = KmLichTuDong.TranShopLuotCombo,
         Action<LoaiChuongTrinh, string, bool, int?>? onShopChuongTrinh = null,
-        Func<bool>? phaiNhuongSauShop = null)
+        Func<bool>? phaiNhuongSauShop = null,
+        IReadOnlySet<string>? boQuaShop = null)
         => ChayVongTaoChuongTrinhAsync(
             channel, onShopListRead, log,
             loai: LoaiChuongTrinh.Combo,
@@ -1048,6 +1109,7 @@ public sealed class OrdersBridgeSession : IDisposable
             tranShop: tranShop,
             mocBatDau: thamSo.MocBatDau(),
             vePicker, nghiGiuaShop, hanChot, dongHo, ct, onShopChuongTrinh,
+            boQuaShop: boQuaShop,
             phaiNhuongSauShop: phaiNhuongSauShop);
 
     /// <summary>
@@ -1465,6 +1527,49 @@ public sealed class OrdersBridgeSession : IDisposable
         }
 
         return new KetQuaKm(ketQua, false, null, NgayMaiKhongDo: CaLuotKhongDo());
+    }
+
+    /// <summary>
+    /// PURE — có nên thử mở lại trình duyệt sạch 1 lần khi gặp <c>verify/traffic/error</c> giữa vòng KM/Combo không.
+    /// <para>Chỉ mở lại khi: dính Captcha, còn shop chưa chạy, đã có ít nhất 1 shop xong trong lượt đầu (tức không
+    /// phải captcha ngay từ shop đầu), vẫn còn trong khung giờ cho phép và không bị yêu cầu nhường chỗ.</para>
+    /// </summary>
+    internal static bool NenThuMoLaiSauCaptchaGiuaVong(
+        KetQuaKm kqDau, DateTime? hanChot, Func<bool>? phaiNhuongSauShop, DateTime? bayGio = null)
+        => kqDau.Captcha
+           && kqDau.SoShopChuaChay > 0
+           && kqDau.Shops.Any(s => s.DaTao || s.BoQua is not null)
+           && KmLichTuDong.ConDuocBatDauShopMoi(bayGio ?? DateTime.Now, hanChot)
+           && phaiNhuongSauShop?.Invoke() != true;
+
+    /// <summary>
+    /// PURE — gom tập khóa shop đã xong (DaTao hoặc BoQua != null) để lượt mở lại bỏ qua.
+    /// Không đưa shop vừa bị lỗi/captcha vào tập này để shop đó được chạy lại trên phiên trình duyệt sạch mới.
+    /// </summary>
+    internal static HashSet<string> TapShopDaXongSauCaptcha(
+        IReadOnlySet<string>? boQuaBanDau, IReadOnlyList<KetQuaKmMotShop> shopsDau)
+    {
+        var tap = boQuaBanDau is not null
+            ? new HashSet<string>(boQuaBanDau, StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var s in shopsDau)
+        {
+            if (s.DaTao || s.BoQua is not null)
+            {
+                var khoa = (s.ShopLogin ?? string.Empty).Trim();
+                if (khoa.Length > 0) { tap.Add(khoa); }
+            }
+        }
+        return tap;
+    }
+
+    /// <summary>
+    /// PURE — gộp kết quả các shop đã xong ở lượt đầu với kết quả của lượt mở lại trình duyệt sạch.
+    /// </summary>
+    internal static KetQuaKm GopKetQuaSauMoLai(KetQuaKm kqDau, KetQuaKm kqSau)
+    {
+        var daXongDau = kqDau.Shops.Where(s => s.DaTao || s.BoQua is not null);
+        return kqSau with { Shops = daXongDau.Concat(kqSau.Shops).ToList() };
     }
 
     /// <summary>

@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Shopee.Workspace.Services;
@@ -39,12 +39,24 @@ public abstract partial class ModuleViewModelBase : ObservableObject
         _dialogTitle = dialogTitle;
     }
 
+    /// <summary>Sự kiện khi có dòng log mới được thêm vào.</summary>
+    public event Action<string>? LogAppended;
+
     /// <summary>Ghi 1 dòng log (marshal sang UI thread — an toàn gọi từ luồng nền).</summary>
-    protected void Log(string text) => OnUi(() => LogLines.Add(text));
+    protected void Log(string text) => OnUi(() =>
+    {
+        LogLines.Add(text);
+        LogAppended?.Invoke(text);
+    });
 
     /// <summary>Ghi 1 dòng log vào CẢ buffer module (file gộp như cũ) LẪN buffer riêng của acc (UI đợt sau bind vào).</summary>
-    protected void LogAcc(string accountId, string displayName, string text)
-        => OnUi(() => { LogLines.Add(text); AccountLogs.Get(accountId, displayName).Add(text); });
+    public void LogAcc(string accountId, string displayName, string text)
+        => OnUi(() =>
+        {
+            LogLines.Add(text);
+            AccountLogs.Get(accountId, displayName).Add(text);
+            LogAppended?.Invoke(text);
+        });
 
     /// <summary>Chạy NGAY nếu đang ở UI thread, ngược lại xếp hàng sang UI thread.</summary>
     protected static void OnUi(Action action) => UiThread.Post(action);

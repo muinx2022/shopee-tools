@@ -184,7 +184,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
     {
         if (!ValidateUpdateTarget(t, t.SelectedShop, requiresBigSellerLogin, out var problem)) { Warn(problem + ".", silent); return; }
         var a = t.Account; var s = t.SelectedShop!;
-        if (a.UsesHubData)
+        if (a.UsesHubData && !SharedWorkbookStore.IsActive)
         {
             Warn($"{a.DisplayName}: Tài khoản đang ở chế độ kho Hub — app local chỉ chạy workbook, đổi nguồn dữ liệu trong Cấu hình BigSeller.", silent);
             return;
@@ -280,8 +280,8 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
                 }
                 lock (laneRows) { ShowMultiLane(); }
             };
-            var priorUpdate = kind == UpdateKind.Update
-                ? OpProgressStore.Shared.GetDone(a.Id, resolved.ProgressKey, AssignmentOps.Update).Count
+            var priorDone = (kind == UpdateKind.Update || kind == UpdateKind.Import) && opProg != null
+                ? OpProgressStore.Shared.GetDone(a.Id, resolved.ProgressKey, opProg).Count
                 : -1;
             // Mỗi dòng import/update/rewrite xong → đẩy lên ledger Hub (khoảng dòng) cho Thống kê "shop này đã làm
             // những dòng nào". Fire-and-forget, no-op khi Hub tắt (chạy 1 máy).
@@ -305,7 +305,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             // [bỏ] Hub.PublishCompletion Completed
                 // Lượt update không sửa được id nào, và shop này cũng chưa có id đã lưu → đừng ghi "xong".
                 // Nếu không, shop vừa chuyển sang bị đánh dấu xong dù list id của shop đó vẫn trống.
-                var markCompleted = !(kind == UpdateKind.Update && touched == 0 && priorUpdate == 0);
+                var markCompleted = !((kind == UpdateKind.Update || kind == UpdateKind.Import) && touched == 0 && priorDone == 0);
                 if (opProg != null) OpProgressStore.Shared.FinishRun(a.Id, resolved.ProgressKey, opProg, markCompleted);
             }
         }
@@ -393,6 +393,31 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
     private Task<string> EnsureUpdateImageAsync(CancellationToken ct)
     {
         var img = IsCustomUpdateImage(ImagePath) ? ImagePath : DefaultUpdateImagePath;
+        try
+        {
+            if (!File.Exists(img) && string.Equals(img, DefaultUpdateImagePath, StringComparison.OrdinalIgnoreCase))
+            {
+                var dir = Path.GetDirectoryName(DefaultUpdateImagePath);
+                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    Directory.CreateDirectory(dir);
+
+                // Nếu thiếu file 1.jpeg, tìm trong Downloads xem có ảnh nào vừa tải không để copy sang làm dự phòng
+                var downloadsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+                if (Directory.Exists(downloadsDir))
+                {
+                    var fallback = Directory.GetFiles(downloadsDir, "*.jpg")
+                        .Concat(Directory.GetFiles(downloadsDir, "*.jpeg"))
+                        .OrderByDescending(f => File.GetLastWriteTimeUtc(f))
+                        .FirstOrDefault();
+                    if (!string.IsNullOrEmpty(fallback) && File.Exists(fallback))
+                    {
+                        File.Copy(fallback, DefaultUpdateImagePath, overwrite: true);
+                    }
+                }
+            }
+        }
+        catch { }
+
         if (File.Exists(img) && !string.Equals(ImagePath, img, StringComparison.OrdinalIgnoreCase))
             OnUi(() => ImagePath = img);
         return Task.FromResult(img);

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.Input;
 using XuLyDonShopee.App.Services;
 using XuLyDonShopee.Core.Data;
 using XuLyDonShopee.Core.Models;
+using XuLyDonShopee.Core.Services;
 
 namespace XuLyDonShopee.App.ViewModels;
 
@@ -568,4 +569,34 @@ public partial class AccountsViewModel : ViewModelBase, IDisposable
 
     /// <summary>Chạy <paramref name="action"/> trên UI thread (chạy ngay nếu đã ở UI thread).</summary>
     private static void RunOnUi(Action action) => Services.UiDispatch.Run(action);
+
+    /// <summary>
+    /// Tự động kích hoạt Check Đơn sau khi khởi động app: chờ 5 giây để UI ổn định,
+    /// nếu chưa có phiên nào chạy thì tự bật phiên cho các tài khoản hợp lệ.
+    /// </summary>
+    public async Task KhoiChayTuDongCheckDonSauKhoiDongAsync(TimeSpan? delay = null)
+    {
+        try
+        {
+            await Task.Delay(delay ?? TimeSpan.FromSeconds(5)).ConfigureAwait(false);
+            if (_services.Sessions.Active.Count > 0) return;
+            if (_bridgeRunning || _dangChayKmTuDong || _dangChayComboTuDong || _dangChayFlashTuDong || CuaSoXemDangMo)
+                return;
+
+            var bayGio = DateTime.Now;
+            var mayNay = _services.MayNay?.Invoke();
+            foreach (var acc in _services.Accounts.GetAll())
+            {
+                if (_dsTkNguoiDungDungTay.Contains(acc.Id) || DangHoanChayLai(acc.Id))
+                    continue;
+                if (KmLichTuDong.NenNhuongKhung(_services.KmConfig.Get(acc.Id), mayNay, bayGio, bayGio))
+                    continue;
+                ChayLaiPhienCheckDon(acc.Id);
+            }
+        }
+        catch (Exception ex)
+        {
+            _services.Log.Append("CheckDon", "Lỗi tự động khởi chạy check đơn: " + ex.Message);
+        }
+    }
 }

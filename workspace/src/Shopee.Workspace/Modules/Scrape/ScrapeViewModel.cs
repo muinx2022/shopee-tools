@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Windows.Media;
@@ -320,7 +320,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         // ICoordinationHub? accHub = null;   // [App local: bỏ - không dùng]
         try
         {
-            if (account.UsesHubData)
+            if (account.UsesHubData && !SharedWorkbookStore.IsActive)
             {
                 LogA("Tài khoản đang ở chế độ kho Hub — app local chỉ chạy workbook, đổi nguồn dữ liệu trong Cấu hình BigSeller.");
                 return;
@@ -450,12 +450,29 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             s.Jobs.TryUpdate(account.Id, j => j.Runner = runner);   // gán Runner DƯỚI lock (vs snapshot ở Stop)
             // Mỗi chunk xong → lưu tiến độ ngay (bền với dừng/treo).
             var liveSheet = Shopee.Workspace.Modules.Workspace.ShopLiveLine.SheetLabel(shop);
-            runner.RowOpened += row =>
-                Shopee.Workspace.Modules.Workspace.ShopLiveLine.Show(account.Id, shop.Id, $"Đang scrape dòng {row} sheet {liveSheet}");
+            int GetCompletedCount()
+            {
+                var p = ScrapeProgressStore.Shared.Find(account.Id, sheet);
+                return p?.Completed.Sum(r => r.To - r.From + 1) ?? 0;
+            }
+            void UpdateProgressDisplay()
+            {
+                var completed = GetCompletedCount();
+                var text = totalRows > 0
+                    ? $"Đang scrape sheet {liveSheet}. Hoàn thành {completed} / {totalRows}"
+                    : $"Đang scrape sheet {liveSheet}. Hoàn thành {completed}";
+                Shopee.Workspace.Modules.Workspace.ShopLiveLine.Show(account.Id, shop.Id, text);
+            }
+
+            // Hiển thị ngay trạng thái ban đầu khi bắt đầu lượt chạy
+            UpdateProgressDisplay();
+
+            runner.RowOpened += _ => UpdateProgressDisplay();
             runner.RowsCompleted += (from, to) =>
             {
                 ScrapeProgressStore.Shared.MarkCompleted(account.Id, sheet, from, to);
                     // [bỏ] Hub.PublishProgress
+                UpdateProgressDisplay();
                 OnUi(target.RefreshProgress);
             };
             // Dòng KHÔNG cào được (lỗi giữa khối / kẹt 3 lần): trước đây chỉ có một dòng log rồi trôi, mà

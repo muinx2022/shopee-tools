@@ -23,10 +23,8 @@ internal static class BigSellerProfileManager
         IEnumerable<BigSellerAccountConfig> accounts,
         BigSellerAccountConfig account)
     {
-        var profile = Path.Combine("bigseller-profiles", account.Id);
+        var profileDir = Path.Combine(SuitePaths.ModuleDir("bigseller-login"), account.Id);
 
-        // 1 port cho cả account: dùng lại port đã có ở bất kỳ shop nào (set trong cùng phiên),
-        // chưa có thì cấp mới — tránh đụng port của account KHÁC.
         var port = account.Shops
             .Select(s => s.BigSellerDebugPort)
             .FirstOrDefault(p => p > 0);
@@ -44,12 +42,12 @@ internal static class BigSellerProfileManager
 
         foreach (var s in account.Shops)
         {
-            s.BigSellerProfileRelativePath = profile;
+            s.BigSellerProfileRelativePath = profileDir;
             s.BigSellerDebugPort = port;
         }
 
-        Directory.CreateDirectory(Path.GetFullPath(AppSession.ResolvePersistentDataPath(profile)));
-        return profile;
+        Directory.CreateDirectory(profileDir);
+        return profileDir;
     }
 
     private static int AllocateAccountDebugPort(

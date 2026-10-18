@@ -19,7 +19,7 @@ namespace ShopeeBackend
 
         public static int AutoRerunDays { get; set; } = 7;
 
-        public static string ImageStorageFolder { get; set; } = @"e:\images\phan-tich-shopee";
+        public static string ImageStorageFolder { get; set; } = @"d:\shopee-images";
         public static bool AutoDownloadImages { get; set; } = true;
 
         public static int MaxConcurrentFlows { get; set; } = 3;

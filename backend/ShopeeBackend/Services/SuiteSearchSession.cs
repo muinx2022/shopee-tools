@@ -22,8 +22,54 @@ namespace ShopeeBackend.Services
     /// </summary>
     public sealed class SuiteSearchSession
     {
-        public const string ExtensionPath = @"D:\Projects\phan-tich-shopee\extensions\shopee-search";
-        public const string ShopeeExtPath = @"D:\Projects\phan-tich-shopee\ShopeeExt";
+        public static string ExtensionPath { get; } = ResolveSearchExtensionPath();
+        public static string ShopeeExtPath { get; } = ResolveShopeeExtPath();
+
+        public static string ResolveSearchExtensionPath()
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null)
+            {
+                string[] candidates =
+                {
+                    Path.Combine(dir.FullName, "suite", "extensions", "shopee-search"),
+                    Path.Combine(dir.FullName, "extensions", "shopee-search")
+                };
+
+                foreach (var path in candidates)
+                {
+                    if (Directory.Exists(path) && File.Exists(Path.Combine(path, "manifest.json")))
+                        return path;
+                }
+
+                dir = dir.Parent;
+            }
+
+            return @"D:\Projects\shopee-tools\suite\extensions\shopee-search";
+        }
+
+        public static string ResolveShopeeExtPath()
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null)
+            {
+                string[] candidates =
+                {
+                    Path.Combine(dir.FullName, "ext"),
+                    Path.Combine(dir.FullName, "ShopeeExt")
+                };
+
+                foreach (var path in candidates)
+                {
+                    if (Directory.Exists(path) && File.Exists(Path.Combine(path, "manifest.json")))
+                        return path;
+                }
+
+                dir = dir.Parent;
+            }
+
+            return @"D:\Projects\shopee-tools\ext";
+        }
 
         private static readonly JsonSerializerOptions SendJson = new()
         {
@@ -767,13 +813,11 @@ namespace ShopeeBackend.Services
                                 x.Id == p.Id || (!string.IsNullOrEmpty(x.ItemId) && x.ItemId == p.ItemId && x.ShopId == p.ShopId));
                             if (existing != null)
                             {
-                                p.EvaluateOpportunity();
                                 int at = GlobalState.ScrapedProducts.IndexOf(existing);
                                 GlobalState.ScrapedProducts[at] = p;
                             }
                             else
                             {
-                                p.EvaluateOpportunity();
                                 GlobalState.ScrapedProducts.Insert(0, p);
                             }
                         }

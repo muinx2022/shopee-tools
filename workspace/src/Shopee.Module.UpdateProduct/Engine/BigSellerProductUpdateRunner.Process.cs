@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using Microsoft.Playwright;
 
 namespace UpdateProduct;
@@ -143,17 +144,21 @@ internal sealed partial class BigSellerProductUpdateRunner
         });
 
         await StepAsync("Vận chuyển + cân nặng");
-        // [10] shipping — kênh theo cấu hình shop (mặc định "Nhanh")
-        try
+        // [10] shipping — các kênh theo cấu hình shop (mặc định "Nhanh") + luôn đảm bảo có Hàng Cồng Kềnh
+        var shippingChannels = (ShippingChannel ?? "")
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (!shippingChannels.Any(c => c.Contains("cồng kềnh", StringComparison.OrdinalIgnoreCase)))
         {
-            var ship = page.Locator(ShippingFastWrapper).Filter(new() { HasTextString = ShippingChannel }).First;
-            if (await ship.IsVisibleAsync())
-            {
-                await ship.ScrollIntoViewIfNeededAsync();
-                if (await ship.Locator(ShippingCheckedMark).CountAsync() == 0) await ship.ClickAsync();
-            }
+            shippingChannels.Add(BulkyShippingChannelName);
         }
-        catch (Exception ex) { _log($"  ↳ Chọn vận chuyển '{ShippingChannel}' lỗi: {ex.Message}"); }
+
+        foreach (var ch in shippingChannels)
+        {
+            await SelectShippingChannelAsync(page, ch, ct).ConfigureAwait(false);
+        }
 
         // [11] weight
         try
@@ -194,5 +199,76 @@ internal sealed partial class BigSellerProductUpdateRunner
         await StepAsync("Lưu sản phẩm");
         // [14] save
         return await SaveWithImageRetryAsync(page, imagePath, 3, onSaved, ct).ConfigureAwait(false);
+    }
+
+    private async Task<bool> SelectShippingChannelAsync(IPage page, string channelName, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        var name = (channelName ?? "").Trim();
+        if (string.IsNullOrEmpty(name)) return false;
+
+        try
+        {
+            ILocator? target = null;
+            if (name.Contains("cồng kềnh", StringComparison.OrdinalIgnoreCase))
+            {
+                var bulky = page.Locator(ShippingBulkyMethodButton).First;
+                if (await bulky.CountAsync() > 0 && await bulky.IsVisibleAsync())
+                {
+                    var wrapper = bulky.Locator(ShippingFastWrapper).First;
+                    target = (await wrapper.CountAsync() > 0 && await wrapper.IsVisibleAsync()) ? wrapper : bulky;
+                }
+            }
+            else if (name.Equals("Nhanh", StringComparison.OrdinalIgnoreCase) || name.Contains("nhanh", StringComparison.OrdinalIgnoreCase))
+            {
+                var fast = page.Locator(ShippingFastMethodButton).First;
+                if (await fast.CountAsync() > 0 && await fast.IsVisibleAsync())
+                {
+                    var wrapper = fast.Locator(ShippingFastWrapper).First;
+                    target = (await wrapper.CountAsync() > 0 && await wrapper.IsVisibleAsync()) ? wrapper : fast;
+                }
+            }
+
+            if (target is null || await target.CountAsync() == 0 || !await target.IsVisibleAsync())
+            {
+                var fallback = page.Locator(ShippingFastWrapper).Filter(new() { HasTextString = name }).First;
+                if (await fallback.CountAsync() > 0 && await fallback.IsVisibleAsync())
+                {
+                    target = fallback;
+                }
+                else
+                {
+                    var regexFallback = page.Locator(ShippingFastWrapper).Filter(new() { HasTextRegex = new Regex(Regex.Escape(name), RegexOptions.IgnoreCase) }).First;
+                    if (await regexFallback.CountAsync() > 0 && await regexFallback.IsVisibleAsync())
+                    {
+                        target = regexFallback;
+                    }
+                }
+            }
+
+            if (target is not null && await target.CountAsync() > 0 && await target.IsVisibleAsync())
+            {
+                await target.ScrollIntoViewIfNeededAsync();
+                if (await target.Locator(ShippingCheckedMark).CountAsync() == 0)
+                {
+                    await target.ClickAsync();
+                    _log($"  ✓ Đã chọn vận chuyển '{name}'");
+                }
+                else
+                {
+                    _log($"  ↳ Vận chuyển '{name}' đã được chọn sẵn");
+                }
+                return true;
+            }
+
+            _log($"  ⚠ Không tìm thấy kênh vận chuyển '{name}' trên form");
+            return false;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _log($"  ↳ Chọn vận chuyển '{name}' lỗi: {ex.Message}");
+            return false;
+        }
     }
 }

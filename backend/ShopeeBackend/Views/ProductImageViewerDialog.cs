@@ -23,6 +23,8 @@ namespace ShopeeBackend.Views
         private Label lblFilePath = null!;
         private Label lblBackdropHint = null!;
         private Button btnBackdropClose = null!;
+        private RoundedButton btnFind1688 = null!;
+        private RoundedButton btnFindTaobao = null!;
         private RoundedButton btnOpenDefault = null!;
         private RoundedButton btnOpenFolder = null!;
         private RoundedButton btnClose = null!;
@@ -244,6 +246,26 @@ namespace ShopeeBackend.Views
                 Margin        = Padding.Empty
             };
 
+            btnFind1688 = new RoundedButton
+            {
+                Text      = "Tìm 1688",
+                IconGlyph = "\uE8B6",
+                IconRole  = ButtonIconRole.Info,
+                Height    = 30,
+                Margin    = new Padding(4, 2, 4, 0)
+            };
+            btnFind1688.Click += (s, e) => SearchSourceByImage("1688", "https://1688.com/");
+
+            btnFindTaobao = new RoundedButton
+            {
+                Text      = "Tìm Taobao",
+                IconGlyph = "\uE8B6",
+                IconRole  = ButtonIconRole.Info,
+                Height    = 30,
+                Margin    = new Padding(4, 2, 4, 0)
+            };
+            btnFindTaobao.Click += (s, e) => SearchSourceByImage("Taobao", "https://taobao.com/");
+
             btnOpenDefault = new RoundedButton
             {
                 Text      = "Mở ảnh gốc",
@@ -272,7 +294,7 @@ namespace ShopeeBackend.Views
             };
             btnClose.Click += (s, e) => this.Close();
 
-            pnlButtons.Controls.AddRange(new Control[] { btnOpenDefault, btnOpenFolder, btnClose });
+            pnlButtons.Controls.AddRange(new Control[] { btnFind1688, btnFindTaobao, btnOpenDefault, btnOpenFolder, btnClose });
             pnlFooter.Controls.Add(lblFilePath);
             pnlFooter.Controls.Add(pnlButtons);
             lblFilePath.BringToFront();
@@ -418,6 +440,56 @@ namespace ShopeeBackend.Views
                     catch { }
                 }
             }
+        }
+
+        private void SearchSourceByImage(string platformName, string targetUrl)
+        {
+            if (!File.Exists(_localPath) || new FileInfo(_localPath).Length == 0)
+            {
+                try
+                {
+                    Task.Run(async () => await ImageDownloadService.DownloadProductImageAsync(_product)).Wait(4000);
+                }
+                catch { }
+            }
+
+            Image? img = picImage.Image;
+            if (img == null && File.Exists(_localPath))
+            {
+                try
+                {
+                    using var ms = new MemoryStream(File.ReadAllBytes(_localPath));
+                    img = new Bitmap(ms);
+                    picImage.Image = img;
+                }
+                catch { }
+            }
+            if (img == null && !string.IsNullOrWhiteSpace(_product.ImageUrl))
+            {
+                img = ImageCache.GetCached(_product.ImageUrl);
+            }
+
+            ClipboardHelper.SetImageAndFileRobust(_localPath, img);
+
+            try
+            {
+                Process.Start(new ProcessStartInfo(targetUrl) { UseShellExecute = true });
+            }
+            catch { }
+
+            if (File.Exists(_localPath))
+            {
+                try
+                {
+                    Process.Start("explorer.exe", $"/select,\"{_localPath}\"");
+                }
+                catch { }
+            }
+
+            SuiteDialog.Alert(
+                this,
+                $"Tìm nguồn {platformName}",
+                $"Đã sao chép ảnh và mở thư mục chứa ảnh.\n\nCách 1: Kéo thả file ảnh đang được chọn vào thanh tìm kiếm của {platformName}.\nCách 2: Bấm icon máy ảnh 📷 trên web {platformName} rồi ấn Ctrl+V (Dán đường dẫn) và Enter!");
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)

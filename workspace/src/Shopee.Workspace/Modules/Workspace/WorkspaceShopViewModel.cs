@@ -6,6 +6,7 @@ using Shopee.Core.Coordination;
 using Shopee.Core.Progress;
 using Shopee.Core.Scrape;
 using Shopee.Workspace.Modules.UpdateProduct;
+using Shopee.Workspace;
 
 namespace Shopee.Workspace.Modules.Workspace;
 
@@ -182,6 +183,8 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     /// <summary>true khi shop này đang chạy 1 workflow update TRÊN MÁY NÀY (giữ cho chỗ khác nếu còn dùng).</summary>
     public bool IsUpdatingAnyLocal => IsImporting || IsUpdatingShop || IsRewriting;
 
+    public bool CanReset => !ScrapeRunning && !ImportRunning && !UpdateRunning && !RewriteRunning;
+
     /// <summary>Làm mới màu/tooltip/enabled/icon nút action (gọi khi hub đổi fleet + khi trạng thái local đổi).</summary>
     public void RefreshFleet()
     {
@@ -192,6 +195,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
             nameof(ScrapeToggleTip), nameof(ImportToggleTip), nameof(UpdateToggleTip), nameof(RewriteToggleTip),
             nameof(CanScrape), nameof(CanStartUpdate), nameof(IsUpdatingAnyLocal),
             nameof(ScrapeDone), nameof(ImportDone), nameof(UpdateDone), nameof(RewriteDone),
+            nameof(CanReset),
         }) OnPropertyChanged(n);
     }
 
@@ -199,6 +203,46 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     //    Đặt command Ở ĐÂY (không phải WorkspaceViewModel) để MenuItem trong ContextMenu bind qua DataContext
     //    kế thừa (= shop này); popup của ContextMenu KHÔNG nằm trong visual tree UserControl nên $parent[...]
     //    không tra ngược tới WorkspaceViewModel được. Fire-and-forget: ResetOpProgressAsync tự nuốt lỗi Hub. ──
+    [RelayCommand]
+    private void MarkScrapeDone()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.Resolve(account, Shop);
+        var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
+        ScrapeProgressStore.Shared.MarkCompleted(account.Id, key);
+        RefreshStatus();
+        Parent.ScrapeTarget.RefreshProgress();
+    }
+
+    [RelayCommand]
+    private void ResetScrapeProgress()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.Resolve(account, Shop);
+        var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
+        ScrapeProgressStore.Shared.Clear(account.Id, key);
+        RefreshStatus();
+        Parent.ScrapeTarget.RefreshProgress();
+    }
+
+    [RelayCommand]
+    private void MarkImportDone()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.Resolve(account, Shop);
+        OpProgressStore.Shared.FinishRun(account.Id, resolved.ProgressKey, AssignmentOps.Import, completed: true);
+        RefreshFleet();
+    }
+
+    [RelayCommand]
+    private void MarkUpdateDone()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.Resolve(account, Shop);
+        OpProgressStore.Shared.FinishRun(account.Id, resolved.ProgressKey, AssignmentOps.Update, completed: true);
+        RefreshFleet();
+    }
+
     [RelayCommand] private void ResetImportProgress() => ResetOpProgress(AssignmentOps.Import);
     [RelayCommand] private void ResetUpdateProgress() => ResetOpProgress(AssignmentOps.Update);
 
@@ -207,6 +251,34 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
         Parent.UpdateTarget.SelectedShop = Shop;   // ResetOpProgressAsync đọc target.SelectedShop
         _ = Parent.UpdateVm.ResetOpProgressAsync(Parent.UpdateTarget, op);
     }
+
+    public void ResetAllProgress()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.Resolve(account, Shop);
+        var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
+
+        ScrapeProgressStore.Shared.Clear(account.Id, scrapeKey);
+        OpProgressStore.Shared.ClearAllOps(account.Id, resolved.ProgressKey);
+
+        ShopLiveLine.Clear(account.Id, Shop.Id);
+        NotifyLiveLine();
+
+        RefreshStatus();
+        RefreshFleet();
+        Parent.ScrapeTarget.RefreshProgress();
+    }
+
+    [RelayCommand(CanExecute = nameof(CanReset))]
+    private async Task ResetAllProgressAsync()
+    {
+        if (!await Dialogs.ConfirmAsync($"Reset toàn bộ tiến độ (Scrape · Import · Update) của shop '{Name}' về trạng thái ban đầu?", "Reset tiến độ shop"))
+            return;
+
+        ResetAllProgress();
+    }
+
+    public IAsyncRelayCommand ResetAllProgressAsyncCommand => ResetAllProgressCommand;
 
     /// <summary>Tính lại trạng thái từ tiến độ scrape (mượn nguyên logic chip của ScrapeTargetViewModel).</summary>
     public void RefreshStatus()

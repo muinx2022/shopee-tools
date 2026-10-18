@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace UpdateProduct;
 
 // Tách khỏi BigSellerProductUpdateRunner.cs (đợt D — pure move): ba type "ở nhờ" của module Update —
@@ -96,5 +98,54 @@ internal sealed class WorkbookRecordCache
             map[rowId] = new WorkbookRecord(r.Link, r.Sku, r.NameRewritten, r.PriceSale, r.RowNo);
         }
         return (map, new List<int>());
+    }
+}
+
+/// <summary>
+/// Theo dõi số lượng sản phẩm mục tiêu cần update của shop trong phiên chạy (dùng chung mọi lane, thread-safe).
+/// Khi số SP đã update đạt đủ <see cref="TargetCount"/>, các lane dừng ngay và bỏ qua các trang Hộp nháp còn lại.
+/// </summary>
+internal sealed class UpdateTargetTracker
+{
+    private readonly ConcurrentDictionary<string, byte> _completedIds = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, byte> _handledIds = new(StringComparer.Ordinal);
+
+    public int TargetCount { get; }
+    public int CompletedCount => _completedIds.Count;
+    public int HandledCount => _handledIds.Count;
+    public bool IsAllCompleted => TargetCount > 0 && _completedIds.Count >= TargetCount;
+    public bool IsAllHandled => TargetCount > 0 && _handledIds.Count >= TargetCount;
+
+    public UpdateTargetTracker(
+        IReadOnlyDictionary<string, WorkbookRecord> records,
+        IReadOnlyDictionary<string, string?>? updateDone = null,
+        IReadOnlyDictionary<string, string?>? importDone = null)
+    {
+        TargetCount = records.Count;
+
+        if (updateDone is { Count: > 0 })
+        {
+            foreach (var (id, rec) in records)
+            {
+                if (updateDone.TryGetValue(id, out var doneName) && doneName == rec.ProductName)
+                {
+                    _completedIds.TryAdd(id, 0);
+                    _handledIds.TryAdd(id, 0);
+                }
+            }
+        }
+    }
+
+    public void MarkCompleted(string? itemId)
+    {
+        if (string.IsNullOrEmpty(itemId)) return;
+        _completedIds.TryAdd(itemId, 0);
+        _handledIds.TryAdd(itemId, 0);
+    }
+
+    public void MarkFailedPermanent(string? itemId)
+    {
+        if (string.IsNullOrEmpty(itemId)) return;
+        _handledIds.TryAdd(itemId, 0);
     }
 }

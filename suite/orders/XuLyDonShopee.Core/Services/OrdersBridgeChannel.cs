@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text.Json;
 using Shopee.Toolkit.Ws;
 
@@ -486,28 +487,37 @@ internal sealed class OrdersBridgeChannel : IDisposable
 
     public int ActivePort { get; private set; } = BridgePort;
 
-    /// <summary>Mở cổng WebSocket bắt đầu từ <paramref name="port"/> (mặc định <see cref="BridgePort"/>) rà qua các cổng tiếp theo nếu bận, rồi nối handler
+    /// <summary>Mở cổng WebSocket tại <paramref name="port"/> (mặc định <see cref="BridgePort"/>), rồi nối handler
     /// và bật nhịp giữ sống (<paramref name="nhipGiuSong"/>, mặc định <see cref="NhipGiuSong"/> — chỉ test mới
     /// truyền giá trị khác). <paramref name="choNoiLai"/> (mặc định <see cref="ChoNoiLai"/>, cũng chỉ test rót
     /// giá trị khác) là hạn chờ extension nối lại — dùng cho cả <see cref="SendAsync"/> lẫn lượt rút hạn chặng.
-    /// Hết dải (10 cổng) vẫn không mở được thì NÉM.</summary>
+    /// Thử 5 lần, nếu vẫn không mở được thì NÉM.</summary>
     public void Start(int port = BridgePort, TimeSpan? nhipGiuSong = null, TimeSpan? choNoiLai = null)
     {
         _choNoiLai = choNoiLai ?? ChoNoiLai;
         WebSocketServer? ws = null;
-        int maxPort = port + 10;
-        
-        for (int p = port; p < maxPort && ws is null; p++)
+
+        for (var attempt = 0; attempt < 5 && ws is null; attempt++)
         {
-            for (var attempt = 0; attempt < 5 && ws is null; attempt++)
+            try
             {
-                try { var s = new WebSocketServer(p); s.Start(); ws = s; ActivePort = p; }
-                catch (HttpListenerException) when (attempt == 4) { /* try next port in outer loop */ }
-                catch when (attempt < 4) { System.Threading.Thread.Sleep(400); }
+                var s = new WebSocketServer(port);
+                s.Start();
+                ws = s;
+                ActivePort = port;
+                break;
+            }
+            catch (HttpListenerException) when (attempt == 4)
+            {
+                throw;
+            }
+            catch when (attempt < 4)
+            {
+                System.Threading.Thread.Sleep(400);
             }
         }
         _ws = ws ?? throw new InvalidOperationException(
-            $"Không mở được cổng cầu nối dải {port}-{maxPort-1} (đang bận? đóng các phiên cũ rồi thử lại).");
+            $"Không mở được cổng cầu nối {port} (đang bận? đóng các phiên cũ rồi thử lại).");
         _ws.MessageReceived += OnMessage;
 
         // Ghi ĐÚNG GIÂY socket nối/đứt. Không có hai dòng này thì chỉ biết "lúc gửi lệnh đã đứt" — không phân

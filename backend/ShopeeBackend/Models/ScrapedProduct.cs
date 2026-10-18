@@ -54,8 +54,6 @@ namespace ShopeeBackend.Models
 
         public double DaysTracked { get; set; }
         public double DailyVelocity { get; set; }
-        public int OpportunityScore { get; set; }
-        public string RecommendationTag { get; set; } = "⏳ Chờ theo dõi";
 
         // Helpers
         public bool IsRescanned => ScanCount > 1;
@@ -76,76 +74,5 @@ namespace ShopeeBackend.Models
         public string FormattedDelta => DaysTracked >= 0.5 
             ? (SoldDelta > 0 ? $"+{SoldDelta:N0} ({DailyVelocity:0.#}/ngày)" : "0 (Đứng)")
             : "Lần quét đầu";
-
-        public string FormattedScore => $"{OpportunityScore} đ";
-
-        public void EvaluateOpportunity()
-        {
-            // 1. Kiểm tra bẫy giá rẻ (< 30k)
-            if (Price > 0 && Price < 30000)
-            {
-                RecommendationTag = "⛔ Loại: Bẫy giá";
-                OpportunityScore = 15;
-                return;
-            }
-
-            // Chưa đủ số ngày quét lại thì chưa kết luận đứng hàng.
-            int window = ShopeeBackend.GlobalState.AutoRerunDays <= 0 ? 7 : ShopeeBackend.GlobalState.AutoRerunDays;
-            bool waited = DaysTracked >= window;
-            if (ScanCount > 1 || DaysTracked >= 2.0)
-            {
-                if (SoldDelta <= 0 && waited)
-                {
-                    RecommendationTag = "⛔ Loại: Đứng hàng";
-                    OpportunityScore = 20;
-                    return;
-                }
-
-                if (SoldDelta <= 0)
-                {
-                    RecommendationTag = "⏳ Chờ theo dõi";
-                    OpportunityScore = 40;
-                    return;
-                }
-
-                if (SoldDelta > 0 && Rating > 0 && Rating < 4.5)
-                {
-                    RecommendationTag = "🎯 Cơ hội vàng";
-                    OpportunityScore = Math.Min(100, 80 + (int)(DailyVelocity * 2));
-                    return;
-                }
-
-                if (SoldDelta >= 15 && Rating >= 4.5)
-                {
-                    RecommendationTag = "🚀 Hot Trend";
-                    OpportunityScore = Math.Min(100, 75 + (int)(DailyVelocity * 1.5));
-                    return;
-                }
-
-                if (SoldDelta > 0)
-                {
-                    RecommendationTag = "Tiềm năng";
-                    OpportunityScore = 65;
-                    return;
-                }
-            }
-
-            // 3. Mới quét lần đầu (Chưa đủ ngày so sánh) -> Chấm điểm sơ bộ
-            int score = 40;
-
-            if (Price >= 90000 && Price <= 450000) score += 25;
-            else if (Price >= 40000 && Price < 90000) score += 15;
-            else score += 5;
-
-            if (Rating > 0 && Rating < 4.4) score += 25; // Cơ hội cải tiến
-            else if (Rating >= 4.4 && Rating <= 4.7) score += 15;
-            else score += 5;
-
-            if (!string.IsNullOrWhiteSpace(Location) && !Location.Contains("Nước ngoài") && !Location.Contains("Quốc tế"))
-                score += 10;
-
-            OpportunityScore = Math.Min(100, score);
-            RecommendationTag = "⏳ Chờ theo dõi";
-        }
     }
 }

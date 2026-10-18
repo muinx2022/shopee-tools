@@ -58,6 +58,7 @@ public static partial class OrdersModuleHost
             WireKmSync(Services);
             var vm = new MainViewModel(Services);
             _mainVm = vm;
+            _ = vm.AccountsVm.KhoiChayTuDongCheckDonSauKhoiDongAsync();
             // Vòng chờ đẩy: dựng SAU khi AppServices (DB + migration) và các hook hub đã sẵn sàng; tự hoãn ~15s
             // rồi chạy lượt đầu (bắt đúng ý "khi client chạy, còn vòng chờ thì đẩy") và lặp mỗi ~2 phút.
             _outboxWorker = new HubOutboxWorker(Services);

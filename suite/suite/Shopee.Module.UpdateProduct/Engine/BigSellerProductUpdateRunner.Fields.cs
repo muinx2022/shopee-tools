@@ -261,6 +261,48 @@ internal sealed partial class BigSellerProductUpdateRunner
         catch { return false; }
     }
 
+    // ── AI product name ──
+    private async Task<string> GenerateProductNameAsync(string originalName, string sku, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(originalName)) return "";
+        sku = sku ?? "";
+        var cfg = await HubAiConfig.GetAsync(ct).ConfigureAwait(false);
+        var systemPrompt = "Bạn là chuyên gia SEO Shopee. Nhiệm vụ: Viết lại tên sản phẩm.\n" +
+                           "Yêu cầu bắt buộc:\n" +
+                           "1. Giữ nguyên 2 keyword đầu tiên của sản phẩm.\n" +
+                           "2. Viết lại phần còn lại thành phần mô tả thật hấp dẫn.\n" +
+                           "3. Chỉ trả về DUY NHẤT tiêu đề SEO hoàn chỉnh đã viết lại.\n" +
+                           "4. KHÔNG kèm mã SKU trong kết quả trả về, không giải thích.\n" +
+                           "5. TUYỆT ĐỐI không được vượt quá số ký tự cho phép do giới hạn của Shopee.";
+        var maxAiLen = MaxProductNameChars - (sku.Length > 0 ? sku.Length + 1 : 0);
+        var userPrompt = $"Tên gốc: {originalName}\nGiới hạn NGHIÊM NGẶT: Chỉ được phép viết tối đa {maxAiLen} ký tự (để khi app ghép mã SKU vào không bị vượt quá 120 ký tự). Bắt buộc tuân thủ!";
+
+        for (var attempt = 1; attempt <= 3; attempt++)
+        {
+            try
+            {
+                _log($"🤖 Đang tạo tên AI cho: {originalName}" + (attempt > 1 ? $" (lần {attempt})" : ""));
+                var content = await AiChat.CompleteAsync(cfg, systemPrompt, userPrompt, ct, 0.6, 512).ConfigureAwait(false);
+                content = (content ?? "").Replace('\n', ' ').Replace('\r', ' ').Trim();
+                if (!string.IsNullOrWhiteSpace(content))
+                {
+                    var finalName = string.IsNullOrWhiteSpace(sku) ? content : $"{content} {sku}".Trim();
+                    _log($"✅ Đã tạo tên AI: {finalName}");
+                    return finalName;
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (AiHttpException ex) when (ex.IsPermanent)
+            {
+                _log($"✖ Lỗi AI không thể phục hồi ({ex.StatusCode}) khi tạo tên — dừng. Kiểm tra OpenAI API key/quota/model trên Hub.");
+                throw;
+            }
+            catch (Exception ex) { _log($"⚠ Lỗi tạo tên AI (lần {attempt}): {ex.Message}"); }
+            if (attempt < 3) await DelayAsync(1500 * attempt, ct);
+        }
+        return "";
+    }
+
     // ── AI description ──
     private async Task<string> GenerateDescriptionAsync(string productName, CancellationToken ct)
     {

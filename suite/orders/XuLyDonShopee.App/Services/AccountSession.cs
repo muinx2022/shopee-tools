@@ -510,179 +510,221 @@ public partial class AccountSession : ObservableObject, IAccountSession
 
             while (!ct.IsCancellationRequested)
             {
-                var bridge = new OrdersBridgeSession(userDataDir, log, invoiceDir, province, syncCallback,
-                    finalDoneSns: () => _services.Orders.GetOrderSnsWithFinalAmount(_accountId),
-                    // Tab "Shops": lưu danh sách shop + tăng đếm mỗi đơn arrange theo (tài khoản, shop, ngày yyyy-MM-dd giờ địa phương).
-                    onShopListRead: shops =>
-                    {
-                        _services.Results.UpsertShops(_accountId, shops);
-                        // Báo tab "Shops" dựng lưới NGAY. Thiếu dòng này thì màn đang mở giữ nguyên kết quả
-                        // rỗng của lần nạp đầu (mở app + chọn tài khoản TRƯỚC khi phiên đọc được shop).
-                        _services.RaiseShopListChanged(_accountId);
-                    },
-                    onOrderPrepared: (shopLogin, orderSn) =>
-                    {
-                        // Đếm CỤC BỘ (dự phòng khi mất hub) — giữ nguyên như cũ.
-                        _services.Results.IncrementPrepared(
-                            _accountId, shopLogin, DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
-                        // Đếm CHUNG toàn hệ thống: đánh dấu CHÍNH ĐƠN đó đã chuẩn bị hàng lúc nào → lượt đẩy hub kế
-                        // mang lên, hub đếm từ bảng đơn (mỗi đơn đúng 1 dòng) nên nhiều máy cùng chạy vẫn ra số thật.
-                        // Mã đơn rỗng (extension không trả được) → bỏ qua, vẫn +1 đếm cục bộ như cũ.
-                        if (!string.IsNullOrWhiteSpace(orderSn))
-                        {
-                            _services.Orders.MarkPrepared(_accountId, orderSn, DateTime.UtcNow);
-                        }
-                        // Báo tab "Shops" đang mở tự nạp lại → số nhảy NGAY sau mỗi đơn, không phải đợi
-                        // đổi tài khoản / đổi ngày mới thấy.
-                        _services.RaisePrepareCountChanged(_accountId);
-                    },
-                    // Cột tiến độ tab "Shops": chấm tròn + vòng quay chạy theo shop mà vòng này đang check tới.
-                    onShopCheckStarted: shopLabel => _services.RaiseShopCheckChanged(_accountId, shopLabel, checking: true),
-                    onShopCheckFinished: shopLabel => _services.RaiseShopCheckChanged(_accountId, shopLabel, checking: false),
-                    // Bước CUỐI flow shop — check đơn trả hàng: mốc "số yêu cầu" nhớ THEO SHOP (account_shops), mã
-                    // yêu cầu ghi vào chính đơn (orders.return_request_code) rồi cờ DB lo đẩy GSheet/hub lượt kế.
-                    returnCountLast: shopLabel => _services.Results.GetReturnCount(_accountId, shopLabel),
-                    saveReturnCount: (shopLabel, so) => _services.Results.SetReturnCount(_accountId, shopLabel, so),
-                    // Ghi kho mã + vào đơn, notify phần Hub không tự biết — xem OrderPersistPipeline.LuuMaTraHang.
-                    saveReturnCodes: cap => _persist.LuuMaTraHang(cap, log, ct),
-                    // Bước BÙ cuối flow shop: danh sách đơn của CHÍNH shop đó đang thiếu phiếu (mới nhất trước) để
-                    // phiên tự tải lại ngay trên tab đang mở. Đọc DB đồng bộ (nhanh, đang ở thread nền của phiên).
-                    layDonThieuPhieu: (shopLogin, _) => Task.FromResult(LayDonThieuPhieu(shopLogin, invoiceDir)),
-                    // Tín hiệu quyết định CÒN LẬT TRANG trả hàng nữa hay không: trang vừa đọc còn ra mã MỚI thì
-                    // còn lật. CỐ Ý không suy độ sâu từ mốc "số yêu cầu" — mốc chỉ null ở lần check đầu tiên của
-                    // mỗi shop nên shop đang tồn đọng (nhóm cần quét sâu nhất) sẽ không bao giờ được quét sâu.
-                    demMaTraChuaBiet: cap => _services.ReturnCodes.DemMaChuaBiet(
-                        _accountId, cap.Select(c => (c.MaDon, c.MaYeuCau)).ToList()),
-                    // Shop đang treo banner lỗi địa chỉ ⇒ vòng này vẫn thử lại bước đặt địa chỉ dù 0 đơn Chờ Lấy
-                    // Hàng — nếu không, banner của shop ít đơn không bao giờ tự hết (bước địa chỉ xưa nay chỉ chạy
-                    // khi có đơn để in phiếu). So nhãn KHÔNG phân biệt hoa/thường: khóa SQL so BINARY, C# so
-                    // OrdinalIgnoreCase — cùng cạm bẫy đã ghi ở OrderPersistPipeline.GoBannerLoiDiaChi.
-                    dangCoCanhBaoDiaChi: shopLabel => _services.PickupAlerts.ListActive(_accountId)
-                        .Any(a => string.Equals(a.ShopLogin, shopLabel, StringComparison.OrdinalIgnoreCase)),
-                    // Cờ "còn sót" bền theo shop: lượt chạm trần bỏ lại phần đuôi nằm SAU dải-đã-biết, mà phần đuôi
-                    // đó không bao giờ hiện ở trang đầu ⇒ không có cờ này thì không lượt nào với tới nó nữa.
-                    conSotTraHang: shopLabel => _services.Results.GetTraHangConSot(_accountId, shopLabel),
-                    luuConSotTraHang: (shopLabel, conSot, lyDo) =>
-                        _services.Results.SetTraHangConSot(_accountId, shopLabel, conSot, lyDo),
-                    // Mốc shop đã check xong gần nhất: khi chạy lại bắt đầu từ shop kế tiếp thay vì từ đầu.
-                    layShopDaCheckCuoi: () => _services.Accounts.GetLastCheckedShop(_accountId),
-                    luuShopDaCheckCuoi: shopLogin => _services.Accounts.SetLastCheckedShop(_accountId, shopLogin));
-                _bridge = bridge;
-                OrdersBridgeRunResult result;
                 try
                 {
-                    result = await bridge.RunAllShopsAsync(login, ct).ConfigureAwait(false);
-                }
-                finally
-                {
-                    // Đóng cửa sổ sạch của vòng này + giải phóng cổng cầu nối (vòng sau mở phiên mới). Đóng bằng
-                    // DongTrinhDuyetSach (kill handle RỒI quét theo hồ sơ): kill-theo-handle một mình trượt khi
-                    // trình duyệt fork browser thật sang PID khác ⇒ để lại cửa sổ mồ côi giữ hồ sơ ⇒ vòng SAU chết
-                    // ngay ở bước đăng nhập Playwright.
-                    try { bridge.DongTrinhDuyetSach(); } catch { /* bỏ qua */ }
-                    try { bridge.Dispose(); } catch { /* bỏ qua */ }
-                    _bridge = null;
-                }
+                    var bridge = new OrdersBridgeSession(userDataDir, log, invoiceDir, province, syncCallback,
+                        finalDoneSns: () => _services.Orders.GetOrderSnsWithFinalAmount(_accountId),
+                        // Tab "Shops": lưu danh sách shop + tăng đếm mỗi đơn arrange theo (tài khoản, shop, ngày yyyy-MM-dd giờ địa phương).
+                        onShopListRead: shops =>
+                        {
+                            _services.Results.UpsertShops(_accountId, shops);
+                            // Báo tab "Shops" dựng lưới NGAY. Thiếu dòng này thì màn đang mở giữ nguyên kết quả
+                            // rỗng của lần nạp đầu (mở app + chọn tài khoản TRƯỚC khi phiên đọc được shop).
+                            _services.RaiseShopListChanged(_accountId);
+                        },
+                        onOrderPrepared: (shopLogin, orderSn) =>
+                        {
+                            // Đếm CỤC BỘ (dự phòng khi mất hub) — giữ nguyên như cũ.
+                            _services.Results.IncrementPrepared(
+                                _accountId, shopLogin, DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture));
+                            // Đếm CHUNG toàn hệ thống: đánh dấu CHÍNH ĐƠN đó đã chuẩn bị hàng lúc nào → lượt đẩy hub kế
+                            // mang lên, hub đếm từ bảng đơn (mỗi đơn đúng 1 dòng) nên nhiều máy cùng chạy vẫn ra số thật.
+                            // Mã đơn rỗng (extension không trả được) → bỏ qua, vẫn +1 đếm cục bộ như cũ.
+                            if (!string.IsNullOrWhiteSpace(orderSn))
+                            {
+                                _services.Orders.MarkPrepared(_accountId, orderSn, DateTime.UtcNow);
+                            }
+                            // Báo tab "Shops" đang mở tự nạp lại → số nhảy NGAY sau mỗi đơn, không phải đợi
+                            // đổi tài khoản / đổi ngày mới thấy.
+                            _services.RaisePrepareCountChanged(_accountId);
+                        },
+                        // Cột tiến độ tab "Shops": chấm tròn + vòng quay chạy theo shop mà vòng này đang check tới.
+                        onShopCheckStarted: shopLabel => _services.RaiseShopCheckChanged(_accountId, shopLabel, checking: true),
+                        onShopCheckFinished: shopLabel => _services.RaiseShopCheckChanged(_accountId, shopLabel, checking: false),
+                        // Bước CUỐI flow shop — check đơn trả hàng: mốc "số yêu cầu" nhớ THEO SHOP (account_shops), mã
+                        // yêu cầu ghi vào chính đơn (orders.return_request_code) rồi cờ DB lo đẩy GSheet/hub lượt kế.
+                        returnCountLast: shopLabel => _services.Results.GetReturnCount(_accountId, shopLabel),
+                        saveReturnCount: (shopLabel, so) => _services.Results.SetReturnCount(_accountId, shopLabel, so),
+                        // Ghi kho mã + vào đơn, notify phần Hub không tự biết — xem OrderPersistPipeline.LuuMaTraHang.
+                        saveReturnCodes: cap => _persist.LuuMaTraHang(cap, log, ct),
+                        // Bước BÙ cuối flow shop: danh sách đơn của CHÍNH shop đó đang thiếu phiếu (mới nhất trước) để
+                        // phiên tự tải lại ngay trên tab đang mở. Đọc DB đồng bộ (nhanh, đang ở thread nền của phiên).
+                        layDonThieuPhieu: (shopLogin, _) => Task.FromResult(LayDonThieuPhieu(shopLogin, invoiceDir)),
+                        // Tín hiệu quyết định CÒN LẬT TRANG trả hàng nữa hay không: trang vừa đọc còn ra mã MỚI thì
+                        // còn lật. CỐ Ý không suy độ sâu từ mốc "số yêu cầu" — mốc chỉ null ở lần check đầu tiên của
+                        // mỗi shop nên shop đang tồn đọng (nhóm cần quét sâu nhất) sẽ không bao giờ được quét sâu.
+                        demMaTraChuaBiet: cap => _services.ReturnCodes.DemMaChuaBiet(
+                            _accountId, cap.Select(c => (c.MaDon, c.MaYeuCau)).ToList()),
+                        // Shop đang treo banner lỗi địa chỉ ⇒ vòng này vẫn thử lại bước đặt địa chỉ dù 0 đơn Chờ Lấy
+                        // Hàng — nếu không, banner của shop ít đơn không bao giờ tự hết (bước địa chỉ xưa nay chỉ chạy
+                        // khi có đơn để in phiếu). So nhãn KHÔNG phân biệt hoa/thường: khóa SQL so BINARY, C# so
+                        // OrdinalIgnoreCase — cùng cạm bẫy đã ghi ở OrderPersistPipeline.GoBannerLoiDiaChi.
+                        dangCoCanhBaoDiaChi: shopLabel => _services.PickupAlerts.ListActive(_accountId)
+                            .Any(a => string.Equals(a.ShopLogin, shopLabel, StringComparison.OrdinalIgnoreCase)),
+                        // Cờ "còn sót" bền theo shop: lượt chạm trần bỏ lại phần đuôi nằm SAU dải-đã-biết, mà phần đuôi
+                        // đó không bao giờ hiện ở trang đầu ⇒ không có cờ này thì không lượt nào với tới nó nữa.
+                        conSotTraHang: shopLabel => _services.Results.GetTraHangConSot(_accountId, shopLabel),
+                        luuConSotTraHang: (shopLabel, conSot, lyDo) =>
+                            _services.Results.SetTraHangConSot(_accountId, shopLabel, conSot, lyDo),
+                        // Mốc shop đã check xong gần nhất: khi chạy lại bắt đầu từ shop kế tiếp thay vì từ đầu.
+                        layShopDaCheckCuoi: () => _services.Accounts.GetLastCheckedShop(_accountId),
+                        luuShopDaCheckCuoi: shopLogin => _services.Accounts.SetLastCheckedShop(_accountId, shopLogin));
+                    _bridge = bridge;
+                    OrdersBridgeRunResult result;
+                    try
+                    {
+                        result = await bridge.RunAllShopsAsync(login, ct).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // Đóng cửa sổ sạch của vòng này + giải phóng cổng cầu nối (vòng sau mở phiên mới). Đóng bằng
+                        // DongTrinhDuyetSach (kill handle RỒI quét theo hồ sơ): kill-theo-handle một mình trượt khi
+                        // trình duyệt fork browser thật sang PID khác ⇒ để lại cửa sổ mồ côi giữ hồ sơ ⇒ vòng SAU chết
+                        // ngay ở bước đăng nhập Playwright.
+                        try { bridge.DongTrinhDuyetSach(); } catch { /* bỏ qua */ }
+                        try { bridge.Dispose(); } catch { /* bỏ qua */ }
+                        _bridge = null;
+                    }
 
-                _readyForActions = true; // đã chạy xong ít nhất 1 vòng → nút phụ thuộc phiên mở
+                    _readyForActions = true; // đã chạy xong ít nhất 1 vòng → nút phụ thuộc phiên mở
 
-                // Vòng vừa rồi CÓ THỂ đã tự tải lại vài phiếu thiếu — mà việc đó chỉ ghi FILE xuống đĩa, không
-                // đụng DB nên không lượt lưu đơn nào bắn sự kiện. Không có dòng này thì lưới Đơn hàng đang mở
-                // vẫn hiện "Tải lại" cho những đơn đã có phiếu, tới khi người dùng tự bấm "Làm mới".
-                _services.RaiseOrdersChanged();
+                    // Vòng vừa rồi CÓ THỂ đã tự tải lại vài phiếu thiếu — mà việc đó chỉ ghi FILE xuống đĩa, không
+                    // đụng DB nên không lượt lưu đơn nào bắn sự kiện. Không có dòng này thì lưới Đơn hàng đang mở
+                    // vẫn hiện "Tải lại" cho những đơn đã có phiếu, tới khi người dùng tự bấm "Làm mới".
+                    _services.RaiseOrdersChanged();
 
-                // Shop lỗi địa chỉ phải được BÁO + GHI BANNER ở MỌI lối ra, kể cả khi vòng kết thúc bằng captcha.
-                // Trước 18/08/2026 hai lời gọi này nằm trong nhánh `else if` sau `if (result.Captcha)`, mà
-                // RunAllShopsAsync có đường trả CẢ Captcha=true LẪN PickupAddressFailed=true (captcha ập tới sau
-                // khi một shop đã hỏng địa chỉ) ⇒ banner của shop đó mất trắng, không ai được báo.
-                if (result.PickupAddressFailed)
-                {
+                    // Shop lỗi địa chỉ phải được BÁO + GHI BANNER ở MỌI lối ra, kể cả khi vòng kết thúc bằng captcha.
+                    // Trước 18/08/2026 hai lời gọi này nằm trong nhánh `else if` sau `if (result.Captcha)`, mà
+                    // RunAllShopsAsync có đường trả CẢ Captcha=true LẪN PickupAddressFailed=true (captcha ập tới sau
+                    // khi một shop đã hỏng địa chỉ) ⇒ banner của shop đó mất trắng, không ai được báo.
+                    if (result.PickupAddressFailed)
+                    {
+                        if (result.Captcha)
+                        {
+                            log($"⛔ Vòng dừng vì captcha, nhưng shop {result.PickupFailedShop} đã lỗi địa chỉ lấy hàng "
+                                + "từ trước đó — vẫn ghi banner + cảnh báo.");
+                        }
+                        // Báo người trực — gửi được hay không KHÔNG ảnh hưởng việc bỏ qua / chạy tiếp.
+                        _persist.StartCanhBaoDiaChiInBackground(result.PickupFailedShop, province, log, ct);
+                        // Banner bền trên tab Shops (mỗi shop một dòng) — local + Hub; không phụ thuộc Slack.
+                        _persist.GhiBannerLoiDiaChi(result.PickupFailedShop, province, log, ct);
+                    }
+
                     if (result.Captcha)
                     {
-                        log($"⛔ Vòng dừng vì captcha, nhưng shop {result.PickupFailedShop} đã lỗi địa chỉ lấy hàng "
-                            + "từ trước đó — vẫn ghi banner + cảnh báo.");
+                        log("Gặp captcha/verify — dừng vòng này, sẽ thử lại sau khi nghỉ.");
                     }
-                    // Báo người trực — gửi được hay không KHÔNG ảnh hưởng việc bỏ qua / chạy tiếp.
-                    _persist.StartCanhBaoDiaChiInBackground(result.PickupFailedShop, province, log, ct);
-                    // Banner bền trên tab Shops (mỗi shop một dòng) — local + Hub; không phụ thuộc Slack.
-                    _persist.GhiBannerLoiDiaChi(result.PickupFailedShop, province, log, ct);
-                }
+                    else if (result.PickupAddressFailed)
+                    {
+                        // Có shop bị bỏ qua vì địa chỉ; các shop khác trong vòng đã chạy (nếu còn).
+                        log($"⛔ {result.Error} Đã bỏ qua shop lỗi địa chỉ; các shop khác trong vòng này vẫn chạy.");
+                        log($"Vòng xong: {result.ShopsDone}/{result.ShopCount} shop, {result.TotalOrders} đơn, {result.TotalSlips} phiếu.");
+                    }
+                    else if (result.Error is not null)
+                    {
+                        log("Vòng cầu nối chưa trọn: " + result.Error);
+                    }
+                    else
+                    {
+                        SetStatus(SessionState.Running,
+                            $"Vòng xong: {result.ShopsDone}/{result.ShopCount} shop, {result.TotalOrders} đơn, {result.TotalSlips} phiếu — nghỉ {intervalMin}'.");
+                    }
 
-                if (result.Captcha)
+                    // Shop nào vòng này ĐẶT ĐƯỢC địa chỉ mà còn banner cũ → tự gỡ (người dùng chốt 08/08/2026). Chạy
+                    // ở MỌI nhánh, kể cả nhánh có shop khác lỗi địa chỉ: shop A hết lỗi thì gỡ banner A, không liên
+                    // quan shop B đang lỗi. Đặt SAU GhiBannerLoiDiaChi để giữ đúng nghĩa "ghi cái mới rồi gỡ cái cũ".
+                    _persist.GoBannerLoiDiaChi(result.PickupOkShops, log, ct);
+
+                    // Vòng BỊ CẮT — luật ở LaVongBiCat. Cả phút nghỉ lẫn chuỗi mới lấy từ MỘT lời gọi NghiSauVong
+                    // để không còn thứ tự hai dòng nào có thể đảo.
+                    var vongBiCat = LaVongBiCat(
+                        result.Error is not null, result.Captcha, result.PickupAddressFailed);
+                    var (phutNghi, soVongCatMoi) = NghiSauVong(vongBiCat, _soVongCatLienTiep, intervalMin);
+                    _soVongCatLienTiep = soVongCatMoi;
+                    if (phutNghi < intervalMin)
+                    {
+                        log($"Vòng vừa rồi bị cắt giữa chừng — nghỉ NGẮN {phutNghi}' (thay vì {intervalMin}') để cứu "
+                            + "phần shop chưa chạy; vòng cắt tiếp theo sẽ quay về interval đầy.");
+                    }
+
+                    // Nghỉ trước chu kỳ kế (hủy giữa chừng → thoát vòng). Ghi mốc dự kiến để nhật ký cho
+                    // biết phiên vẫn sống trong lúc không có hoạt động trình duyệt.
+                    var nextRunAt = DateTime.Now.AddMinutes(phutNghi);
+
+                    // NHƯỜNG KHUNG 2–6h SÁNG CHO LUỒNG KM. Người dùng chốt: "tới gần 2h sáng thì không tự đặt vòng
+                    // kế nữa, phải đặt sau 6h". Ba điều kiện của lượt nhường (bật tự động · máy này chủ trì · đêm
+                    // nay thực sự tới hạn) nằm trọn trong `NenNhuongKhung` — đọc xmldoc ở đó TRƯỚC khi sửa, nhất là
+                    // vế "máy chủ trì" vì nó là CHẶN TẠM của pha A mà pha B (hạng mục B1) phải gỡ.
+                    //
+                    // Vì sao dời điểm BẮT ĐẦU chứ không cắt vòng đang chạy: hai luồng tranh nhau MỘT hồ sơ Brave và
+                    // MỘT cổng cầu nối 47821, nên chúng loại trừ nhau về mặt vật lý. Nhưng luồng KM có đường mượn hồ
+                    // sơ (tạm dừng check đơn rồi chạy lại) nên va chạm không mất dữ liệu — dời trước chỉ để khỏi
+                    // phải dùng tới đường đó mỗi đêm.
+                    var nhuongKhung = KmLichTuDong.NenNhuongKhung(
+                        _services.KmConfig.Get(_accountId), _services.MayNay?.Invoke(), nextRunAt, DateTime.Now);
+                    var sauKhiNhuong = KmLichTuDong.HoanVongCheckDon(nextRunAt, nhuongKhung);
+                    if (sauKhiNhuong != nextRunAt)
+                    {
+                        log(KmLichTuDong.CauHoanVong(nextRunAt, sauKhiNhuong));
+                        phutNghi = (int)Math.Ceiling((sauKhiNhuong - DateTime.Now).TotalMinutes);
+                        nextRunAt = sauKhiNhuong;
+                    }
+
+                    log($"Vòng kế tiếp dự kiến bắt đầu lúc {nextRunAt:HH:mm:ss}.");
+
+                    // ĐANG NGHỈ, và khe nghỉ kéo dài tới `nextRunAt` — phơi mốc cho nhịp lịch Flash Sale (từ
+                    // 01/09/2026 mỗi gói flash chiếm đúng một khe nghỉ). Đặt SAU `HoanVongCheckDon` là bắt buộc:
+                    // mốc trước khi dời không phải mốc thật, xem `IAccountSession.ThoiDiemVongKe`.
+                    //
+                    // ⚠ ĐẶT CẢ KHI `phutNghi` là kỳ nghỉ NGẮN 15' sau một vòng bị cắt. Nghỉ vẫn là nghỉ, và mốc
+                    // phải nói thật; việc "khe này quá ngắn, đừng chen gói vào" là quyết định của nhịp flash
+                    // (`KmLichTuDong.PhutKheToiThieuChoGoi` = 60'), không phải của chỗ này. Giấu mốc ở đây là giấu
+                    // một trạng thái CÓ THẬT khỏi mọi người đọc khác.
+                    DatThoiDiemVongKe(nextRunAt);
+                    try { await Task.Delay(TimeSpan.FromMinutes(phutNghi), ct).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
+                    finally { DatThoiDiemVongKe(null); }   // hết nghỉ / bị huỷ ⇒ KHÔNG còn đang nghỉ nữa
+                    log("Hết thời gian nghỉ — bắt đầu vòng mới.");
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
-                    log("Gặp captcha/verify — dừng vòng này, sẽ thử lại sau khi nghỉ.");
+                    break;
                 }
-                else if (result.PickupAddressFailed)
+                catch (Exception ex) when (ex is not OperationCanceledException)
                 {
-                    // Có shop bị bỏ qua vì địa chỉ; các shop khác trong vòng đã chạy (nếu còn).
-                    log($"⛔ {result.Error} Đã bỏ qua shop lỗi địa chỉ; các shop khác trong vòng này vẫn chạy.");
-                    log($"Vòng xong: {result.ShopsDone}/{result.ShopCount} shop, {result.TotalOrders} đơn, {result.TotalSlips} phiếu.");
+                    log($"Lỗi vòng check đơn: {ex.Message}. Giải phóng tài nguyên và nghỉ 5 phút trước khi thử lại...");
+                    try { _bridge?.DongTrinhDuyetSach(); } catch { }
+                    try { _bridge?.Dispose(); } catch { }
+                    _bridge = null;
+
+                    var phutNghiLoi = 5;
+                    var nextRunAt = DateTime.Now.AddMinutes(phutNghiLoi);
+                    if (KmLichTuDong.NenNhuongKhung(
+                        _services.KmConfig.Get(_accountId), _services.MayNay?.Invoke(), nextRunAt, DateTime.Now))
+                    {
+                        var hoanToi = KmLichTuDong.HoanVongCheckDon(nextRunAt, true);
+                        log($"[{_logLabel}] Lịch KM/Combo đang giữ khung 01:00–04:00 — hoãn vòng check đơn sau lỗi tới {hoanToi:HH:mm dd/MM}");
+                        nextRunAt = hoanToi;
+                    }
+                    DatThoiDiemVongKe(nextRunAt);
+                    var delayLoi = nextRunAt - DateTime.Now;
+                    if (delayLoi > TimeSpan.Zero)
+                    {
+                        try
+                        {
+                            await Task.Delay(delayLoi, ct).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;
+                        }
+                        finally
+                        {
+                            DatThoiDiemVongKe(null);
+                        }
+                    }
+                    log("Hết thời gian nghỉ sau lỗi — tiếp tục vòng check đơn mới.");
                 }
-                else if (result.Error is not null)
-                {
-                    log("Vòng cầu nối chưa trọn: " + result.Error);
-                }
-                else
-                {
-                    SetStatus(SessionState.Running,
-                        $"Vòng xong: {result.ShopsDone}/{result.ShopCount} shop, {result.TotalOrders} đơn, {result.TotalSlips} phiếu — nghỉ {intervalMin}'.");
-                }
-
-                // Shop nào vòng này ĐẶT ĐƯỢC địa chỉ mà còn banner cũ → tự gỡ (người dùng chốt 08/08/2026). Chạy
-                // ở MỌI nhánh, kể cả nhánh có shop khác lỗi địa chỉ: shop A hết lỗi thì gỡ banner A, không liên
-                // quan shop B đang lỗi. Đặt SAU GhiBannerLoiDiaChi để giữ đúng nghĩa "ghi cái mới rồi gỡ cái cũ".
-                _persist.GoBannerLoiDiaChi(result.PickupOkShops, log, ct);
-
-                // Vòng BỊ CẮT — luật ở LaVongBiCat. Cả phút nghỉ lẫn chuỗi mới lấy từ MỘT lời gọi NghiSauVong
-                // để không còn thứ tự hai dòng nào có thể đảo.
-                var vongBiCat = LaVongBiCat(
-                    result.Error is not null, result.Captcha, result.PickupAddressFailed);
-                var (phutNghi, soVongCatMoi) = NghiSauVong(vongBiCat, _soVongCatLienTiep, intervalMin);
-                _soVongCatLienTiep = soVongCatMoi;
-                if (phutNghi < intervalMin)
-                {
-                    log($"Vòng vừa rồi bị cắt giữa chừng — nghỉ NGẮN {phutNghi}' (thay vì {intervalMin}') để cứu "
-                        + "phần shop chưa chạy; vòng cắt tiếp theo sẽ quay về interval đầy.");
-                }
-
-                // Nghỉ trước chu kỳ kế (hủy giữa chừng → thoát vòng). Ghi mốc dự kiến để nhật ký cho
-                // biết phiên vẫn sống trong lúc không có hoạt động trình duyệt.
-                var nextRunAt = DateTime.Now.AddMinutes(phutNghi);
-
-                // NHƯỜNG KHUNG 2–6h SÁNG CHO LUỒNG KM. Người dùng chốt: "tới gần 2h sáng thì không tự đặt vòng
-                // kế nữa, phải đặt sau 6h". Ba điều kiện của lượt nhường (bật tự động · máy này chủ trì · đêm
-                // nay thực sự tới hạn) nằm trọn trong `NenNhuongKhung` — đọc xmldoc ở đó TRƯỚC khi sửa, nhất là
-                // vế "máy chủ trì" vì nó là CHẶN TẠM của pha A mà pha B (hạng mục B1) phải gỡ.
-                //
-                // Vì sao dời điểm BẮT ĐẦU chứ không cắt vòng đang chạy: hai luồng tranh nhau MỘT hồ sơ Brave và
-                // MỘT cổng cầu nối 47821, nên chúng loại trừ nhau về mặt vật lý. Nhưng luồng KM có đường mượn hồ
-                // sơ (tạm dừng check đơn rồi chạy lại) nên va chạm không mất dữ liệu — dời trước chỉ để khỏi
-                // phải dùng tới đường đó mỗi đêm.
-                var nhuongKhung = KmLichTuDong.NenNhuongKhung(
-                    _services.KmConfig.Get(_accountId), _services.MayNay?.Invoke(), nextRunAt, DateTime.Now);
-                var sauKhiNhuong = KmLichTuDong.HoanVongCheckDon(nextRunAt, nhuongKhung);
-                if (sauKhiNhuong != nextRunAt)
-                {
-                    log(KmLichTuDong.CauHoanVong(nextRunAt, sauKhiNhuong));
-                    phutNghi = (int)Math.Ceiling((sauKhiNhuong - DateTime.Now).TotalMinutes);
-                    nextRunAt = sauKhiNhuong;
-                }
-
-                log($"Vòng kế tiếp dự kiến bắt đầu lúc {nextRunAt:HH:mm:ss}.");
-
-                // ĐANG NGHỈ, và khe nghỉ kéo dài tới `nextRunAt` — phơi mốc cho nhịp lịch Flash Sale (từ
-                // 01/09/2026 mỗi gói flash chiếm đúng một khe nghỉ). Đặt SAU `HoanVongCheckDon` là bắt buộc:
-                // mốc trước khi dời không phải mốc thật, xem `IAccountSession.ThoiDiemVongKe`.
-                //
-                // ⚠ ĐẶT CẢ KHI `phutNghi` là kỳ nghỉ NGẮN 15' sau một vòng bị cắt. Nghỉ vẫn là nghỉ, và mốc
-                // phải nói thật; việc "khe này quá ngắn, đừng chen gói vào" là quyết định của nhịp flash
-                // (`KmLichTuDong.PhutKheToiThieuChoGoi` = 60'), không phải của chỗ này. Giấu mốc ở đây là giấu
-                // một trạng thái CÓ THẬT khỏi mọi người đọc khác.
-                DatThoiDiemVongKe(nextRunAt);
-                try { await Task.Delay(TimeSpan.FromMinutes(phutNghi), ct).ConfigureAwait(false); }
-                catch (OperationCanceledException) { break; }
-                finally { DatThoiDiemVongKe(null); }   // hết nghỉ / bị huỷ ⇒ KHÔNG còn đang nghỉ nữa
-                log("Hết thời gian nghỉ — bắt đầu vòng mới.");
             }
         }
         catch (OperationCanceledException)

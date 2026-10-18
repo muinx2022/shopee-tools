@@ -5,7 +5,7 @@ using System.Windows.Forms;
 
 namespace ShopeeBackend
 {
-    public enum ButtonIconRole { None, Primary, Success, Danger, Info, Muted }
+    public enum ButtonIconRole { None, Primary, Success, Danger, Info, Warning, Muted }
     public enum DialogTone { Primary, Danger }
 
     public static class UiTheme
@@ -63,6 +63,7 @@ namespace ShopeeBackend
             ButtonIconRole.Primary => Accent,
             ButtonIconRole.Success => Success,
             ButtonIconRole.Danger  => Danger,
+            ButtonIconRole.Warning => Warning,
             ButtonIconRole.Info    => Info,
             ButtonIconRole.Muted   => TextMuted,
             _                      => TextBody

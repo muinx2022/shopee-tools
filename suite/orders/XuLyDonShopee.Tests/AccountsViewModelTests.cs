@@ -765,4 +765,29 @@ public class AccountsViewModelTests
         Assert.False(vm.ResultRows[2].DaKiemTra);
         Assert.False(vm.ResultRows[3].DaKiemTra);
     }
+
+    // ===== Tự động kích hoạt Check Đơn sau khi khởi động app =====
+    [Fact]
+    public async Task KhoiDongApp_TuDongChayCheckDon_KhiChuaCoPhienNao()
+    {
+        using var temp = new TempDatabase();
+        var services = new AppServices(temp.Path);
+        var id = services.Accounts.Insert(new Account { Email = "autostart@test.com", Password = "p" });
+
+        var vm = new AccountsViewModel(services);
+
+        try
+        {
+            // Kích hoạt hàm kiểm tra tự động chạy sau khởi động với delay = 0
+            await vm.KhoiChayTuDongCheckDonSauKhoiDongAsync(System.TimeSpan.Zero);
+
+            // Phiên của tài khoản phải được bắt đầu
+            Assert.Single(services.Sessions.Active);
+            Assert.True(services.Sessions.IsRunning(id));
+        }
+        finally
+        {
+            await services.Sessions.StopAllAsync();
+        }
+    }
 }

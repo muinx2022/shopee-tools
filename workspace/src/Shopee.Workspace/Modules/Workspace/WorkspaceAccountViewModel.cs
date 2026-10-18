@@ -1,11 +1,13 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
 using Shopee.Core.BigSeller;
 using Shopee.Workspace.Infrastructure;
 using Shopee.Workspace.Modules.BigSeller;
 using Shopee.Workspace.Modules.Scrape;
 using Shopee.Workspace.Modules.UpdateProduct;
+using Shopee.Workspace;
 
 namespace Shopee.Workspace.Modules.Workspace;
 
@@ -187,6 +189,21 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
         OnPropertyChanged(nameof(WorkbookPath));
         OnPropertyChanged(nameof(WorkbookHint));
     }
+
+    [RelayCommand]
+    private async Task ResetAllShopsProgressAsync()
+    {
+        if (Shops.Count == 0) return;
+        if (!await Dialogs.ConfirmAsync($"Reset toàn bộ tiến độ (Scrape · Import · Update) của TẤT CẢ {Shops.Count} shop thuộc tài khoản '{DisplayName}'?", "Reset tất cả shop"))
+            return;
+
+        foreach (var s in Shops)
+        {
+            s.ResetAllProgress();
+        }
+    }
+
+    public IAsyncRelayCommand ResetAllShopsProgressAsyncCommand => ResetAllShopsProgressCommand;
 
     /// <summary>Bỏ lắng nghe khi rebuild để không rò sự kiện / cập nhật dòng đã xoá.</summary>
     public void Detach()

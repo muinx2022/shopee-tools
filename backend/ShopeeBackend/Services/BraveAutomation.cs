@@ -21,8 +21,8 @@ namespace ShopeeBackend.Services
     public class BraveAutomation
     {
         private const string BravePath = @"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe";
-        private const string ExtensionPath = @"D:\Projects\phan-tich-shopee\ShopeeExt";
-        private const string SuiteSearchExtensionPath = SuiteSearchSession.ExtensionPath;
+        private static readonly string ExtensionPath = SuiteSearchSession.ShopeeExtPath;
+        private static readonly string SuiteSearchExtensionPath = SuiteSearchSession.ExtensionPath;
         public const string ManualProfileName = "ManualTest";
 
         private readonly System.Collections.Concurrent.ConcurrentDictionary<SuiteSearchSession, byte> _activeSessions = new();

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -28,6 +28,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     public BigSellerViewModel BigSeller { get; }
     public ScrapeViewModel Scrape { get; }
     public UpdateProductViewModel Update { get; }
+    public AutoRunViewModel AutoRun { get; }
 
     public ObservableCollection<WorkspaceAccountViewModel> Accounts { get; } = [];
 
@@ -45,9 +46,9 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     // [Data/Stats removed] /// giống tab Thống kê của Hub). Tạo 1 LẦN; đổi tài khoản qua <see cref="WorkspaceStatsViewModel.Rescope"/>.</summary>
     // [Data/Stats removed] public WorkspaceStatsViewModel Stats { get; } = new();
 
-    /// <summary>Có bất kỳ việc nào đang chạy? scrape · update batch · update inline theo shop.
+    /// <summary>Có bất kỳ việc nào đang chạy? scrape · update batch · update inline theo shop · auto run.
     /// Dùng bật/tắt nút "Dừng tất cả" (không có gì chạy → nút mờ, không bấm được).</summary>
-    public bool AnyRunning => Scrape.IsBusy || Update.IsRunning || Update.HasActiveWsJob;
+    public bool AnyRunning => Scrape.IsBusy || Update.IsRunning || Update.HasActiveWsJob || (AutoRun?.IsRunning ?? false);
 
     [ObservableProperty] private string _status = "";
 
@@ -73,6 +74,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         BigSeller = bigSeller;
         Scrape = scrape;
         Update = update;
+        AutoRun = new AutoRunViewModel(this);
 
         // Seed lại Scrape.VideoDir từ Update.VideoFolder sau restart: Scrape.VideoDir KHÔNG persist (luôn về
         // mặc định "D:\videos" lúc khởi động), còn Update.VideoFolder là nguồn sự thật ĐÃ LƯU (UpdateProductUiStore)
@@ -91,6 +93,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         Scrape.PropertyChanged += OnRunStateChanged;
         Update.PropertyChanged += OnRunStateChanged;
         Update.JobsChanged += OnRunJobsChanged;
+        AutoRun.PropertyChanged += OnAutoRunStateChanged;
 
         // Nút "⏯ Tiếp tục việc dở": đếm lại số việc CHẠY TAY còn dở khi tiến độ 2 store đổi (BeginRun/FinishRun/
         // Clear đều bắn Changed) — các store bắn từ luồng runner nên marshal về UI thread. Đếm lần đầu do
@@ -130,6 +133,12 @@ public sealed partial class WorkspaceViewModel : ObservableObject
 
     private void OnRunJobsChanged() => NotifyAnyRunning();
 
+    private void OnAutoRunStateChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(AutoRunViewModel.IsRunning))
+            NotifyAnyRunning();
+    }
+
     private void NotifyAnyRunning() => UiThread.Post(() =>
     {
         OnPropertyChanged(nameof(AnyRunning));
@@ -163,6 +172,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         SyncLogChipsToAccount();   // Accounts rỗng / acc không đổi → gán ở trên không bắn Changed, tự đồng bộ ở đây
         Status = $"{Accounts.Count} tài khoản BigSeller.";
         RecomputeResumePending();   // list acc đổi → map lại các mục "còn dở" theo acc/shop hiện có
+        AutoRun?.RefreshAccounts();
     }
 
     // ── Dải chip LỌC LOG (H3.1) ────────────────────────────────────────────────
@@ -399,6 +409,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(AnyRunning))]
     private void StopAll()
     {
+        AutoRun.Stop();
         Update.StopAllSingle();
         if (Scrape.StopCommand.CanExecute(null)) Scrape.StopCommand.Execute(null);
     }

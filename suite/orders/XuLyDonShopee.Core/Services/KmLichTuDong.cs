@@ -346,28 +346,40 @@ public static class KmLichTuDong
 
     /// <summary>
     /// Kiểm tra xem một lượt KM hoặc Combo có nên ghi mốc chạy cuối (LanChayCuoi / ComboLanChayCuoi) hay không.
+    /// <para><b>KHÔNG ghi mốc</b> nếu vòng bị cắt dở vì <see cref="KetQuaKm.Captcha"/>, <see cref="KetQuaKm.Loi"/>,
+    /// <see cref="KetQuaKm.NhuongChoCheckDon"/>, <see cref="KetQuaKm.MocBatDauDaTroiQua"/>,
+    /// <see cref="KetQuaKm.TranThuDaCham"/> &gt; 0, hoặc còn shop chưa chạy mà không phải dừng vì hết khung
+    /// (<c>!kq.HetKhung &amp;&amp; kq.SoShopChuaChay &gt; 0</c>) — <b>kể cả khi <see cref="KetQuaKm.SoTao"/> &gt; 0</b>.
+    /// Các shop đã xong được giữ trong tiến độ in-memory để lượt sau chạy tiếp phần còn lại.</para>
     /// <para>Ghi mốc khi:
     /// <list type="bullet">
-    /// <item>Có ít nhất một shop tạo được chương trình (<see cref="KetQuaKm.SoTao"/> &gt; 0).</item>
-    /// <item>HOẶC cả lượt đã quét trọn vẹn mọi shop (<c>Shops.Count &gt; 0</c>, <c>SoShopChuaChay == 0</c>,
-    /// không lỗi cả lượt, không captcha, không shop nào hỏng) và TẤT CẢ các shop đều có kết luận hợp lệ
-    /// (tạo được hoặc bỏ qua vì không còn sản phẩm để thêm). Việc quét tìm sản phẩm mới định kỳ 3 ngày/lần đã xong;
-    /// không ghi mốc sẽ khiến lịch tự động lặp lại mỗi đêm vô ích.</item>
+    /// <item>Có ít nhất một shop tạo được chương trình (<see cref="KetQuaKm.SoTao"/> &gt; 0) và lượt chạy hết danh sách
+    /// hoặc dừng êm ở biên hết khung (<see cref="KetQuaKm.HetKhung"/> == <c>true</c>).</item>
+    /// <item>HOẶC cả lượt đã quét trọn vẹn mọi shop (<c>!kq.HetKhung</c>, <c>Shops.Count &gt; 0</c>,
+    /// <c>SoShopChuaChay == 0</c>, không shop nào hỏng) và TẤT CẢ các shop đều có kết luận hợp lệ
+    /// (tạo được hoặc bỏ qua vì không còn sản phẩm để thêm).</item>
     /// </list>
     /// </para>
     /// </summary>
     public static bool NenGhiMoc(KetQuaKm kq)
     {
+        if (kq.Captcha
+            || kq.Loi is not null
+            || kq.NhuongChoCheckDon
+            || kq.MocBatDauDaTroiQua is not null
+            || kq.TranThuDaCham > 0
+            || (!kq.HetKhung && kq.SoShopChuaChay > 0))
+        {
+            return false;
+        }
+
         if (kq.SoTao > 0) return true;
 
-        return kq.Shops.Count > 0
+        return !kq.HetKhung
+            && kq.Shops.Count > 0
             && kq.SoShopChuaChay == 0
             && kq.SoHong == 0
-            && !kq.Captcha
-            && kq.Loi == null
-            && kq.TranThuDaCham == 0
-            && kq.MocBatDauDaTroiQua == null
-            && !kq.NhuongChoCheckDon
+            && kq.SoBoQua > 0
             && kq.Shops.All(s => s.DaTao || s.BoQua is not null);
     }
 
@@ -766,6 +778,7 @@ public static class KmLichTuDong
             if (mocDuKien.Hour >= mo - SoGioBienAn && mocDuKien.Hour < dong
                 && VongBat(cf, loai)
                 && LaMayChuTri(cf.OwnerMachine, mayNay)
+                && !DaThuTrongKhungNay(cf, mocDuKien, loai)
                 && MocChayKe(cf, bayGio, loai) < mocDuKien.Date.AddHours(dong))
             {
                 return true;

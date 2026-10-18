@@ -144,6 +144,18 @@ public sealed class ScrapeProgressStore
         Changed?.Invoke();
     }
 
+    /// <summary>Đánh dấu toàn bộ hoàn thành thủ công (status = Completed).</summary>
+    public void MarkCompleted(string accountId, string sheet)
+    {
+        lock (_lock)
+        {
+            var p = GetOrCreateLocked(accountId, sheet, "");
+            p.Status = LedgerStatus.Completed;
+            SaveLocked();
+        }
+        Changed?.Invoke();
+    }
+
     /// <summary>Ghi nhận một khoảng dòng đã cào xong (gộp vào Completed). Dùng khi runner báo tiến độ.</summary>
     public void MarkCompleted(string accountId, string sheet, int from, int to)
     {

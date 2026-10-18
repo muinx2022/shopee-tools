@@ -627,6 +627,32 @@ public class FlashHoanChayLaiTests
         Assert.False(b.Vm.DangHoanChayLai(b.Id));
     }
 
+    /// <summary>
+    /// CHỐT AN TOÀN: Khi ds rỗng (không có tài khoản nào trong _dsTkDaDung do chưa chạy check đơn trước đó)
+    /// nhưng có mốc hoãn từ Flash Sale vừa xong, TraHoSo phải tự lấy tài khoản hợp lệ từ DB để lên lịch hoãn
+    /// thay vì bỏ rơi check đơn.
+    /// </summary>
+    [StaFact]
+    public async Task TraHoSo_KhiDsRongNhungCoMocHoan_TuDongLayTaiKhoanHopLeVaLenLichHoan()
+    {
+        using var b = Dung("hoan-ds-rong@mail.com");
+        var moc = new DateTime(2026, 8, 29, 22, 0, 0);
+        b.Vm.DatMocChayLaiSauFlashChoTest(moc);
+
+        // Gọi TraHoSoChoTest() mà KHÔNG truyền id nào (mô phỏng _dsTkDaDung rỗng)
+        b.Vm.TraHoSoChoTest();
+
+        // Chốt an toàn phải kích hoạt: tài khoản từ DB được lên lịch hoãn tới mốc
+        Assert.Single(b.DaCho);
+        Assert.Equal(moc - b.Vm.DongHoHoanChayLai(), b.DaCho[0]);
+        Assert.True(b.Vm.DangHoanChayLai(b.Id));
+
+        b.ChoXong.TrySetResult(true);
+        await ChoLuotHoanXongAsync(b);
+
+        Assert.Equal(new[] { b.Id }, b.DaChayLai);
+    }
+
     // ── Đồ nghề ───────────────────────────────────────────────────────────────────────────────────────
 
     private static string NguonFile(params string[] duong)

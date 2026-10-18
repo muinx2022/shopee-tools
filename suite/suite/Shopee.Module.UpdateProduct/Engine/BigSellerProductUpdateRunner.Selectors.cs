@@ -52,6 +52,9 @@ internal sealed partial class BigSellerProductUpdateRunner
     private const string VariationSkuInputs = "input[autoid^='variation_sku_text_']";
     private const string VariationStockInputs = "input[autoid^='variation_stock_text_']";
     private const string VariationPriceInputs = "input[autoid^='variation_price_text_']";
+    private const string ShippingFastMethodButton = "label[autoid='shipping_method_button_0']";
+    private const string ShippingBulkyMethodButton = "label[autoid='shipping_method_button_1']";
+    private const string BulkyShippingChannelName = "Hàng Cồng Kềnh";
     private const string ShippingFastWrapper = "label.ant-checkbox-wrapper";
     private const string ShippingCheckedMark = ".ant-checkbox-checked";
     private const string WeightInput = "input[autoid='weight_text']";

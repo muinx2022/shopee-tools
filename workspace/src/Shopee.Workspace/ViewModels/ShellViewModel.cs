@@ -1,4 +1,4 @@
-﻿using System.Windows.Input;
+using System.Windows.Input;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
@@ -24,6 +24,7 @@ namespace Shopee.Workspace.ViewModels;
 /// </summary>
 public sealed partial class ShellViewModel : ObservableObject
 {
+    private readonly WorkspaceViewModel _workspace;
     private readonly ScrapeViewModel _scrape;
     private readonly UpdateProductViewModel _update;
     private readonly AccountsViewModel _accounts;
@@ -40,6 +41,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
     private RibbonTab? _workspaceTab;
     private RibbonScreenItem? _workspaceHomeScreen;
+    private RibbonScreenItem? _autoRunScreen;
 
     public object? CurrentScreen =>
         SelectedTab is not null && _screenByTab.TryGetValue(SelectedTab, out var vm) ? vm : null;
@@ -71,7 +73,8 @@ public sealed partial class ShellViewModel : ObservableObject
         _scrape = new ScrapeViewModel();
         _update = new UpdateProductViewModel();
         bigSeller.JobsAreBusy = () => _scrape.IsBusy || _update.IsRunning || _update.HasActiveWsJob;
-        var workspace = new WorkspaceViewModel(bigSeller, _scrape, _update);
+        _workspace = new WorkspaceViewModel(bigSeller, _scrape, _update);
+        var workspace = _workspace;
         _accounts = new AccountsViewModel();
         var accounts = _accounts;
         var localSettings = new LocalSettingsViewModel();
@@ -81,13 +84,16 @@ public sealed partial class ShellViewModel : ObservableObject
         // ── Tab 1: Workspace ──
         var wsWorkspace = new RibbonScreenItem("Workspace", AppIcons.Dashboard, workspace,
             toolTip: "BigSeller Workspace — Scrape · Import · Update theo từng shop");
+        var wsAutoRun = new RibbonScreenItem("Auto Run", AppIcons.PlayCircle, workspace.AutoRun,
+            toolTip: "Tự động chạy Scrape · Import · Update tuần tự các tài khoản");
         var wsAccounts = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
             toolTip: "Kho tài khoản Shopee dùng chung · Check tài khoản");
         _workspaceHomeScreen = wsWorkspace;
+        _autoRunScreen = wsAutoRun;
 
         var workspaceTab = new RibbonTab("Workspace", new List<RibbonGroup>
         {
-            new RibbonGroup("Màn hình", new object[] { wsWorkspace, wsAccounts }),
+            new RibbonGroup("Màn hình", new object[] { wsWorkspace, wsAutoRun, wsAccounts }),
             new RibbonGroup("Hành động", new object[]
             {
                 new RibbonActionItem("Dừng jobs", "IconStop", StopWorkspaceJobsCommand,
@@ -160,6 +166,7 @@ public sealed partial class ShellViewModel : ObservableObject
         // Job status
         _scrape.PropertyChanged += OnJobStateChanged;
         _update.PropertyChanged += OnJobStateChanged;
+        _workspace.AutoRun.PropertyChanged += OnJobStateChanged;
         _update.JobsChanged += () => UiThread.Post(RefreshJobStatus);
         RefreshJobStatus();
 
@@ -182,11 +189,18 @@ public sealed partial class ShellViewModel : ObservableObject
         foreach (var s in tab.Groups.SelectMany(g => g.Items).OfType<RibbonScreenItem>())
             s.IsActive = ReferenceEquals(s, item);
         if (ReferenceEquals(tab, SelectedTab)) OnPropertyChanged(nameof(CurrentScreen));
+
+        if (item.ScreenVm is AutoRunViewModel autoRun)
+        {
+            autoRun.RefreshAccounts();
+        }
     }
 
     private void OnJobStateChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
     {
-        if (e.PropertyName is nameof(ScrapeViewModel.IsBusy) or nameof(UpdateProductViewModel.IsRunning))
+        if (e.PropertyName is nameof(ScrapeViewModel.IsBusy)
+            or nameof(UpdateProductViewModel.IsRunning)
+            or nameof(AutoRunViewModel.IsRunning))
             UiThread.Post(RefreshJobStatus);
     }
 
@@ -195,6 +209,7 @@ public sealed partial class ShellViewModel : ObservableObject
         var n = 0;
         if (_scrape.IsBusy) n++;
         if (_update.IsRunning) n++;
+        if (_workspace.AutoRun.IsRunning) n++;
         foreach (var acct in Shopee.Core.BigSeller.BigSellerStore.Shared.Accounts)
             if (_update.IsUpdateRunning(acct.Id)) n++;
         JobStatusText = n > 0 ? $"Đang chạy — {n} job" : "Rảnh — không có job";
@@ -208,8 +223,17 @@ public sealed partial class ShellViewModel : ObservableObject
     }
 
     [RelayCommand]
+    private void ShowAutoRun()
+    {
+        if (_workspaceTab is null || _autoRunScreen is null) return;
+        SelectedTab = _workspaceTab;
+        ActivateScreen(_autoRunScreen);
+    }
+
+    [RelayCommand]
     private void StopWorkspaceJobs()
     {
+        _workspace.AutoRun.Stop();
         _update.StopAllSingle();
         if (_scrape.StopCommand.CanExecute(null)) _scrape.StopCommand.Execute(null);
     }

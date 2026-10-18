@@ -6,6 +6,7 @@ namespace ShopeeBackend.Models
 {
     public class CategoryInfo : INotifyPropertyChanged
     {
+        private bool _isSelected = false;
         private string _url = string.Empty;
         private string _name = string.Empty;
         private int _currentSubIndex = 1;
@@ -19,6 +20,19 @@ namespace ShopeeBackend.Models
         protected void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+
+        public bool IsSelected
+        {
+            get => _isSelected;
+            set
+            {
+                if (_isSelected != value)
+                {
+                    _isSelected = value;
+                    OnPropertyChanged();
+                }
+            }
         }
 
         public string Url

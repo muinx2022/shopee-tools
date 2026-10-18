@@ -6,6 +6,7 @@ using System.IO;
 using System.Net.Http;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using ShopeeBackend.Models;
 
 namespace ShopeeBackend.Services
 {
@@ -39,7 +40,14 @@ namespace ShopeeBackend.Services
             return _cache.TryGetValue(url, out var img) ? img : null;
         }
 
-        public static void LoadThumbnailAsync(string url, string? itemId, Control ownerControl, Action onLoaded)
+        public static void LoadThumbnailAsync(ScrapedProduct product, Control ownerControl, Action onLoaded)
+        {
+            if (product == null || string.IsNullOrWhiteSpace(product.ImageUrl)) return;
+            string localPath = ImageDownloadService.GetLocalImagePath(product);
+            LoadThumbnailByPathAsync(product.ImageUrl, localPath, ownerControl, onLoaded);
+        }
+
+        public static void LoadThumbnailByPathAsync(string url, string? localPath, Control ownerControl, Action onLoaded)
         {
             if (string.IsNullOrWhiteSpace(url) || _cache.ContainsKey(url)) return;
 
@@ -48,16 +56,11 @@ namespace ShopeeBackend.Services
                 try
                 {
                     byte[]? bytes = null;
-                    string? localPath = null;
 
                     // 1. Check local file on disk first (Instant offline load)
-                    if (!string.IsNullOrWhiteSpace(itemId) && !string.IsNullOrWhiteSpace(GlobalState.ImageStorageFolder))
+                    if (!string.IsNullOrWhiteSpace(localPath) && File.Exists(localPath) && new FileInfo(localPath).Length > 0)
                     {
-                        localPath = Path.Combine(GlobalState.ImageStorageFolder, $"{itemId}.jpg");
-                        if (File.Exists(localPath) && new FileInfo(localPath).Length > 0)
-                        {
-                            try { bytes = await File.ReadAllBytesAsync(localPath); } catch { }
-                        }
+                        try { bytes = await File.ReadAllBytesAsync(localPath); } catch { }
                     }
 
                     // 2. If not on disk, download from Shopee
@@ -71,7 +74,10 @@ namespace ShopeeBackend.Services
                         {
                             try
                             {
-                                DataManager.EnsureFolderExists(GlobalState.ImageStorageFolder);
+                                string? dir = Path.GetDirectoryName(localPath);
+                                if (!string.IsNullOrWhiteSpace(dir))
+                                    DataManager.EnsureFolderExists(dir);
+
                                 string tmp = localPath + ".tmp_" + Guid.NewGuid().ToString("N");
                                 await File.WriteAllBytesAsync(tmp, bytes);
                                 File.Move(tmp, localPath, true);
@@ -115,7 +121,17 @@ namespace ShopeeBackend.Services
             });
         }
 
+        public static void LoadThumbnailAsync(string url, string? itemId, Control ownerControl, Action onLoaded)
+        {
+            string? localPath = null;
+            if (!string.IsNullOrWhiteSpace(itemId) && !string.IsNullOrWhiteSpace(GlobalState.ImageStorageFolder))
+            {
+                localPath = Path.Combine(GlobalState.ImageStorageFolder, $"{itemId}.jpg");
+            }
+            LoadThumbnailByPathAsync(url, localPath, ownerControl, onLoaded);
+        }
+
         public static void LoadThumbnailAsync(string url, Control ownerControl, Action onLoaded)
-            => LoadThumbnailAsync(url, null, ownerControl, onLoaded);
+            => LoadThumbnailAsync(url, (string?)null, ownerControl, onLoaded);
     }
 }
