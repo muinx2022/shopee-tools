@@ -308,7 +308,8 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
     {
         var a = t.Account; var s = shop;
         if (s is null) { problem = $"{a.DisplayName}: chưa chọn shop"; return false; }
-        if (string.IsNullOrWhiteSpace(s.ShopeeDataSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
+        var shopSheet = !string.IsNullOrWhiteSpace(s.ShopeeDataSheet) ? s.ShopeeDataSheet : s.Name;
+        if (string.IsNullOrWhiteSpace(shopSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
         if (string.IsNullOrWhiteSpace(a.WorkbookPath) || !File.Exists(a.WorkbookPath)) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
         if (requiresBigSellerLogin && !a.HasCookie) { problem = $"{a.DisplayName}: chưa có cookie BigSeller"; return false; }
         problem = ""; return true;
@@ -365,9 +366,10 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         var reload = reloadSeconds is int r && r > 0 ? r : t.ListingReloadSeconds;
         // "Import từ tab Đã nhận": ưu tiên cờ Hub ghim vào việc (checkbox tab Giao việc); null = dùng cấu hình shop.
         var fromClaimedTab = importFromClaimedTab ?? s.BigSellerImportFromClaimedTab;
+        var dataSheet = !string.IsNullOrWhiteSpace(s.ShopeeDataSheet) ? s.ShopeeDataSheet : s.Name;
         return new UpdateProductContext(
             a.Id, a.Email, a.WorkbookPath, a.CookieFile,
-            s.Id, s.DisplayName, s.ShopeeDataSheet,
+            s.Id, s.DisplayName, dataSheet,
             aiModel, "", ai.BatchSize, "",
             sr, er, imageOverride ?? ImagePath, VideoFolder,
             s.BigSellerCrawlUrl, fromClaimedTab,
@@ -379,7 +381,8 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             a.Password, a.UsesHubData,   // hub-mode: đọc/ghi kho Hub (Postgres) thay vì workbook Excel local
             // Bộ 3 giá trị điền form Update — cấu hình per-shop do HUB đặt (client chỉ đọc bản đã sync về).
             // Rỗng = dùng mặc định 30069/500/"Nhanh" (hằng BigSellerShop.DefaultUpdate*).
-            s.UpdateStockValue, s.UpdateWeightValue, s.UpdateShippingChannel);
+            s.UpdateStockValue, s.UpdateWeightValue, s.UpdateShippingChannel,
+            DescriptionColumn: s.ColumnMap.DescriptionColumn);
     }
 
 }

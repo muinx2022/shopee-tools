@@ -111,6 +111,12 @@ public sealed class BigSellerShopViewModel : ObservableObject
         set => SetColumn(value, v => Model.ColumnMap.RewrittenNameColumn = v, Model.ColumnMap.RewrittenNameColumn);
     }
 
+    public string DescriptionColumnLetter
+    {
+        get => ExcelColumn.ToLetter(Model.ColumnMap.DescriptionColumn);
+        set => SetColumn(value, v => Model.ColumnMap.DescriptionColumn = v, Model.ColumnMap.DescriptionColumn);
+    }
+
     private void SetColumn(string? letter, Action<int> apply, int current, [System.Runtime.CompilerServices.CallerMemberName] string? prop = null)
     {
         var col = ExcelColumn.FromLetter(letter);

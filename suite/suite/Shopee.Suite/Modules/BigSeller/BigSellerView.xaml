@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="Shopee.Suite.Modules.BigSeller.BigSellerView"
+<UserControl x:Class="Shopee.Suite.Modules.BigSeller.BigSellerView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:c="clr-namespace:Shopee.Suite.Controls"
@@ -392,7 +392,7 @@
                                         <TextBlock Text="Ánh xạ field ↔ cột Excel (nhập chữ cột: A, B, C…; trống = không dùng)"
                                                    Style="{StaticResource caption}" Margin="0,0,0,8"
                                                    Visibility="{Binding UsesHubData, Converter={StaticResource InvBoolToVis}}" />
-                                        <UniformGrid Columns="6"
+                                        <UniformGrid Columns="7"
                                                      Visibility="{Binding UsesHubData, Converter={StaticResource InvBoolToVis}}">
                                             <StackPanel Margin="0,0,8,0">
                                                 <TextBlock Text="Link" Style="{StaticResource caption}" />
@@ -414,9 +414,13 @@
                                                 <TextBlock Text="Tên gốc" Style="{StaticResource caption}" />
                                                 <TextBox Text="{Binding ProductNameColumnLetter, UpdateSourceTrigger=PropertyChanged}" Margin="0,3,0,0" />
                                             </StackPanel>
-                                            <StackPanel>
+                                            <StackPanel Margin="0,0,8,0">
                                                 <TextBlock Text="Tên đã sửa" Style="{StaticResource caption}" />
                                                 <TextBox Text="{Binding RewrittenNameColumnLetter, UpdateSourceTrigger=PropertyChanged}" Margin="0,3,0,0" />
+                                            </StackPanel>
+                                            <StackPanel>
+                                                <TextBlock Text="Mô tả" Style="{StaticResource caption}" />
+                                                <TextBox Text="{Binding DescriptionColumnLetter, UpdateSourceTrigger=PropertyChanged}" Margin="0,3,0,0" />
                                             </StackPanel>
                                         </UniformGrid>
                                     </StackPanel>
