@@ -1,4 +1,4 @@
-﻿using Shopee.Core.Accounts;
+using Shopee.Core.Accounts;
 using Shopee.Modules.MultiBrave;
 using Shopee.Workspace.Infrastructure;
 
@@ -21,7 +21,6 @@ public sealed partial class ScrapeViewModel
         private readonly Dictionary<string, DateTimeOffset> _cooldown = new(StringComparer.Ordinal);
         private readonly Dictionary<string, int> _fail = new(StringComparer.Ordinal);
         private long _lru;
-        private const int ShortCdSec = 15, LongCdSec = 90, SetAsideAfter = 2;
 
         // BÙ TK THAY THẾ: khi captcha loại tk khỏi khung, giữ cỡ khung bằng cách xin 1 tk RẢNH từ kho chung
         // (khóa lease xuyên máy) → job không cạn khung phải chạy lại. null = không bù (giữ hành vi cũ).
@@ -51,6 +50,17 @@ public sealed partial class ScrapeViewModel
                 int usable, borrowedCount;
                 lock (_lock)
                 {
+                    usable = _frame.Count(a => !a.Disabled && !_dropped.Contains(a.Id));
+                    borrowedCount = _borrowed.Count;
+                }
+                // Khung THIẾU so với cỡ ban đầu (do tk lỗi/captcha bị loại) → bù NGAY 1 tk mới từ kho trước khi chọn.
+                if (usable < _targetSize && Environment.TickCount64 >= Interlocked.Read(ref _noReplUntilTick))
+                {
+                    if (await TryTopUpAsync(ct).ConfigureAwait(false)) continue;   // đã bù → vòng lại mượn tk mới
+                    Interlocked.Exchange(ref _noReplUntilTick, Environment.TickCount64 + 5_000);   // hết tk dư → nghỉ 5s
+                }
+                lock (_lock)
+                {
                     var now = DateTimeOffset.UtcNow;
                     var pick = _frame
                         .Where(a => !a.Disabled && !_dropped.Contains(a.Id) && !_borrowed.Contains(a.Id)
@@ -66,16 +76,17 @@ public sealed partial class ScrapeViewModel
                     }
                     usable = _frame.Count(a => !a.Disabled && !_dropped.Contains(a.Id));
                     borrowedCount = _borrowed.Count;
+                    // Nếu đã thử hết toàn bộ tk trong kho và không còn tk nào dùng được → mở khoá xoay vòng lại từ đầu
+                    // để các process không bao giờ bị dừng giữa chừng.
+                    if (usable == 0 && _dropped.Count > 0 && _frame.Any(a => !a.Disabled && !_borrowed.Contains(a.Id)))
+                    {
+                        _dropped.Clear();
+                        _cooldown.Clear();
+                        Interlocked.Exchange(ref _noReplUntilTick, 0);
+                        _log?.Invoke("♻ Đã dùng qua toàn bộ tk trong kho — xoay vòng lại các tk từ đầu.");
+                        continue;
+                    }
                 }
-                // Khung THIẾU so với cỡ ban đầu (captcha loại tk) → xin 1 tk THAY THẾ từ kho (khóa lease xuyên máy).
-                // Có backoff sau khi kho hết tk dư để khỏi dội Hub liên tục.
-                if (usable < _targetSize && Environment.TickCount64 >= Interlocked.Read(ref _noReplUntilTick))
-                {
-                    if (await TryTopUpAsync(ct).ConfigureAwait(false)) continue;   // đã bù → vòng lại mượn tk mới
-                    Interlocked.Exchange(ref _noReplUntilTick, Environment.TickCount64 + 20_000);   // hết tk dư → nghỉ 20s
-                }
-                // Không có tk dùng được NGAY + không bù được: hết hẳn (mọi tk Disabled/loại) + không ai đang mượn
-                // → null → worker dừng (hết tk → dừng job). Còn tk đang mượn/cooldown → chờ.
                 if (usable == 0 && borrowedCount == 0) return null;
                 await Task.Delay(500, ct).ConfigureAwait(false);
             }
@@ -98,8 +109,12 @@ public sealed partial class ScrapeViewModel
                 }
                 var repl = await _acquireReplacement(frameIds, ct).ConfigureAwait(false);
                 if (repl is null) return false;
-                lock (_lock) _frame.Add(repl);
-                _log?.Invoke($"🔁 bù 1 tk thay thế \"{repl.DisplayName}\" vào khung (giữ đủ cỡ, khỏi cạn phải chạy lại).");
+                lock (_lock)
+                {
+                    repl.LastUsedTick = 0;   // ưu tiên cấp ngay cho process đang chờ
+                    _frame.Add(repl);
+                }
+                _log?.Invoke($"🔁 Thay thế bằng tk mới \"{repl.DisplayName}\" từ kho.");
                 return true;
             }
             finally { _topUpGate.Release(); }
@@ -119,24 +134,7 @@ public sealed partial class ScrapeViewModel
 
         public AccountCooldown Cooldown(ScrapeAccountSpec spec)
         {
-            int secs; bool setAside;
-            lock (_lock)
-            {
-                var n = _fail[spec.Id] = _fail.GetValueOrDefault(spec.Id) + 1;
-                setAside = n >= SetAsideAfter;
-                secs = setAside ? LongCdSec : ShortCdSec;
-                _cooldown[spec.Id] = DateTimeOffset.UtcNow.AddSeconds(secs);
-                if (Find(spec.Id) is { } a) a.LastUsedTick = ++_lru;
-                _borrowed.Remove(spec.Id);
-            }
-            ShopeeAccountUsage.Shared.MarkReleased(spec.Id);
-            return new AccountCooldown(secs, setAside);
-        }
-
-        public void Quarantine(ScrapeAccountSpec spec)
-        {
-            // Captcha → LOẠI tk khỏi khung NGAY (bỏ grace). Khung thiếu → BorrowAsync tự bù tk thay thế
-            // (TryTopUpAsync); hết tk dư → hết hẳn → BorrowAsync null → dừng job. Việc xóa profile do handler ngoài lo.
+            // Bất kỳ tk nào gặp lỗi → loại khỏi khung ngay để TryTopUpAsync thay bằng tk mới từ kho.
             lock (_lock)
             {
                 _dropped.Add(spec.Id);
@@ -144,6 +142,35 @@ public sealed partial class ScrapeViewModel
                 _cooldown.Remove(spec.Id);
             }
             ShopeeAccountUsage.Shared.MarkReleased(spec.Id);
+            ShopeeAccountUsage.Shared.ReleaseReservation(spec.Id);
+            Interlocked.Exchange(ref _noReplUntilTick, 0);
+            return new AccountCooldown(0, true);
+        }
+
+        public void Quarantine(ScrapeAccountSpec spec)
+        {
+            // Captcha → LOẠI tk khỏi khung NGAY + bù tk thay thế từ kho.
+            lock (_lock)
+            {
+                _dropped.Add(spec.Id);
+                _borrowed.Remove(spec.Id);
+                _cooldown.Remove(spec.Id);
+            }
+            ShopeeAccountUsage.Shared.MarkReleased(spec.Id);
+            ShopeeAccountUsage.Shared.ReleaseReservation(spec.Id);
+            Interlocked.Exchange(ref _noReplUntilTick, 0);
+        }
+
+        public List<string> ActiveFrameIds()
+        {
+            lock (_lock)
+                return _frame.Where(a => !a.Disabled && !_dropped.Contains(a.Id)).Select(a => a.Id).ToList();
+        }
+
+        public List<string> AllFrameIds()
+        {
+            lock (_lock)
+                return _frame.Select(a => a.Id).ToList();
         }
 
         private ShopeeAccount? Find(string id) => _frame.FirstOrDefault(a => a.Id == id);

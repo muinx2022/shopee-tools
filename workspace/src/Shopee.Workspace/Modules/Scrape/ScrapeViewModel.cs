@@ -316,8 +316,8 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         ScrapeRunner? runner = null;
         var coordKey = new CoordKey(account.Id, shop.Id, sheet, CoordOp.Scrape);
         ILeaseHandle? lease = null;
-        // AccountLeaseScope bỏ (chỉ dùng cho Hub multi-machine).
-        // ICoordinationHub? accHub = null;   // [App local: bỏ - không dùng]
+        SessionAccountPool? pool = null;
+        List<string>? frameIds = null;
         try
         {
             if (account.UsesHubData && !SharedWorkbookStore.IsActive)
@@ -335,22 +335,6 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
                     () => ScrapeWorkbook.ExcelRowsToDenseRange(dataPath, dataSheet, excelStart, excelEnd), ct).ConfigureAwait(false);
                 startRow = denseStart;
                 totalRows = denseEnd;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
             }
             catch (Exception ex) { LogA($"[{account.DisplayName}] ✘ lỗi đọc workbook: {ex.Message} — bỏ qua."); return; }
             if (totalRows < startRow) { LogA($"[{account.DisplayName}] sheet \"{dataSheet}\" không còn dòng nào trong khoảng Excel {Math.Max(2, excelStart)}→{(excelEnd > 0 ? excelEnd.ToString() : "hết")} — bỏ qua."); return; }
@@ -358,15 +342,8 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             // RESET → xoá tiến độ cũ. Tính các khoảng cần chạy (reset = cả đoạn; resume = phần còn thiếu).
             if (!resume)
             {
-                // Xoá tiến độ local + ledger Hub qua MỘT helper dùng chung với nút "Xoá tiến độ" ở cửa sổ
-                // Thống kê (trước đây cửa sổ đó chỉ Clear local → ledger Hub còn nguyên, xoá thành no-op).
                 ScrapeProgressReset.Reset(account.Id, sheet, shop, account.DisplayName, m => LogA($"[{account.DisplayName}] {m}"));
             }
-            // HAND-OFF XUYÊN MÁY: trước khi tính phần CÒN THIẾU, kéo ledger TƯƠI của shop này từ Hub → fold vào
-            // tiến độ local. Nhờ đó máy TIẾP QUẢN (khi máy trước rớt net giữa chừng) chỉ scrape đúng phần còn
-            // thiếu chung, KHÔNG làm lại phần máy kia đã đẩy lên Hub (trước đây chỉ fold 1 lần lúc mở app →
-            // tiếp quản nóng bị scrape lại). Best-effort: offline/standalone → dùng tiến độ local như cũ.
-            // App local: không gọi FoldScrapeLedger (Hub null).
 
             var segments = resume
                 ? ScrapeProgressStore.Shared.RemainingSegments(account.Id, sheet, startRow, totalRows)
@@ -377,54 +354,16 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
                 return;
             }
 
-            // KHOÁ VIỆC XUYÊN MÁY: giành quyền scrape shop này. Bị máy khác giữ / mất kết nối Hub → CHẶN.
-            // App local: bỏ khoá xuyên máy, luôn coi như được cấp.
-        // lease = null (khoá xuyên máy bỏ)
-
-
-
-
-
-
-            // ĐÓNG KHUNG: cấp một bộ tk Shopee CỐ ĐỊNH (FrameSize) cho job này, GỠ khỏi kho chung → các job
-            // RỜI nhau. Resume giữ NGUYÊN khung cũ (đọc id đã lưu) để KHÔNG phơi tk MỚI lên BigSeller; Reset
-            // cấp khung mới. Engine chỉ xoay vòng TRONG khung → BigSeller chỉ thấy ngần ấy thiết bị ổn định.
             var frameSize = Math.Max(1, frameSizeOverride ?? target.FrameSize);
-            // AFFINITY tk↔máy: hỏi Hub tk nào "nhà" ở máy này (mine → ưu tiên, tái dùng profile trusted) và tk
-            // nào đang thuộc máy KHÁC còn online (blocked → nhường, khỏi tranh trust). Chỉ khi có Hub; offline/
-            // lỗi → rỗng → dựng khung như cũ. Lấy TRƯỚC ClaimFrame để đưa vào thứ tự ưu tiên.
             HashSet<string> mineIds = new(StringComparer.Ordinal), blockedIds = new(StringComparer.Ordinal);
-            // [Hub bỏ] if (accHub is not null)
-            // [Hub bỏ] (mineIds, blockedIds) = await accHub.GetAccountAffinityAsync().ConfigureAwait(false);
-            IReadOnlyList<string>? preferIds = resume ? ScrapeProgressStore.Shared.GetFrame(account.Id, sheet) : null;
-            var frame = s.ClaimFrame(frameSize, preferIds, mineIds, blockedIds);
-            // Affinity thu hẹp khung (nhường tk máy khác còn online) → log rõ để user hiểu vì sao ít cửa sổ hơn.
+            // Không ghim cứng khung cũ khi resume (tránh tái sử dụng các tk đã dính captcha/lỗi ở lượt trước).
+            var frame = s.ClaimFrame(frameSize, preferIds: null, mineIds, blockedIds);
             if (blockedIds.Count > 0 && frame.Count < frameSize)
                 LogA($"[{account.DisplayName}] {blockedIds.Count} tk đang thuộc máy khác (còn online) → nhường, dùng tk của máy này/mồ côi; khung còn {frame.Count}/{frameSize}.");
-            var frameIds = frame.Select(a => a.Id).ToList();
-            // Gói account-lease: GIỮ giữ-chỗ cục bộ CẢ khung (ClaimFrame đã TryReserve) tới lúc Dispose nhả — kể cả
-            // khi job dừng giữa chừng / Hub loại bớt tk (KHÔNG thu hẹp khung để tránh rò tk khỏi kho chung). Tạo
-            // NGAY (kể cả offline) để mọi lối ra đều nhả giữ-chỗ cục bộ; reserve Hub + heartbeat + bù do scope lo.
-            // [Hub bỏ] accScope = AccountLeaseScope.ForFrame(accHub, frameIds);
+            frameIds = frame.Select(a => a.Id).ToList();
             if (frame.Count == 0) { LogA($"[{account.DisplayName}] kho tk Shopee đã cạn (mọi tk đang thuộc khung khác / Search đang giữ / bị tắt) — bỏ qua."); return; }
 
-            // ACCOUNT-LEASE XUYÊN MÁY: tk nào đang được MÁY KHÁC dùng → loại khỏi khung (chống dùng trùng).
-            // [Hub bỏ] if (accHub is not null)
-
-
-
-
-
-
-
-
-
-            // AFFINITY: ghi "nhà" = máy này cho khung CUỐI (các tk máy này thực sự giữ, đã qua lease-grant) → lần
-            // sau máy này ưu tiên chúng + máy khác tránh khi máy này còn online. Chỉ ghi tk đã lease-grant ⇒ không
-            // [Hub bỏ] // ghi đè nhầm tk máy khác đang giữ. Best-effort (SetAccountHomeAsync tự nuốt lỗi).
-            // [Hub bỏ] if (accHub is not null && frame.Count > 0)
-            // [Hub bỏ] await accHub.SetAccountHomeAsync(frame.Select(a => a.Id)).ConfigureAwait(false);
-            ScrapeProgressStore.Shared.SaveFrame(account.Id, sheet, frame.Select(a => a.Id));   // lưu khung để resume giữ nguyên
+            ScrapeProgressStore.Shared.SaveFrame(account.Id, sheet, frameIds);
             var procs = Math.Max(1, Math.Min(maxProc, frame.Count));
             // Mỗi tk BigSeller (job) 1 màu nền → các process CÙNG tk BigSeller cùng màu, dễ nhìn khi chạy nhiều tk.
             var jobBrush = JobPalette[(seq - 1) % JobPalette.Length];
@@ -437,7 +376,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             // Đưa thông báo dọn nền (quét Brave mồ côi…) ra log tab Scrape để người dùng thấy.
             Shopee.Core.Browser.BraveFleet.Notice = Log;
             var totalSeg = segments.Sum(x => x.to - x.from + 1);
-            LogA($"── {(resume ? "⏯ Tiếp tục" : "▶")} BigSeller \"{account.DisplayName}\" · shop \"{shop.DisplayName}\" · {totalSeg} dòng cần chạy (tổng sheet {totalRows}) · {procs} cửa sổ · KHUNG {frame.Count} tk Shopee (xoay vòng trong khung) · nghỉ giữa link {restWindow} · trần tổng app {Shopee.Core.Browser.BraveFleet.MaxConcurrentWindows} cửa sổ ──");
+            LogA($"── {(resume ? "⏯ Tiếp tục" : "▶")} BigSeller \"{account.DisplayName}\" · shop \"{shop.DisplayName}\" · {totalSeg} dòng cần chạy (tổng sheet {totalRows}) · {procs} cửa sổ · KHUNG {frame.Count} tk Shopee (lỗi tự thay tk mới từ kho) · nghỉ giữa link {restWindow} · trần tổng app {Shopee.Core.Browser.BraveFleet.MaxConcurrentWindows} cửa sổ ──");
 
             // Ghi nhận lượt chạy (chỉ tiến độ DÒNG — không đặt-chỗ tk nữa vì tk xoay vòng/tự trả về kho).
             if (resume) ScrapeProgressStore.Shared.BeginResume(account.Id, sheet, account.DisplayName, totalRows);
@@ -471,34 +410,28 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             runner.RowsCompleted += (from, to) =>
             {
                 ScrapeProgressStore.Shared.MarkCompleted(account.Id, sheet, from, to);
-                    // [bỏ] Hub.PublishProgress
                 UpdateProgressDisplay();
                 OnUi(target.RefreshProgress);
             };
-            // Dòng KHÔNG cào được (lỗi giữa khối / kẹt 3 lần): trước đây chỉ có một dòng log rồi trôi, mà
-            // khoảng runner báo "đã cào" vẫn trùm lên nó → mất SP âm thầm. Nay ghi vào SỔ BỎ QUA + đẩy
-            // [row..row] lên Hub (CÓ CHỦ ĐÍCH: không publish thì Hub giao lại dòng hỏng vòng vô tận) — qua
-            // PublishSkipped chứ KHÔNG PublishProgress, để sổ bỏ-qua đi cùng vùng phủ lên Hub: máy khác fold về
-            // mới biết đang thiếu SP, thay vì thấy "✔ Hoàn thành toàn bộ".
             runner.RowSkipped += (row, reason) =>
             {
                 ScrapeProgressStore.Shared.MarkSkipped(account.Id, sheet, row);
-                    // [bỏ] Hub.PublishSkipped
                 LogA($"[{account.DisplayName}] ⚠ BỎ QUA dòng {row}: {reason} — SP dòng này KHÔNG được cào; muốn cào lại hãy Chạy (reset) hoặc bấm \"Cào lại dòng đã bỏ\" trong Thống kê.");
                 OnUi(target.RefreshProgress);
             };
             WireRunner(runner, seq, account);
 
-            // BÙ TK THAY THẾ: khi captcha loại tk khỏi khung, pool xin 1 tk RẢNH từ kho chung (đã khóa lease
-            // xuyên máy) để giữ đủ cỡ khung → job KHÔNG cạn khung phải chạy lại. Scope ghi nhận để NHẢ đúng ở
-            // finally (giữ-chỗ cục bộ + lease Hub + heartbeat như tk khung ban đầu). Hết tk dư → pool giữ hành vi cũ.
-            var pool = new SessionAccountPool(dataSheet, frame, null, msg => LogA($"[{account.DisplayName}] {msg}"));
+            // Cứ tk nào lỗi (captcha hoặc lỗi kết nối/proxy/traffic) → tự động loại khỏi khung và lấy tk mới từ kho chung thay vào ngay.
+            pool = new SessionAccountPool(
+                dataSheet,
+                frame,
+                (excludeIds, _) => Task.FromResult(s.ClaimReplacement(excludeIds)),
+                msg => LogA($"[{account.DisplayName}] {msg}"));
             await runner.RunAutoAsync(pool, procs, segments, rowsPer, account.CookieFile, ct).ConfigureAwait(false);
 
             // Kết thúc: xong hết [startRow..total] → completed; còn dở → stopped (resume chạy nốt theo dòng).
             ScrapeProgressStore.Shared.FinishRun(account.Id, sheet, startRow, totalRows);
             var after = ScrapeProgressStore.Shared.Find(account.Id, sheet);
-            // Dòng bỏ qua nằm TRONG vùng phủ nên "hoàn thành" vẫn có thể thiếu SP → nói rõ ở dòng tổng kết.
             var skipped = after?.SkippedRows ?? [];
             var skipNote = skipped.Count == 0
                 ? ""
@@ -515,17 +448,19 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         catch (Exception ex) { LogA($"[{account.DisplayName}] ✘ lỗi: {ex.Message}"); }
         finally
         {
-            // Hub: đẩy trạng thái hoàn thành lên ledger + nhả khoá việc + nhả account-lease xuyên máy.
-            try
+            if (pool is not null)
             {
-                var fin = ScrapeProgressStore.Shared.Find(account.Id, sheet);
-            // [bỏ] Hub.PublishCompletion
+                try
+                {
+                    ScrapeProgressStore.Shared.SaveFrame(account.Id, sheet, pool.ActiveFrameIds());
+                    ShopeeAccountUsage.Shared.ReleaseReservation(pool.AllFrameIds());
+                }
+                catch { }
             }
-            catch { }
-            // Nhả account-lease (heartbeat → UnmarkHubLeased → ReleaseAccountsAsync Hub → ReleaseReservation CẢ
-            // khung + tk bù, snapshot-under-lock chống rò) TRƯỚC, rồi nhả khoá VIỆC shop. Trước đây khoá việc nhả
-            // xen giữa nhả-lease-Hub và nhả-giữ-chỗ-cục-bộ; 3 tài nguyên độc lập nên thứ tự này tương đương.
-            // [Hub bỏ] if (accScope is not null) { try { await accScope.DisposeAsync().ConfigureAwait(false); } catch { } }
+            else if (frameIds is { Count: > 0 })
+            {
+                try { ShopeeAccountUsage.Shared.ReleaseReservation(frameIds); } catch { }
+            }
             if (lease is not null) { try { await lease.DisposeAsync().ConfigureAwait(false); } catch { } }
             s.Jobs.Remove(account.Id);
             // Dọn các dòng process của job này khỏi lưới (trước đây dòng cũ không bao giờ bị xoá).

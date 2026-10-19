@@ -48,14 +48,28 @@ public sealed partial class ScrapeViewModel
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                int usable, borrowedCount;
+                int usable;
+                lock (_lock)
+                {
+                    usable = _frame.Count(a => !a.Disabled && !_dropped.Contains(a.Id));
+                }
+
+                // Khung THIẾU so với cỡ mục tiêu (tk lỗi/captcha bị loại) → bù NGAY 1 tk MỚI từ kho chung
+                // trước khi chọn tk đang rảnh để các process luôn có tk mới chạy song song.
+                if (usable < _targetSize && Environment.TickCount64 >= Interlocked.Read(ref _noReplUntilTick))
+                {
+                    if (await TryTopUpAsync(ct).ConfigureAwait(false)) continue;
+                    Interlocked.Exchange(ref _noReplUntilTick, Environment.TickCount64 + 5_000);
+                }
+
+                int borrowedCount;
                 lock (_lock)
                 {
                     var now = DateTimeOffset.UtcNow;
                     var pick = _frame
                         .Where(a => !a.Disabled && !_dropped.Contains(a.Id) && !_borrowed.Contains(a.Id)
                                     && (!_cooldown.TryGetValue(a.Id, out var until) || until <= now))
-                        .OrderBy(a => a.LastUsedTick)        // nghỉ lâu nhất trong khung trước → luân phiên nghỉ
+                        .OrderBy(a => a.LastUsedTick)        // tk mới bù (LastUsedTick=0) hoặc nghỉ lâu nhất được chọn trước
                         .FirstOrDefault();
                     if (pick is not null)
                     {
@@ -66,16 +80,17 @@ public sealed partial class ScrapeViewModel
                     }
                     usable = _frame.Count(a => !a.Disabled && !_dropped.Contains(a.Id));
                     borrowedCount = _borrowed.Count;
+
+                    // Nếu toàn bộ kho đã thử qua hết (usable == 0) mà vẫn còn tk không bị Disabled → mở khoá vòng mới
+                    if (usable == 0 && _dropped.Count > 0)
+                    {
+                        _dropped.Clear();
+                        _cooldown.Clear();
+                        _fail.Clear();
+                        Interlocked.Exchange(ref _noReplUntilTick, 0);
+                        usable = _frame.Count(a => !a.Disabled);
+                    }
                 }
-                // Khung THIẾU so với cỡ ban đầu (captcha loại tk) → xin 1 tk THAY THẾ từ kho (khóa lease xuyên máy).
-                // Có backoff sau khi kho hết tk dư để khỏi dội Hub liên tục.
-                if (usable < _targetSize && Environment.TickCount64 >= Interlocked.Read(ref _noReplUntilTick))
-                {
-                    if (await TryTopUpAsync(ct).ConfigureAwait(false)) continue;   // đã bù → vòng lại mượn tk mới
-                    Interlocked.Exchange(ref _noReplUntilTick, Environment.TickCount64 + 20_000);   // hết tk dư → nghỉ 20s
-                }
-                // Không có tk dùng được NGAY + không bù được: hết hẳn (mọi tk Disabled/loại) + không ai đang mượn
-                // → null → worker dừng (hết tk → dừng job). Còn tk đang mượn/cooldown → chờ.
                 if (usable == 0 && borrowedCount == 0) return null;
                 await Task.Delay(500, ct).ConfigureAwait(false);
             }
@@ -98,8 +113,12 @@ public sealed partial class ScrapeViewModel
                 }
                 var repl = await _acquireReplacement(frameIds, ct).ConfigureAwait(false);
                 if (repl is null) return false;
-                lock (_lock) _frame.Add(repl);
-                _log?.Invoke($"🔁 bù 1 tk thay thế \"{repl.DisplayName}\" vào khung (giữ đủ cỡ, khỏi cạn phải chạy lại).");
+                lock (_lock)
+                {
+                    repl.LastUsedTick = 0; // ưu tiên chọn ngay tk mới vừa bù
+                    _frame.Add(repl);
+                }
+                _log?.Invoke($"🔁 thay bằng tk mới \"{repl.DisplayName}\" từ kho.");
                 return true;
             }
             finally { _topUpGate.Release(); }
@@ -119,18 +138,17 @@ public sealed partial class ScrapeViewModel
 
         public AccountCooldown Cooldown(ScrapeAccountSpec spec)
         {
-            int secs; bool setAside;
+            // Cứ tk nào lỗi (proxy/đứt/traffic/tạm) → LOẠI NGAY và thay bằng tk mới từ kho chung.
             lock (_lock)
             {
-                var n = _fail[spec.Id] = _fail.GetValueOrDefault(spec.Id) + 1;
-                setAside = n >= SetAsideAfter;
-                secs = setAside ? LongCdSec : ShortCdSec;
-                _cooldown[spec.Id] = DateTimeOffset.UtcNow.AddSeconds(secs);
-                if (Find(spec.Id) is { } a) a.LastUsedTick = ++_lru;
+                _dropped.Add(spec.Id);
                 _borrowed.Remove(spec.Id);
+                _cooldown.Remove(spec.Id);
+                _fail.Remove(spec.Id);
             }
+            Interlocked.Exchange(ref _noReplUntilTick, 0);
             ShopeeAccountUsage.Shared.MarkReleased(spec.Id);
-            return new AccountCooldown(secs, setAside);
+            return new AccountCooldown(0, true);
         }
 
         public void Quarantine(ScrapeAccountSpec spec)
@@ -143,7 +161,14 @@ public sealed partial class ScrapeViewModel
                 _borrowed.Remove(spec.Id);
                 _cooldown.Remove(spec.Id);
             }
+            Interlocked.Exchange(ref _noReplUntilTick, 0);
             ShopeeAccountUsage.Shared.MarkReleased(spec.Id);
+        }
+
+        public IReadOnlyList<string> ActiveFrameIds()
+        {
+            lock (_lock)
+                return _frame.Where(a => !a.Disabled && !_dropped.Contains(a.Id)).Select(a => a.Id).ToList();
         }
 
         private ShopeeAccount? Find(string id) => _frame.FirstOrDefault(a => a.Id == id);

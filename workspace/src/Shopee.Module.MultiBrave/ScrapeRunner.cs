@@ -274,13 +274,12 @@ public sealed class ScrapeRunner
                         InstanceStatus?.Invoke(key, "🚫 Captcha");
                         InstanceLog?.Invoke(key, $"🚫 {spec.Label}: captcha → LOẠI khỏi khung + xóa profile (login mới lần sau), đổi tk khác.");
                     }
-                    else if (action == ScrapeFailureAction.Cooldown)
+                    else if (action == ScrapeFailureAction.Cooldown || res.LastCompletedRow < to)
                     {
-                        // Lỗi khác (proxy/đứt/tạm) → cho tk nghỉ. Lần 1 nghỉ ngắn (15s); lỗi ≥2 lần liên
-                        // tiếp → nghỉ dài (90s) "để dành". Phần dở vá bằng tk khác đang rảnh (không chờ tk này).
-                        var cd = pool.Cooldown(spec);
-                        InstanceLog?.Invoke(key, $"⏸ {spec.Label}: {res.Reason} → cho tk nghỉ {cd.Seconds}s, vá phần dở bằng tk khác"
-                            + (cd.SetAside ? " (lỗi 2 lần — nghỉ dài 90s)." : "."));
+                        // Bất kỳ lỗi nào (proxy/đứt/traffic/dừng dở giữa chừng) → loại bỏ tk lỗi, thay bằng tk mới từ kho.
+                        _ = pool.Cooldown(spec);
+                        var reasonText = string.IsNullOrWhiteSpace(res.Reason) ? "dừng giữa chừng" : res.Reason;
+                        InstanceLog?.Invoke(key, $"🔁 {spec.Label}: {reasonText} → loại bỏ tk lỗi, thay bằng tk mới từ kho.");
                     }
                     else pool.Release(spec);
 

@@ -308,6 +308,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         var ct = h.Cts.Token;
 
         ScrapeRunner? runner = null;
+        SessionAccountPool? pool = null;
         var coordKey = new CoordKey(account.Id, shop.Id, sheet, CoordOp.Scrape);
         ILeaseHandle? lease = null;
         AccountLeaseScope? accScope = null;         // khóa tk Shopee xuyên máy: reserve→heartbeat→bù→nhả (gói)
@@ -374,8 +375,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             lease = attempt.Handle;
 
             // ĐÓNG KHUNG: cấp một bộ tk Shopee CỐ ĐỊNH (FrameSize) cho job này, GỠ khỏi kho chung → các job
-            // RỜI nhau. Resume giữ NGUYÊN khung cũ (đọc id đã lưu) để KHÔNG phơi tk MỚI lên BigSeller; Reset
-            // cấp khung mới. Engine chỉ xoay vòng TRONG khung → BigSeller chỉ thấy ngần ấy thiết bị ổn định.
+            // RỜI nhau. Không ghim khung cũ khi Resume để tránh nạp lại tk đã lỗi/captcha từ phiên trước.
             var frameSize = Math.Max(1, frameSizeOverride ?? target.FrameSize);
             // AFFINITY tk↔máy: hỏi Hub tk nào "nhà" ở máy này (mine → ưu tiên, tái dùng profile trusted) và tk
             // nào đang thuộc máy KHÁC còn online (blocked → nhường, khỏi tranh trust). Chỉ khi có Hub; offline/
@@ -383,7 +383,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             HashSet<string> mineIds = new(StringComparer.Ordinal), blockedIds = new(StringComparer.Ordinal);
             if (accHub is not null)
                 (mineIds, blockedIds) = await accHub.GetAccountAffinityAsync().ConfigureAwait(false);
-            IReadOnlyList<string>? preferIds = resume ? ScrapeProgressStore.Shared.GetFrame(account.Id, sheet) : null;
+            IReadOnlyList<string>? preferIds = null;
             var frame = s.ClaimFrame(frameSize, preferIds, mineIds, blockedIds);
             // Affinity thu hẹp khung (nhường tk máy khác còn online) → log rõ để user hiểu vì sao ít cửa sổ hơn.
             if (blockedIds.Count > 0 && frame.Count < frameSize)
@@ -456,10 +456,10 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             };
             WireRunner(runner, seq, account);
 
-            // BÙ TK THAY THẾ: khi captcha loại tk khỏi khung, pool xin 1 tk RẢNH từ kho chung (đã khóa lease
+            // BÙ TK THAY THẾ: khi bất kỳ tk nào dính lỗi/captcha, pool xin 1 tk RẢNH từ kho chung (đã khóa lease
             // xuyên máy) để giữ đủ cỡ khung → job KHÔNG cạn khung phải chạy lại. Scope ghi nhận để NHẢ đúng ở
-            // finally (giữ-chỗ cục bộ + lease Hub + heartbeat như tk khung ban đầu). Hết tk dư → pool giữ hành vi cũ.
-            var pool = new SessionAccountPool(sheet, frame, accScope.AcquireReplacementAsync, msg => LogA($"[{account.DisplayName}] {msg}"));
+            // finally (giữ-chỗ cục bộ + lease Hub + heartbeat như tk khung ban đầu).
+            pool = new SessionAccountPool(sheet, frame, accScope.AcquireReplacementAsync, msg => LogA($"[{account.DisplayName}] {msg}"));
             await runner.RunAutoAsync(pool, procs, segments, rowsPer, account.CookieFile, ct).ConfigureAwait(false);
 
             // Kết thúc: xong hết [startRow..total] → completed; còn dở → stopped (resume chạy nốt theo dòng).
@@ -482,6 +482,10 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         catch (Exception ex) { LogA($"[{account.DisplayName}] ✘ lỗi: {ex.Message}"); }
         finally
         {
+            if (pool is not null)
+            {
+                try { ScrapeProgressStore.Shared.SaveFrame(account.Id, sheet, pool.ActiveFrameIds()); } catch { }
+            }
             // Hub: đẩy trạng thái hoàn thành lên ledger + nhả khoá việc + nhả account-lease xuyên máy.
             try
             {

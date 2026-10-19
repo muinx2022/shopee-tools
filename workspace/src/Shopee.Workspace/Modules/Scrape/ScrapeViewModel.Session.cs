@@ -1,4 +1,4 @@
-﻿using Shopee.Core.Accounts;
+using Shopee.Core.Accounts;
 using Shopee.Core.BigSeller;
 using Shopee.Modules.MultiBrave;
 using Shopee.Workspace.Infrastructure;
@@ -68,6 +68,29 @@ public sealed partial class ScrapeViewModel
                     frame.Add(a); Available.Remove(a);
                 }
                 return frame;
+            }
+        }
+
+        public ShopeeAccount? ClaimReplacement(IReadOnlyCollection<string> excludeIds)
+        {
+            lock (AllocLock)
+            {
+                var candidates = AccountStore.Shared.Accounts
+                    .Where(x => !x.Disabled
+                        && !excludeIds.Contains(x.Id)
+                        && !ShopeeAccountUsage.Shared.IsReserved(x.Id)
+                        && !ShopeeAccountUsage.Shared.IsHubLeased(x.Id))
+                    .OrderBy(x => x.LastUsedTick)
+                    .ToList();
+                foreach (var a in candidates)
+                {
+                    if (ShopeeAccountUsage.Shared.TryReserve(a.Id))
+                    {
+                        Available.RemoveAll(x => x.Id == a.Id);
+                        return a;
+                    }
+                }
+                return null;
             }
         }
     }
