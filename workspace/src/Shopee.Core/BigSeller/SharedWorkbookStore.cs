@@ -45,6 +45,12 @@ public static class SharedWorkbookStore
             return SharedWorkbookCatalog.Resolve(Current.Enabled, MergedPath, account, shop);
     }
 
+    public static SharedWorkbookTarget ResolveForUpdate(BigSellerAccount account, BigSellerShop shop)
+    {
+        lock (Gate)
+            return SharedWorkbookCatalog.ResolveForUpdate(Current.Enabled, SourcePath, MergedPath, account, shop);
+    }
+
     /// <summary>
     /// null = không dùng workbook chung, caller tự kiểm workbook từng tài khoản.
     /// Chuỗi = workbook chung đang bật nhưng file gộp không còn.

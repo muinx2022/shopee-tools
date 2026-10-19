@@ -1,4 +1,4 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Shopee.Core.BigSeller;
 
 namespace Shopee.Workspace.Modules.BigSeller;
@@ -109,6 +109,12 @@ public sealed class BigSellerShopViewModel : ObservableObject
     {
         get => ExcelColumn.ToLetter(Model.ColumnMap.RewrittenNameColumn);
         set => SetColumn(value, v => Model.ColumnMap.RewrittenNameColumn = v, Model.ColumnMap.RewrittenNameColumn);
+    }
+
+    public string DescriptionColumnLetter
+    {
+        get => ExcelColumn.ToLetter(Model.ColumnMap.DescriptionColumn);
+        set => SetColumn(value, v => Model.ColumnMap.DescriptionColumn = v, Model.ColumnMap.DescriptionColumn);
     }
 
     private void SetColumn(string? letter, Action<int> apply, int current, [System.Runtime.CompilerServices.CallerMemberName] string? prop = null)

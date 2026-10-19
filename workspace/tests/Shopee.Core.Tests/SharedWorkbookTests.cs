@@ -89,6 +89,53 @@ public sealed class SharedWorkbookTests : IDisposable
         Assert.Equal("ShopA", SharedWorkbookCatalog.ScrapeProgressKey(false, "acc-a", "ShopA"));
     }
 
+    [Fact]
+    public void ResolveForUpdate_Bat_ChonDungSheetCuaShopTrongFileNguon_GiuKhoaTienDoShared()
+    {
+        var src = Path.Combine(_dir, "resell-18-shops.xlsx");
+        var merged = Path.Combine(_dir, "gop.xlsx");
+        using (var wb = new XLWorkbook())
+        {
+            wb.AddWorksheet("Linh QA");
+            wb.AddWorksheet("shop9x.store");
+            wb.AddWorksheet("alina99.store");
+            wb.SaveAs(src);
+        }
+
+        var account = new BigSellerAccount { WorkbookPath = @"D:\rieng.xlsx" };
+        var shop1 = new BigSellerShop { Id = "shop-1", Name = "shop9x.store", ShopeeDataSheet = "shop9x.store" };
+        var shop2 = new BigSellerShop { Id = "shop-2", Name = "alina99.store", ShopeeDataSheet = "alina99.store" };
+
+        var t1 = SharedWorkbookCatalog.ResolveForUpdate(true, src, merged, account, shop1);
+        var t2 = SharedWorkbookCatalog.ResolveForUpdate(true, src, merged, account, shop2);
+
+        Assert.Equal(src, t1.DataPath);
+        Assert.Equal("shop9x.store", t1.DataSheet);
+        Assert.Equal("shared:shop-1", t1.ProgressKey);
+
+        Assert.Equal(src, t2.DataPath);
+        Assert.Equal("alina99.store", t2.DataSheet);
+        Assert.Equal("shared:shop-2", t2.ProgressKey);
+    }
+
+    [Fact]
+    public void ResolveForUpdate_Bat_KhongCoSheetShopTrongFileNguon_FallbackVeFileGop()
+    {
+        var src = Path.Combine(_dir, "nguon.xlsx");
+        var merged = Path.Combine(_dir, "gop.xlsx");
+        WriteSample(src);
+        SharedWorkbookMerge.Build(src, ["A", "B"], merged);
+
+        var account = new BigSellerAccount { WorkbookPath = @"D:\rieng.xlsx" };
+        var shop = new BigSellerShop { Id = "shop-x", Name = "unknown.store", ShopeeDataSheet = "unknown.store" };
+
+        var target = SharedWorkbookCatalog.ResolveForUpdate(true, src, merged, account, shop);
+
+        Assert.Equal(merged, target.DataPath);
+        Assert.Equal("Gop", target.DataSheet);
+        Assert.Equal("shared:shop-x", target.ProgressKey);
+    }
+
     private static void WriteSample(string path)
     {
         using var wb = new XLWorkbook();

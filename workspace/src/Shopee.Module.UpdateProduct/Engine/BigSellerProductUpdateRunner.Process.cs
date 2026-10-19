@@ -190,11 +190,16 @@ internal sealed partial class BigSellerProductUpdateRunner
         }
         if (_mediaFullDetected) return false;   // kho đầy phát hiện lúc upload video → AI/lưu vô ích, thoát sớm cho rẻ
 
-        await StepAsync("Tạo mô tả AI");
-        // [13] AI description — rỗng sau retry = LỖI TẠM → retry vòng sau, KHÔNG xóa dòng (tránh mất SP).
-        var aiContent = await GenerateDescriptionAsync(rec.ProductName ?? "", ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(aiContent)) { _lastProcessTransient = true; return false; }
-        if (!await UpdateDescriptionAsync(page, aiContent, ct)) return false;
+        await StepAsync("Cập nhật mô tả sản phẩm");
+        // [13] Mô tả sản phẩm — lấy trực tiếp từ cột H (Description) trong sheet của shop (không gọi AI).
+        var descContent = (rec.Description ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(descContent))
+        {
+            _log($"  ⚠ Dòng {rec.LineIndex} trống cột Mô tả sản phẩm (cột H) — bỏ qua lưu SP này.");
+            return false;
+        }
+        _log($"  📝 Điền mô tả sản phẩm từ file ({descContent.Length} ký tự)");
+        if (!await UpdateDescriptionAsync(page, descContent, ct)) return false;
 
         await StepAsync("Lưu sản phẩm");
         // [14] save

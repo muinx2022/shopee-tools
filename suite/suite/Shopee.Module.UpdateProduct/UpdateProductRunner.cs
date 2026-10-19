@@ -20,7 +20,8 @@ public sealed record UpdateProductContext(
     bool UseHubData = false,
     // Bộ 3 giá trị điền form Update product (cấu hình per-shop do HUB đặt). RỖNG = dùng mặc định
     // (BigSellerShop.DefaultUpdate*) — mọi call-site cũ không truyền gì thì hành vi y như trước.
-    string UpdateStockValue = "", string UpdateWeightValue = "", string UpdateShippingChannel = "");
+    string UpdateStockValue = "", string UpdateWeightValue = "", string UpdateShippingChannel = "",
+    int DescriptionColumn = 8);
 
 /// <summary>
 /// Facade công khai bọc engine update-product. 3 workflow (TẤT CẢ C#, không còn Python):
@@ -96,6 +97,7 @@ public sealed class UpdateProductRunner
             ItemIdColumn = ctx.ItemIdColumn,
             ProductNameColumn = ctx.ProductNameColumn,
             RewrittenNameColumn = ctx.RewrittenNameColumn,
+            DescriptionColumn = ctx.DescriptionColumn > 0 ? ctx.DescriptionColumn : 8,
             UseHubData = ctx.UseHubData,   // hub-mode: runner đọc/ghi dòng qua HubClient thay vì mở WorkbookPath
             // Bộ 3 giá trị điền form Update: hợp lệ hoá NGAY tại biên (rỗng → hằng mặc định) để runner khỏi
             // phải nhớ fallback ở từng chỗ điền.

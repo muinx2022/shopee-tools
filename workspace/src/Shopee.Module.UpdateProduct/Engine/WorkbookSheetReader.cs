@@ -23,9 +23,15 @@ internal static class WorkbookSheetReader
     {
         using var _ = await WorkbookFileLockHandle.AcquireAsync(settings.WorkbookPath, ct).ConfigureAwait(false);
         using var wb = new XLWorkbook(settings.WorkbookPath);
-        var ws = string.IsNullOrWhiteSpace(settings.DataSheet)
-            ? wb.Worksheets.First()
-            : wb.Worksheet(settings.DataSheet);
+        IXLWorksheet ws;
+        if (!string.IsNullOrWhiteSpace(settings.DataSheet) && wb.TryGetWorksheet(settings.DataSheet.Trim(), out var wsBySheet))
+            ws = wsBySheet;
+        else if (!string.IsNullOrWhiteSpace(settings.ShopName) && wb.TryGetWorksheet(settings.ShopName.Trim(), out var wsByShop))
+            ws = wsByShop;
+        else if (string.IsNullOrWhiteSpace(settings.DataSheet))
+            ws = wb.Worksheets.First();
+        else
+            ws = wb.Worksheet(settings.DataSheet);
         var start = Math.Max(2, settings.StartRow);
         var last = ws.LastRowUsed()?.RowNumber() ?? 0;
         var end = settings.EndRow > 0 ? Math.Min(settings.EndRow, last) : last;

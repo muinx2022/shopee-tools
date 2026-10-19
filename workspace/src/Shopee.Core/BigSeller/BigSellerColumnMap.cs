@@ -20,4 +20,6 @@ public sealed class BigSellerColumnMap
     public int ProductNameColumn { get; set; } = 6;
     /// <summary>Cột tên đã sửa — output rewrite + tên dùng để update lên BigSeller (mặc định G).</summary>
     public int RewrittenNameColumn { get; set; } = 7;
+    /// <summary>Cột mô tả sản phẩm để update lên BigSeller (mặc định H = 8).</summary>
+    public int DescriptionColumn { get; set; } = 8;
 }

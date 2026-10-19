@@ -200,7 +200,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         // ném thì finally vẫn gỡ job khỏi _wsJobs (trước đây setup nằm NGOÀI try → throw làm tk kẹt ■ vĩnh viễn).
         var prefix = $"[{a.DisplayName}]";
         var coordOp = kind switch { UpdateKind.Import => CoordOp.Import, UpdateKind.Update => CoordOp.Update, _ => CoordOp.Rewrite };
-        var resolved = SharedWorkbookStore.Resolve(a, s);
+        var resolved = kind == UpdateKind.Update ? SharedWorkbookStore.ResolveForUpdate(a, s) : SharedWorkbookStore.Resolve(a, s);
         var coordKey = new CoordKey(a.Id, s.Id, resolved.ProgressKey, coordOp);
         // Đánh dấu running lúc chạy, completed/stopped lúc kết thúc — chấm xanh trên nút đọc trạng thái này.
         var opProg = kind switch
@@ -234,10 +234,12 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             // [bỏ] Hub.PublishCompletion Stopped
                 return;
             }
-            var ctx = BuildContext(t, ai, startRow, endRow, importFromClaimedTab, kind == UpdateKind.Update ? img : null, processes, reloadSeconds);
+            var ctx = BuildContext(t, ai, startRow, endRow, importFromClaimedTab, kind == UpdateKind.Update ? img : null, processes, reloadSeconds, kind);
             var runner = new UpdateProductRunner();
             runner.Log += m => LogA($"{prefix} {m}");
-            var liveSheet = ShopLiveLine.SheetLabel(s);
+            var liveSheet = kind == UpdateKind.Update && !string.IsNullOrWhiteSpace(ctx.DataSheet)
+                ? ctx.DataSheet
+                : ShopLiveLine.SheetLabel(s);
             var verb = kind switch
             {
                 UpdateKind.Import => "import",
@@ -373,10 +375,13 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         if (s is null) { problem = $"{a.DisplayName}: chưa chọn shop"; return false; }
         var missing = SharedWorkbookStore.MissingMergedProblem();
         if (missing is not null) { problem = missing; return false; }
+        var shopSheet = !string.IsNullOrWhiteSpace(s.ShopeeDataSheet) ? s.ShopeeDataSheet : s.Name;
         if (!SharedWorkbookStore.IsActive)
         {
-            if (string.IsNullOrWhiteSpace(s.ShopeeDataSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
-            if (string.IsNullOrWhiteSpace(a.WorkbookPath) || !File.Exists(a.WorkbookPath)) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
+            if (string.IsNullOrWhiteSpace(shopSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
+            var hasAccountWb = !string.IsNullOrWhiteSpace(a.WorkbookPath) && File.Exists(a.WorkbookPath);
+            var hasSharedSourceWb = File.Exists(SharedWorkbookStore.SourcePath);
+            if (!hasAccountWb && !hasSharedSourceWb) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
         }
         if (requiresBigSellerLogin && !a.HasCookie) { problem = $"{a.DisplayName}: chưa có cookie BigSeller"; return false; }
         problem = ""; return true;
@@ -437,10 +442,11 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
 
 
     private UpdateProductContext BuildContext(UpdateRunTargetViewModel t, AiConfig ai, int? startRow = null, int? endRow = null,
-        bool? importFromClaimedTab = null, string? imageOverride = null, int? processes = null, int? reloadSeconds = null)
+        bool? importFromClaimedTab = null, string? imageOverride = null, int? processes = null, int? reloadSeconds = null,
+        UpdateKind kind = UpdateKind.Update)
     {
         var a = t.Account; var s = t.SelectedShop!;
-        var resolved = SharedWorkbookStore.Resolve(a, s);
+        var resolved = kind == UpdateKind.Update ? SharedWorkbookStore.ResolveForUpdate(a, s) : SharedWorkbookStore.Resolve(a, s);
         // AI (viết lại tên/mô tả) dùng cấu hình AI CHUNG lấy từ Hub; key truyền THẲNG qua context
         // (không set biến môi trường process-wide để Brave/Playwright không kế thừa key).
         var aiModel = string.IsNullOrWhiteSpace(ai.OpenAiModel) ? s.OpenAiModel : ai.OpenAiModel;
@@ -468,7 +474,8 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             // Bộ 3 giá trị điền form Update — cấu hình per-shop do HUB đặt (client chỉ đọc bản đã sync về).
             // Rỗng = dùng mặc định 30069/500/"Nhanh" (hằng BigSellerShop.DefaultUpdate*).
             s.UpdateStockValue, s.UpdateWeightValue, s.UpdateShippingChannel,
-            ProgressSheet: resolved.ProgressKey);
+            ProgressSheet: resolved.ProgressKey,
+            DescriptionColumn: s.ColumnMap.DescriptionColumn);
     }
 
 }

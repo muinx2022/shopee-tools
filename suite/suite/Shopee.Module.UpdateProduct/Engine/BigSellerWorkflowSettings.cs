@@ -51,4 +51,5 @@ internal sealed record BigSellerWorkflowSettings
     public int ItemIdColumn { get; init; } = 5;
     public int ProductNameColumn { get; init; } = 6;
     public int RewrittenNameColumn { get; init; } = 7;
+    public int DescriptionColumn { get; init; } = 8;
 }

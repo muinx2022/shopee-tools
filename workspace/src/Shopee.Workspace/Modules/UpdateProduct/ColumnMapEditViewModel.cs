@@ -1,4 +1,4 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
 using Shopee.Core.BigSeller;
 
 namespace Shopee.Workspace.Modules.UpdateProduct;
@@ -13,6 +13,7 @@ public sealed partial class ColumnMapEditViewModel : ObservableObject
 
     [ObservableProperty] private string _productName;     // Tên gốc
     [ObservableProperty] private string _rewrittenName;   // Tên đã sửa
+    [ObservableProperty] private string _description;     // Mô tả
     [ObservableProperty] private string _sku;
     [ObservableProperty] private string _price;           // Giá
     [ObservableProperty] private string _itemId;
@@ -26,6 +27,7 @@ public sealed partial class ColumnMapEditViewModel : ObservableObject
         var m = shop.ColumnMap ??= new BigSellerColumnMap();
         _productName = ExcelColumn.ToLetter(m.ProductNameColumn);
         _rewrittenName = ExcelColumn.ToLetter(m.RewrittenNameColumn);
+        _description = ExcelColumn.ToLetter(m.DescriptionColumn);
         _sku = ExcelColumn.ToLetter(m.SkuColumn);
         _price = ExcelColumn.ToLetter(m.PriceColumn);
         _itemId = ExcelColumn.ToLetter(m.ItemIdColumn);
@@ -38,6 +40,7 @@ public sealed partial class ColumnMapEditViewModel : ObservableObject
         var m = _shop.ColumnMap ??= new BigSellerColumnMap();
         m.ProductNameColumn = ExcelColumn.FromLetter(ProductName);
         m.RewrittenNameColumn = ExcelColumn.FromLetter(RewrittenName);
+        m.DescriptionColumn = ExcelColumn.FromLetter(Description);
         m.SkuColumn = ExcelColumn.FromLetter(Sku);
         m.PriceColumn = ExcelColumn.FromLetter(Price);
         m.ItemIdColumn = ExcelColumn.FromLetter(ItemId);

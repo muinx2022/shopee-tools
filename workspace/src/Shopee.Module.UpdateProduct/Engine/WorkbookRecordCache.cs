@@ -13,7 +13,7 @@ namespace UpdateProduct;
 internal sealed class LaneAbortedException(string reason) : Exception(reason);
 
 /// <summary>Một dòng workbook đã map sang dữ liệu update (khớp theo Shopee item id).</summary>
-internal sealed record WorkbookRecord(string Link, string Sku, string ProductName, string Price, int LineIndex);
+internal sealed record WorkbookRecord(string Link, string Sku, string ProductName, string Price, int LineIndex, string Description = "");
 
 /// <summary>
 /// Cache DÙNG CHUNG dữ liệu shop (dòng workbook → <see cref="WorkbookRecord"/>, khóa = Shopee item id) cho
@@ -37,7 +37,7 @@ internal sealed class WorkbookRecordCache
             log($"⚠ BỎ QUA {emptyRewriteRows.Count} dòng có cột G (Tên đã sửa) TRỐNG (vd dòng {preview}) — " +
                 "chạy \"Update tên SP (AI)\" để điền cột G nếu muốn update các dòng này.");
         }
-        log($"📒 Workbook (cache chung mọi lane): {map.Count} dòng (khớp theo Shopee item id).");
+        log($"📒 Workbook sheet '{settings.DataSheet}' (cache chung mọi lane): {map.Count} dòng (khớp theo Shopee item id).");
         return new WorkbookRecordCache(map);
     }
 
@@ -58,6 +58,7 @@ internal sealed class WorkbookRecordCache
         if (settings.ItemIdColumn <= 0 && settings.LinkColumn <= 0)
             throw new InvalidOperationException("Cần map ít nhất 'Item ID' hoặc 'Link' để khớp dòng (mục BigSeller → Ánh xạ cột).");
 
+        var descCol = settings.DescriptionColumn > 0 ? settings.DescriptionColumn : 8;
         var map = new Dictionary<string, WorkbookRecord>();
         var emptyRewriteRows = new List<int>();   // dòng có SP để update nhưng cột G (Tên đã sửa) còn trống
         await WorkbookSheetReader.ForEachDataRowAsync(settings, (row, r) =>
@@ -67,13 +68,14 @@ internal sealed class WorkbookRecordCache
             var sku = WorkbookSheetReader.Cell(row, settings.SkuColumn);
             var colE = WorkbookSheetReader.Cell(row, settings.ItemIdColumn);
             var rewritten = row.Cell(settings.RewrittenNameColumn).GetString().Trim();   // Tên đã sửa (đã validate > 0)
+            var description = WorkbookSheetReader.Cell(row, descCol);
 
             var rowId = WorkbookSheetReader.RowId(colE, link);
             if (string.IsNullOrWhiteSpace(rowId)) return;
 
             // Cột G trống → BỎ QUA riêng dòng đó (không update tên gốc cột F), vẫn chạy tiếp các dòng khác.
             if (string.IsNullOrWhiteSpace(rewritten)) { emptyRewriteRows.Add(r); return; }
-            map[rowId] = new WorkbookRecord(link, sku, rewritten, price, r);
+            map[rowId] = new WorkbookRecord(link, sku, rewritten, price, r, description);
         }, ct).ConfigureAwait(false);
 
         return (map, emptyRewriteRows);

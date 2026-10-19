@@ -15,12 +15,12 @@ internal sealed partial class BigSellerProductUpdateRunner
         await StepAsync($"Xử lý SKU {rec.Sku}");
 
         await StepAsync("Sửa tên sản phẩm");
-        // [1] name — Dùng AI viết lại tên cho TẤT CẢ các shop. Cắt ≤120 ký tự, giữ SKU. 
-        // Nếu AI lỗi thì fallback về tên gốc từ Excel.
-        var aiGeneratedName = await GenerateProductNameAsync(rec.ProductName ?? "", rec.Sku ?? "", ct).ConfigureAwait(false);
-        var nameToFill = !string.IsNullOrWhiteSpace(aiGeneratedName)
-            ? aiGeneratedName
-            : BigSellerText.TruncateProductNamePreservingSku(rec.ProductName, rec.Sku, MaxProductNameChars);
+        // [1] name — CẮT ≤120 ký tự (giới hạn Shopee, tránh BigSeller báo lỗi), giữ SKU ở cuối.
+        // fill fail KHÔNG làm rớt cả SP (giữ tên cũ, vẫn lưu phần còn lại như Python).
+        var nameToFill = BigSellerText.TruncateProductNamePreservingSku(rec.ProductName, rec.Sku, MaxProductNameChars);
+        var rawLen = (rec.ProductName ?? "").Trim().Length;
+        if (rawLen > MaxProductNameChars)
+            _log($"  ✂ Tên dài {rawLen} ký tự → cắt còn {nameToFill.Length} (≤{MaxProductNameChars}, giữ SKU).");
         if (!await FillProductNameAsync(page, nameToFill, ct))
             _log("  ⚠ Không điền được tên SP — giữ tên cũ, tiếp tục xử lý.");
 
@@ -190,11 +190,16 @@ internal sealed partial class BigSellerProductUpdateRunner
         }
         if (_mediaFullDetected) return false;   // kho đầy phát hiện lúc upload video → AI/lưu vô ích, thoát sớm cho rẻ
 
-        await StepAsync("Tạo mô tả AI");
-        // [13] AI description — rỗng sau retry = LỖI TẠM → retry vòng sau, KHÔNG xóa dòng (tránh mất SP).
-        var aiContent = await GenerateDescriptionAsync(rec.ProductName ?? "", ct).ConfigureAwait(false);
-        if (string.IsNullOrWhiteSpace(aiContent)) { _lastProcessTransient = true; return false; }
-        if (!await UpdateDescriptionAsync(page, aiContent, ct)) return false;
+        await StepAsync("Cập nhật mô tả sản phẩm");
+        // [13] Mô tả sản phẩm — lấy trực tiếp từ cột H (Description) trong sheet của shop (không gọi AI).
+        var descContent = (rec.Description ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(descContent))
+        {
+            _log($"  ⚠ Dòng {rec.LineIndex} trống cột Mô tả sản phẩm (cột H) — bỏ qua lưu SP này.");
+            return false;
+        }
+        _log($"  📝 Điền mô tả sản phẩm từ file ({descContent.Length} ký tự)");
+        if (!await UpdateDescriptionAsync(page, descContent, ct)) return false;
 
         await StepAsync("Lưu sản phẩm");
         // [14] save
