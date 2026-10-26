@@ -10,6 +10,11 @@ public partial class WorkspaceView : UserControl
     public WorkspaceView()
     {
         InitializeComponent();
+
+        ColScrape.Visibility = WorkspaceAppConfig.ShowScrape ? Visibility.Visible : Visibility.Collapsed;
+        ColImport.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
+        ColUpdate.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
+        ColRewrite.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
         // Bấm 1 dòng tiến trình (tab Theo dõi Scrape) → đưa cửa sổ Brave của process đó lên trước.
         // (Avalonia: `PointerReleased` trên DataGrid.) Dùng bản PREVIEW (tunnel) + handledEventsToo vì DataGrid
         // tự đánh dấu handled sự kiện chuột khi xử lý selection của nó.

@@ -12,8 +12,8 @@
     <Application.Resources>
         <ResourceDictionary>
             <ResourceDictionary.MergedDictionaries>
-                <ResourceDictionary Source="Themes/Theme.xaml" />
-                <ResourceDictionary Source="Themes/Icons.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/ShopeeWorkspace;component/Themes/Theme.xaml" />
+                <ResourceDictionary Source="pack://application:,,,/ShopeeWorkspace;component/Themes/Icons.xaml" />
             </ResourceDictionary.MergedDictionaries>
 
             <!-- ══════════ Converter dùng chung ══════════ -->

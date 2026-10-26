@@ -13,9 +13,11 @@ public sealed class BigSellerStore
 
     private static readonly string FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), "bigseller.json");
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static DateTime GetFileWriteUtc() => File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : DateTime.MinValue;
 
     private readonly object _lock = new();
     private readonly List<BigSellerAccount> _accounts = [];
+    private DateTime _lastWriteUtc;
 
     public event Action? Changed;
 
@@ -78,7 +80,20 @@ public sealed class BigSellerStore
             _accounts.Clear();
             var list = JsonAtomicFile.TryLoad<List<BigSellerAccount>>(FilePath);
             if (list is not null) _accounts.AddRange(list);
+            _lastWriteUtc = GetFileWriteUtc();
         }
+    }
+
+    public bool ReloadIfExternalChange()
+    {
+        lock (_lock)
+        {
+            var diskUtc = GetFileWriteUtc();
+            if (diskUtc == _lastWriteUtc) return false;
+            Load();
+        }
+        Changed?.Invoke();
+        return true;
     }
 
     public bool Save()
@@ -95,6 +110,7 @@ public sealed class BigSellerStore
         try
         {
             if (!JsonAtomicFile.Save(FilePath, _accounts, JsonOpts)) return false;
+            _lastWriteUtc = GetFileWriteUtc();
             Changed?.Invoke();
             return true;
         }

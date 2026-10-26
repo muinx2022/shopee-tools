@@ -47,6 +47,7 @@ public sealed class AppSession
     public AppSession(AppSessionOptions options) => _options = options;
 
     public static string BaseDirectory { get; } = AppContext.BaseDirectory;
+    private static string RuntimeSessionsRoot => SuitePaths.ModuleDir("runtime-sessions");
 
     public string SessionId { get; private set; } = "";
     public string RootDirectory { get; private set; } = "";
@@ -58,7 +59,7 @@ public sealed class AppSession
             return;
 
         SessionId = $"run-{Process.GetCurrentProcess().Id}-{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}"[..34];
-        RootDirectory = Path.Combine(BaseDirectory, "runtime-sessions", SessionId);
+        RootDirectory = Path.Combine(RuntimeSessionsRoot, SessionId);
         Directory.CreateDirectory(RootDirectory);
         if (_options.CreatePersistentDataDir)
             Directory.CreateDirectory(ResolvePersistentDataPath());
@@ -103,7 +104,7 @@ public sealed class AppSession
 
     private int AllocatePortOffset()
     {
-        var lockRoot = Path.Combine(BaseDirectory, "runtime-sessions", "_port-locks");
+        var lockRoot = Path.Combine(RuntimeSessionsRoot, "_port-locks");
         Directory.CreateDirectory(lockRoot);
 
         for (var block = 0; block < 80; block++)
@@ -159,7 +160,7 @@ public sealed class AppSession
 
     private void CleanupStaleSessions()
     {
-        var root = Path.Combine(BaseDirectory, "runtime-sessions");
+        var root = RuntimeSessionsRoot;
         if (!Directory.Exists(root))
             return;
 

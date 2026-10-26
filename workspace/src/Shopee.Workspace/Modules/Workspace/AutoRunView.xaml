@@ -17,8 +17,8 @@
                 <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <StackPanel Grid.Column="0" Margin="0,0,16,0">
-                <TextBlock Text="Auto Run Workspace" Style="{StaticResource h1}" />
-                <TextBlock Text="Tự động chạy tuần tự: Scrape (chỉ 1 lần/acc) → Import (thử thường rồi tab Đã nhận) → Update cho danh sách tài khoản đã chọn."
+                <TextBlock Text="{Binding HeaderTitle}" Style="{StaticResource h1}" />
+                <TextBlock Text="{Binding HeaderCaption}"
                            Style="{StaticResource caption}" Margin="0,3,0,0" TextWrapping="Wrap" />
             </StackPanel>
             <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">

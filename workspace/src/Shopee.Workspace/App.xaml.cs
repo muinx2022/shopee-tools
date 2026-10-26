@@ -1,4 +1,4 @@
-﻿using System.Runtime.CompilerServices;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Threading;
 using Shopee.Modules.MultiBrave;
@@ -14,7 +14,6 @@ public partial class App : Application
         Path.Combine(Path.GetTempPath(), "shopeeworkspace-crash.log");
 
     /// <summary>Chế độ hiện tại có nhóm Workspace không (quyết định có cleanup MultiBrave lúc đóng).</summary>
-    private bool _showWorkspace;
 
     /// <summary>Hook đóng app chạy ĐÚNG MỘT LẦN (Closing của cửa sổ chính, Exit và SessionEnding đều gọi).</summary>
     private int _shutdownHooksRan;
@@ -28,6 +27,10 @@ public partial class App : Application
     /// <summary>Bọc khởi tạo MultiBrave — cùng lý do với KhoiTaoUpdateProduct.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void KhoiTaoMultiBrave() => MultiBraveRuntime.Initialize();
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void DongUpdateProduct() => Shopee.Modules.UpdateProduct.UpdateProductRuntime.Shutdown();
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void DongMultiBrave() => MultiBraveRuntime.Shutdown();
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -55,11 +58,13 @@ public partial class App : Application
         AppDomain.CurrentDomain.UnhandledException += (_, args) => TryLog("AppDomain", args.ExceptionObject as Exception);
         TaskScheduler.UnobservedTaskException += (_, args) => { TryLog("UnobservedTask", args.Exception); args.SetObserved(); };
 
-        _showWorkspace = true;  // App này luôn có Workspace
 
         // Khởi tạo engine workspace
         try { KhoiTaoMultiBrave(); } catch (Exception ex) { TryLog("MultiBraveRuntime.Init", ex); }
-        try { KhoiTaoUpdateProduct(); } catch (Exception ex) { TryLog("UpdateProductRuntime.Init", ex); }
+        if (WorkspaceAppConfig.ShowImportUpdate)
+        {
+            try { KhoiTaoUpdateProduct(); } catch (Exception ex) { TryLog("UpdateProductRuntime.Init", ex); }
+        }
 
         try
         {
@@ -95,7 +100,11 @@ public partial class App : Application
         if (System.Threading.Interlocked.Exchange(ref _shutdownHooksRan, 1) != 0) return;
 
         try { Shopee.Core.BigSeller.BigSellerStore.Shared.Save(); } catch { }
-        if (_showWorkspace) { try { MultiBraveRuntime.Cleanup(); } catch { } }
+        if (WorkspaceAppConfig.ShowImportUpdate)
+        {
+            try { DongUpdateProduct(); } catch { }
+        }
+        try { DongMultiBrave(); } catch { }
     }
 
     private static void HookBindingTrace()

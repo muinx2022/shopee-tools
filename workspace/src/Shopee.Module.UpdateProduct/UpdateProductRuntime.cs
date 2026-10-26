@@ -6,4 +6,5 @@ namespace Shopee.Modules.UpdateProduct;
 public static class UpdateProductRuntime
 {
     public static void Initialize() => UpdateProductSession.Current.Initialize();
+    public static void Shutdown() => UpdateProductSession.Current.Cleanup();
 }

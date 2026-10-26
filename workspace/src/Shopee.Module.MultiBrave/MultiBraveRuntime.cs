@@ -8,4 +8,5 @@ public static class MultiBraveRuntime
 {
     public static void Initialize() => ScrapeSession.Current.Initialize();
     public static void Cleanup() => ScrapeSession.Current.Cleanup();
+    public static void Shutdown() => Cleanup();
 }

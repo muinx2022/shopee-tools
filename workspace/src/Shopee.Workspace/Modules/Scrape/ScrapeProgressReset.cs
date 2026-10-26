@@ -1,4 +1,4 @@
-﻿using Shopee.Core.BigSeller;
+using Shopee.Core.BigSeller;
 using Shopee.Core.Scrape;
 
 namespace Shopee.Workspace.Modules.Scrape;
@@ -11,6 +11,17 @@ namespace Shopee.Workspace.Modules.Scrape;
 internal static class ScrapeProgressReset
 {
     /// <summary>Xoá tiến độ local khi đã biết chính xác shop.</summary>
+    public static async Task<bool> ConfirmAndResetAsync(string accountId, string sheet, BigSellerShop? shop, string accountName, Action<string>? log = null)
+    {
+        var targetName = shop?.DisplayName ?? accountName;
+        if (!await Dialogs.ConfirmAsync($"Xóa tiến độ Scrape của shop \"{targetName}\" ({accountName}) để chạy lại từ đầu?", "Reset tiến độ"))
+            return false;
+
+        Reset(accountId, sheet, shop, accountName, log);
+        log?.Invoke($"[{accountName}] Đã reset tiến độ Scrape của shop \"{targetName}\".");
+        return true;
+    }
+
     public static void Reset(string accountId, string sheet, BigSellerShop? shop, string accountName, Action<string>? log = null)
     {
         ScrapeProgressStore.Shared.Clear(accountId, sheet);

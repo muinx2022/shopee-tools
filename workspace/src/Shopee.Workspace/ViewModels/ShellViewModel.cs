@@ -1,3 +1,6 @@
+using Shopee.Core.BigSeller;
+using Shopee.Core.Scrape;
+using Shopee.Core.Progress;
 using System.Windows.Input;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
@@ -28,6 +31,11 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly ScrapeViewModel _scrape;
     private readonly UpdateProductViewModel _update;
     private readonly AccountsViewModel _accounts;
+    private readonly BigSellerViewModel _bigSeller;
+
+    public string WindowTitle => WorkspaceAppConfig.WindowTitle;
+    public WorkspaceViewModel Workspace => _workspace;
+    public BigSellerViewModel BigSeller => _bigSeller;
 
     public ObservableCollection<RibbonTab> Tabs { get; } = new();
 
@@ -54,6 +62,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public bool ShowShopeeStatus => false;
     public bool ShowWorkspaceStatus => true;
+    public bool ShowScrape => WorkspaceAppConfig.ShowScrape;
     public bool ShowStatusSeparator => false;
     public bool ShowOrdersBrowserStatus => false;
     public object? ShopeeStatusVm => null;
@@ -70,6 +79,7 @@ public sealed partial class ShellViewModel : ObservableObject
     public ShellViewModel()
     {
         var bigSeller = new BigSellerViewModel();
+        _bigSeller = bigSeller;
         _scrape = new ScrapeViewModel();
         _update = new UpdateProductViewModel();
         bigSeller.JobsAreBusy = () => _scrape.IsBusy || _update.IsRunning || _update.HasActiveWsJob;
@@ -86,14 +96,19 @@ public sealed partial class ShellViewModel : ObservableObject
             toolTip: "BigSeller Workspace — Scrape · Import · Update theo từng shop");
         var wsAutoRun = new RibbonScreenItem("Auto Run", AppIcons.PlayCircle, workspace.AutoRun,
             toolTip: "Tự động chạy Scrape · Import · Update tuần tự các tài khoản");
-        var wsAccounts = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
-            toolTip: "Kho tài khoản Shopee dùng chung · Check tài khoản");
+        var wsScreens = new List<object> { wsWorkspace, wsAutoRun };
+        if (WorkspaceAppConfig.ShowScrape)
+        {
+            var wsAccounts = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
+                toolTip: "Kho tài khoản Shopee dùng chung · Check tài khoản");
+            wsScreens.Add(wsAccounts);
+        }
         _workspaceHomeScreen = wsWorkspace;
         _autoRunScreen = wsAutoRun;
 
         var workspaceTab = new RibbonTab("Workspace", new List<RibbonGroup>
         {
-            new RibbonGroup("Màn hình", new object[] { wsWorkspace, wsAutoRun, wsAccounts }),
+            new RibbonGroup("Màn hình", wsScreens),
             new RibbonGroup("Hành động", new object[]
             {
                 new RibbonActionItem("Dừng jobs", "IconStop", StopWorkspaceJobsCommand,
@@ -124,13 +139,16 @@ public sealed partial class ShellViewModel : ObservableObject
         workspace.RequestNavigate = _ => { SelectedTab = _bigSellerTab; };
 
         // ── Tab 3: Tài khoản & Proxy (màn hình độc lập) ──
-        var accScreen = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
-            toolTip: "Kho tài khoản Shopee · proxy · trạng thái");
-        var accountsTab = new RibbonTab("Tài khoản & Proxy", new List<RibbonGroup>
+        if (WorkspaceAppConfig.ShowScrape)
         {
-            new RibbonGroup("Màn hình", new object[] { accScreen }),
-        });
-        _accountsTab = accountsTab;
+            var accScreen = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
+                toolTip: "Kho tài khoản Shopee · proxy · trạng thái");
+            var accountsTab = new RibbonTab("Tài khoản & Proxy", new List<RibbonGroup>
+            {
+                new RibbonGroup("Màn hình", new object[] { accScreen }),
+            });
+            _accountsTab = accountsTab;
+        }
 
         // ── Tab 4: Cài đặt ──
         var setScreen = new RibbonScreenItem("Cài đặt", AppIcons.Settings, localSettings,
@@ -142,7 +160,8 @@ public sealed partial class ShellViewModel : ObservableObject
 
         Tabs.Add(workspaceTab);
         Tabs.Add(bigSellerTab);
-        Tabs.Add(accountsTab);
+        if (_accountsTab is not null)
+            Tabs.Add(_accountsTab);
         Tabs.Add(settingsTab);
 
         // Gán lệnh điều hướng cho mọi RibbonScreenItem
@@ -234,15 +253,29 @@ public sealed partial class ShellViewModel : ObservableObject
     private void StopWorkspaceJobs()
     {
         _workspace.AutoRun.Stop();
-        _update.StopAllSingle();
-        if (_scrape.StopCommand.CanExecute(null)) _scrape.StopCommand.Execute(null);
+        if (WorkspaceAppConfig.ShowImportUpdate && (_update.IsRunning || _update.HasActiveWsJob))
+            _update.StopAllSingle();
+        if (WorkspaceAppConfig.ShowScrape && _scrape.IsBusy && _scrape.StopCommand.CanExecute(null))
+            _scrape.StopCommand.Execute(null);
     }
 
     /// <summary>Cửa sổ được kích hoạt lại: nạp DB chung, trừ khi đang có job.</summary>
     public void OnWindowActivated()
     {
-        var busy = _scrape.IsBusy || _update.IsRunning || _update.HasActiveWsJob;
-        _accounts.ReloadFromDbIfIdle(busy);
+        BigSellerStore.Shared.ReloadIfExternalChange();
+        ScrapeProgressStore.Shared.ReloadIfExternalChange();
+        OpProgressStore.Shared.ReloadIfExternalChange();
+        Workspace.RefreshAccountCookies();
+        Workspace.RefreshSharedWorkbookIndicator();
+        BigSeller.RefreshSharedUi();
+        foreach (var item in BigSeller.Items)
+            item.NotifyCookieChanged();
+
+        if (WorkspaceAppConfig.ShowScrape)
+        {
+            var busy = _scrape.IsBusy || _update.IsRunning || _update.HasActiveWsJob;
+            _accounts.ReloadFromDbIfIdle(busy);
+        }
     }
 
     [RelayCommand]

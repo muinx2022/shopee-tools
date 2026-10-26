@@ -56,9 +56,11 @@ public sealed class ScrapeProgressStore
 
     private static readonly string FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), "scrape-progress.json");
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static DateTime GetFileWriteUtc() => File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : DateTime.MinValue;
 
     private readonly object _lock = new();
     private readonly List<ScrapeProgress> _items = [];
+    private DateTime _lastWriteUtc;
 
     public event Action? Changed;
 
@@ -74,10 +76,27 @@ public sealed class ScrapeProgressStore
             _items.Clear();
             var list = JsonAtomicFile.TryLoad<List<ScrapeProgress>>(FilePath);
             if (list is not null) _items.AddRange(list);
+            _lastWriteUtc = GetFileWriteUtc();
         }
     }
 
-    private void SaveLocked() => JsonAtomicFile.Save(FilePath, _items, JsonOpts);
+    private void SaveLocked()
+    {
+        JsonAtomicFile.Save(FilePath, _items, JsonOpts);
+        _lastWriteUtc = GetFileWriteUtc();
+    }
+
+    public bool ReloadIfExternalChange()
+    {
+        lock (_lock)
+        {
+            var diskUtc = GetFileWriteUtc();
+            if (diskUtc == _lastWriteUtc) return false;
+            Load();
+        }
+        Changed?.Invoke();
+        return true;
+    }
 
     private void Save()
     {

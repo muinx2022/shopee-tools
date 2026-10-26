@@ -1,4 +1,4 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
@@ -18,6 +18,12 @@ EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Core.Tests", "tests\Shopee.Core.Tests\Shopee.Core.Tests.csproj", "{11111111-0007-0000-0000-000000000000}"
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Workspace.Tests", "tests\Shopee.Workspace.Tests\Shopee.Workspace.Tests.csproj", "{11111111-0008-0000-0000-000000000000}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{2BCABE3D-71BF-4058-B44B-0D50614F36DA}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Scrape", "src\Shopee.Scrape\Shopee.Scrape.csproj", "{61529ED5-43CB-4277-A26F-A741B74C0A99}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Update", "src\Shopee.Update\Shopee.Update.csproj", "{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -57,5 +63,17 @@ Global
 		{11111111-0008-0000-0000-000000000000}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{11111111-0008-0000-0000-000000000000}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{11111111-0008-0000-0000-000000000000}.Release|Any CPU.Build.0 = Release|Any CPU
+		{61529ED5-43CB-4277-A26F-A741B74C0A99}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{61529ED5-43CB-4277-A26F-A741B74C0A99}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{61529ED5-43CB-4277-A26F-A741B74C0A99}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{61529ED5-43CB-4277-A26F-A741B74C0A99}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{61529ED5-43CB-4277-A26F-A741B74C0A99} = {2BCABE3D-71BF-4058-B44B-0D50614F36DA}
+		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F} = {2BCABE3D-71BF-4058-B44B-0D50614F36DA}
 	EndGlobalSection
 EndGlobal

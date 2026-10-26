@@ -56,15 +56,16 @@
             <TextBlock Text="API key lưu trên máy này, trong thư mục dữ liệu của app."
                        FontSize="11" Foreground="Gray" Margin="0,0,0,16"/>
 
-            <Separator Margin="0,0,0,16"/>
-
-            <TextBlock Text="Kho tài khoản &amp; Proxy" FontWeight="SemiBold" FontSize="15" Margin="0,0,0,8"/>
-            <TextBlock Text="DB ShopeeBackend dùng chung:" Margin="0,0,0,4"/>
-            <TextBox Text="{Binding ShopeeDbPath, Mode=OneWay}" IsReadOnly="True"
-                     FontFamily="Consolas" FontSize="11" Margin="0,0,0,8"/>
-            <TextBlock Text="{Binding StoreStatus}" Margin="0,0,0,4"/>
-            <TextBlock Text="{Binding LockStatus}" TextWrapping="Wrap" Foreground="#9B1C1C" Margin="0,0,0,8"/>
-            <Button Content="Nạp lại từ DB" Command="{Binding ReloadStoreCommand}" HorizontalAlignment="Left"/>
+            <StackPanel Visibility="{Binding ShowShopeeAccountPoolSettings, Converter={StaticResource BoolToVis}}">
+                <Separator Margin="0,0,0,16"/>
+                <TextBlock Text="Kho tài khoản &amp; Proxy" FontWeight="SemiBold" FontSize="15" Margin="0,0,0,8"/>
+                <TextBlock Text="DB ShopeeBackend dùng chung:" Margin="0,0,0,4"/>
+                <TextBox Text="{Binding ShopeeDbPath, Mode=OneWay}" IsReadOnly="True"
+                         FontFamily="Consolas" FontSize="11" Margin="0,0,0,8"/>
+                <TextBlock Text="{Binding StoreStatus}" Margin="0,0,0,4"/>
+                <TextBlock Text="{Binding LockStatus}" TextWrapping="Wrap" Foreground="#9B1C1C" Margin="0,0,0,8"/>
+                <Button Content="Nạp lại từ DB" Command="{Binding ReloadStoreCommand}" HorizontalAlignment="Left"/>
+            </StackPanel>
 
         </StackPanel>
     </ScrollViewer>

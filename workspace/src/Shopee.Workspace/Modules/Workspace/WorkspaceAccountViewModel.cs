@@ -1,3 +1,5 @@
+using Shopee.Core.Scrape;
+using Shopee.Core.Progress;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -51,6 +53,7 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
         UpdateVm.JobsChanged += OnUpdateJobsChanged;
         SharedWorkbookStore.Changed += OnSharedWorkbookChanged;
         ShopLiveLine.Changed += OnLiveLine;
+        if (WorkspaceAppConfig.IsImportUpdateOnly) _showUpdate = true;
     }
 
     private void OnSharedWorkbookChanged() => Services.UiThread.Post(() =>
@@ -177,6 +180,32 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
         }
     }
 
+    public void NotifyCookieChanged()
+    {
+        Bs.NotifyCookieChanged();
+        OnPropertyChanged(nameof(CookieStatus));
+        OnPropertyChanged(nameof(HasCookie));
+        OnPropertyChanged(nameof(CookieShort));
+    }
+
+    public void RefreshProgressSummary() => OnPropertyChanged(nameof(ScrapeSummary));
+
+    public void NotifyWorkbookChanged()
+    {
+        OnPropertyChanged(nameof(WorkbookPath));
+        OnPropertyChanged(nameof(WorkbookHint));
+    }
+
+    public void SwitchLog(bool showUpdate)
+    {
+        _showUpdate = showUpdate;
+        OnPropertyChanged(nameof(ActiveLog));
+        OnPropertyChanged(nameof(ActiveLogCaption));
+    }
+
+    [RelayCommand] private void SwitchToScrapeLog() => SwitchLog(false);
+    [RelayCommand] private void SwitchToUpdateLog() => SwitchLog(true);
+
     public void RefreshAll()
     {
         Bs.NotifyCookieChanged();
@@ -194,12 +223,46 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
     private async Task ResetAllShopsProgressAsync()
     {
         if (Shops.Count == 0) return;
-        if (!await Dialogs.ConfirmAsync($"Reset toàn bộ tiến độ (Scrape · Import · Update) của TẤT CẢ {Shops.Count} shop thuộc tài khoản '{DisplayName}'?", "Reset tất cả shop"))
-            return;
 
-        foreach (var s in Shops)
+        if (WorkspaceAppConfig.IsScrapeOnly)
         {
-            s.ResetAllProgress();
+            if (!await Dialogs.ConfirmAsync($"Reset tiến độ Scrape của TẤT CẢ {Shops.Count} shop thuộc tài khoản '{DisplayName}'?", "Reset tất cả shop"))
+                return;
+
+            foreach (var s in Shops)
+            {
+                var resolved = SharedWorkbookStore.Resolve(Account, s.Shop);
+                var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, Account.Id, resolved.ProgressKey);
+                ScrapeProgressStore.Shared.Clear(Account.Id, scrapeKey);
+                ShopLiveLine.Clear(Account.Id, s.Shop.Id);
+                s.NotifyLiveLine();
+                s.RefreshProgress();
+            }
+            RefreshProgressSummary();
+        }
+        else if (WorkspaceAppConfig.IsImportUpdateOnly)
+        {
+            if (!await Dialogs.ConfirmAsync($"Reset tiến độ Import / Update của TẤT CẢ {Shops.Count} shop thuộc tài khoản '{DisplayName}'?", "Reset tất cả shop"))
+                return;
+
+            foreach (var s in Shops)
+            {
+                var resolved = SharedWorkbookStore.Resolve(Account, s.Shop);
+                OpProgressStore.Shared.ClearAllOps(Account.Id, resolved.ProgressKey);
+                s.RefreshProgress();
+            }
+            RefreshProgressSummary();
+        }
+        else
+        {
+            if (!await Dialogs.ConfirmAsync($"Reset toàn bộ tiến độ (Scrape · Import · Update) của TẤT CẢ {Shops.Count} shop thuộc tài khoản '{DisplayName}'?", "Reset tất cả shop"))
+                return;
+
+            foreach (var s in Shops)
+            {
+                s.ResetAllProgress();
+            }
+            RefreshProgressSummary();
         }
     }
 

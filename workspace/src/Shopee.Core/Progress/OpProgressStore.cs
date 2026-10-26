@@ -36,9 +36,11 @@ public sealed class OpProgressStore
 
     private static readonly string FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), "op-progress.json");
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static DateTime GetFileWriteUtc() => File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : DateTime.MinValue;
 
     private readonly object _lock = new();
     private readonly List<OpProgress> _items = [];
+    private DateTime _lastWriteUtc;
 
     public event Action? Changed;
 
@@ -56,10 +58,27 @@ public sealed class OpProgressStore
             _items.Clear();
             var list = JsonAtomicFile.TryLoad<List<OpProgress>>(FilePath);
             if (list is not null) _items.AddRange(list);
+            _lastWriteUtc = GetFileWriteUtc();
         }
     }
 
-    private void SaveLocked() => JsonAtomicFile.Save(FilePath, _items, JsonOpts);
+    private void SaveLocked()
+    {
+        JsonAtomicFile.Save(FilePath, _items, JsonOpts);
+        _lastWriteUtc = GetFileWriteUtc();
+    }
+
+    public bool ReloadIfExternalChange()
+    {
+        lock (_lock)
+        {
+            var diskUtc = GetFileWriteUtc();
+            if (diskUtc == _lastWriteUtc) return false;
+            Load();
+        }
+        Changed?.Invoke();
+        return true;
+    }
 
     private OpProgress GetOrCreateLocked(string accountId, string sheet, string op, string accountName)
     {

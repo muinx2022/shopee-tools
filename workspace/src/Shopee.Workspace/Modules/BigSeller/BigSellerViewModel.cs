@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -494,6 +494,8 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         Status = "Đang có job chạy — chờ job dừng rồi hãy gộp hoặc ngừng dùng workbook chung.";
         return true;
     }
+
+    public void RefreshSharedUi() => LoadSharedUi();
 
     private void LoadSharedUi()
     {

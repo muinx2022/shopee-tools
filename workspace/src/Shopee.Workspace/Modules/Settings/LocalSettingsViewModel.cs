@@ -1,3 +1,4 @@
+using Shopee.Workspace.Infrastructure;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Shopee.Core.Accounts;
@@ -106,6 +107,7 @@ public sealed partial class LocalSettingsViewModel : ObservableObject
 
     // ---- Kho tài khoản ----
     /// <summary>Đường dẫn DB ShopeeBackend dùng chung (chỉ đọc).</summary>
+    public bool ShowShopeeAccountPoolSettings => WorkspaceAppConfig.ShowScrape;
     public string ShopeeDbPath => SuitePaths.ShopeeBackendDbPath;
 
     [ObservableProperty] private string _storeStatus = "";
