@@ -152,17 +152,47 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
     {
         get
         {
-            if (!SharedWorkbookStore.IsActive) return Account.WorkbookPath;
-            var snap = SharedWorkbookStore.Snapshot();
-            var name = string.IsNullOrWhiteSpace(snap.SourceName) ? "Workbook chung" : snap.SourceName;
-            var sheets = snap.SelectedSheets.Count == 0 ? "(chưa chọn sheet)" : string.Join(", ", snap.SelectedSheets);
-            return $"Workbook: {name}{Environment.NewLine}Sheet: {sheets}";
+            if (WorkspaceAppConfig.IsImportUpdateOnly && SharedWorkbookStore.HasSharedSource)
+            {
+                var srcPath = SharedWorkbookStore.ActiveSourcePath;
+                var fileName = Path.GetFileName(srcPath);
+                var shopsSummary = string.Join(" · ", Account.Shops.Select(s => $"{s.DisplayName} → [{SharedWorkbookStore.ResolveForUpdate(Account, s).DataSheet}]"));
+                return $"File chung: {fileName} ({srcPath}){Environment.NewLine}Sheet tự nhận theo shop: {shopsSummary}";
+            }
+
+            if (SharedWorkbookStore.IsActive)
+            {
+                var snap = SharedWorkbookStore.Snapshot();
+                var name = string.IsNullOrWhiteSpace(snap.SourceName) ? "Workbook chung" : snap.SourceName;
+                var sheets = snap.SelectedSheets.Count == 0 ? "(chưa chọn sheet)" : string.Join(", ", snap.SelectedSheets);
+                return $"Workbook: {name}{Environment.NewLine}Sheet: {sheets}";
+            }
+
+            if (SharedWorkbookStore.HasSharedSource)
+            {
+                var srcPath = SharedWorkbookStore.ActiveSourcePath;
+                var fileName = Path.GetFileName(srcPath);
+                var shopsSummary = string.Join(" · ", Account.Shops.Select(s => $"{s.DisplayName} → [{SharedWorkbookStore.ResolveForUpdate(Account, s).DataSheet}]"));
+                return $"File chung: {fileName} ({srcPath}){Environment.NewLine}Sheet tự nhận theo shop: {shopsSummary}";
+            }
+
+            return Account.WorkbookPath;
         }
     }
 
-    public string WorkbookHint => SharedWorkbookStore.IsActive
-        ? "Mọi shop của mọi tài khoản đang đọc các sheet này."
-        : "Mỗi shop = 1 sheet — bấm nút trên dòng shop để chạy đúng shop đó.";
+    public string WorkbookHint
+    {
+        get
+        {
+            if (WorkspaceAppConfig.IsImportUpdateOnly && SharedWorkbookStore.HasSharedSource)
+                return "Đã chọn 1 file Excel chung — khi chạy từng shop hoặc Auto Run, app tự động lấy đúng sheet trùng tên với shop đó.";
+            if (SharedWorkbookStore.IsActive)
+                return "Mọi shop của mọi tài khoản đang đọc các sheet này.";
+            if (SharedWorkbookStore.HasSharedSource)
+                return "Đã chọn 1 file Excel chung — khi chạy từng shop hoặc Auto Run, app tự động lấy đúng sheet trùng tên với shop đó.";
+            return "Mỗi shop = 1 sheet — bấm nút trên dòng shop để chạy đúng shop đó.";
+        }
+    }
     /// <summary>Hub-mode → ẨN hàng "Workbook" ở tab Shop &amp; cấu hình (kho SP ở Hub, không dùng workbook Excel).
     /// Excel-mode hiện như cũ. Cố định theo vòng đời VM (đổi chế độ trên Hub sẽ re-sync dựng lại VM).</summary>
     // (Hub data mode removed — App local always uses workbook.)
@@ -194,6 +224,8 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(WorkbookPath));
         OnPropertyChanged(nameof(WorkbookHint));
+        foreach (var s in Shops)
+            s.RefreshProgress();
     }
 
     public void SwitchLog(bool showUpdate)
@@ -248,7 +280,10 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
             foreach (var s in Shops)
             {
                 var resolved = SharedWorkbookStore.Resolve(Account, s.Shop);
-                OpProgressStore.Shared.ClearAllOps(Account.Id, resolved.ProgressKey);
+                var resolvedUpdate = SharedWorkbookStore.ResolveForUpdate(Account, s.Shop);
+                OpProgressStore.Shared.ClearAllOps(Account.Id, resolvedUpdate.ProgressKey);
+                if (!string.Equals(resolved.ProgressKey, resolvedUpdate.ProgressKey, StringComparison.OrdinalIgnoreCase))
+                    OpProgressStore.Shared.ClearAllOps(Account.Id, resolved.ProgressKey);
                 s.RefreshProgress();
             }
             RefreshProgressSummary();

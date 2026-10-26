@@ -200,7 +200,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         // ném thì finally vẫn gỡ job khỏi _wsJobs (trước đây setup nằm NGOÀI try → throw làm tk kẹt ■ vĩnh viễn).
         var prefix = $"[{a.DisplayName}]";
         var coordOp = kind switch { UpdateKind.Import => CoordOp.Import, UpdateKind.Update => CoordOp.Update, _ => CoordOp.Rewrite };
-        var resolved = kind == UpdateKind.Update ? SharedWorkbookStore.ResolveForUpdate(a, s) : SharedWorkbookStore.Resolve(a, s);
+        var resolved = SharedWorkbookStore.ResolveForUpdate(a, s);
         var coordKey = new CoordKey(a.Id, s.Id, resolved.ProgressKey, coordOp);
         // Đánh dấu running lúc chạy, completed/stopped lúc kết thúc — chấm xanh trên nút đọc trạng thái này.
         var opProg = kind switch
@@ -343,7 +343,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
     {
         if (target?.SelectedShop is not { } s) return Task.CompletedTask;
         var a = target.Account;
-        var sheet = SharedWorkbookStore.Resolve(a, s).ProgressKey;
+        var sheet = SharedWorkbookStore.ResolveForUpdate(a, s).ProgressKey;
         OpProgressStore.Shared.Clear(a.Id, sheet, op);
         LogAcc(a.Id, a.DisplayName, $"↺ đã xoá tiến độ {op} (chạy lại từ đầu) cho shop {s.Name}.");
         // App local: hub mode đã gỡ.
@@ -375,13 +375,11 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         if (s is null) { problem = $"{a.DisplayName}: chưa chọn shop"; return false; }
         var missing = SharedWorkbookStore.MissingMergedProblem();
         if (missing is not null) { problem = missing; return false; }
-        var shopSheet = !string.IsNullOrWhiteSpace(s.ShopeeDataSheet) ? s.ShopeeDataSheet : s.Name;
+        var resolved = SharedWorkbookStore.ResolveForUpdate(a, s);
         if (!SharedWorkbookStore.IsActive)
         {
-            if (string.IsNullOrWhiteSpace(shopSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
-            var hasAccountWb = !string.IsNullOrWhiteSpace(a.WorkbookPath) && File.Exists(a.WorkbookPath);
-            var hasSharedSourceWb = File.Exists(SharedWorkbookStore.SourcePath);
-            if (!hasAccountWb && !hasSharedSourceWb) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
+            if (string.IsNullOrWhiteSpace(resolved.DataSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
+            if (string.IsNullOrWhiteSpace(resolved.DataPath) || !File.Exists(resolved.DataPath)) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
         }
         if (requiresBigSellerLogin && !a.HasCookie) { problem = $"{a.DisplayName}: chưa có cookie BigSeller"; return false; }
         problem = ""; return true;
@@ -446,7 +444,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         UpdateKind kind = UpdateKind.Update)
     {
         var a = t.Account; var s = t.SelectedShop!;
-        var resolved = kind == UpdateKind.Update ? SharedWorkbookStore.ResolveForUpdate(a, s) : SharedWorkbookStore.Resolve(a, s);
+        var resolved = SharedWorkbookStore.ResolveForUpdate(a, s);
         // AI (viết lại tên/mô tả) dùng cấu hình AI CHUNG lấy từ Hub; key truyền THẲNG qua context
         // (không set biến môi trường process-wide để Brave/Playwright không kế thừa key).
         var aiModel = string.IsNullOrWhiteSpace(ai.OpenAiModel) ? s.OpenAiModel : ai.OpenAiModel;

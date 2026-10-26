@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Shopee.Core.BigSeller;
 
 /// <summary>File và sheet một job thực sự đọc, cùng khóa tiến độ riêng của shop.</summary>
@@ -25,44 +27,75 @@ public static class SharedWorkbookCatalog
     /// <summary>
     /// Giải quyết file &amp; sheet cho luồng Update Product: đến shop nào thì chọn đúng sheet của shop đó
     /// (<see cref="BigSellerShop.ShopeeDataSheet"/> hoặc <see cref="BigSellerShop.Name"/>) trong file đã chọn.
+    /// LUÔN ưu tiên sourcePath (file Excel chung đã chọn) hơn account.WorkbookPath.
     /// </summary>
     public static SharedWorkbookTarget ResolveForUpdate(bool enabled, string sourcePath, string mergedPath, BigSellerAccount account, BigSellerShop shop)
     {
         var defaultSheet = !string.IsNullOrWhiteSpace(shop.ShopeeDataSheet) ? shop.ShopeeDataSheet.Trim() : (shop.Name?.Trim() ?? "");
-        if (enabled)
+
+        if (!string.IsNullOrWhiteSpace(sourcePath) && File.Exists(sourcePath))
         {
-            var progressKey = ProgressPrefix + (shop.Id ?? "");
-            if (!string.IsNullOrWhiteSpace(sourcePath) && File.Exists(sourcePath))
+            var matched = MatchShopSheet(sourcePath, shop);
+            if (!string.IsNullOrWhiteSpace(matched))
             {
-                var matched = MatchShopSheet(sourcePath, shop);
-                if (!string.IsNullOrWhiteSpace(matched))
-                    return new SharedWorkbookTarget(sourcePath, matched, progressKey);
-                if (!string.IsNullOrWhiteSpace(mergedPath) && File.Exists(mergedPath))
-                    return new SharedWorkbookTarget(mergedPath, SharedWorkbookMerge.SheetName, progressKey);
-                return new SharedWorkbookTarget(sourcePath, defaultSheet, progressKey);
+                var progressKey = enabled ? ProgressPrefix + (shop.Id ?? "") : matched;
+                return new SharedWorkbookTarget(sourcePath, matched, progressKey);
             }
-            return new SharedWorkbookTarget(mergedPath ?? "", SharedWorkbookMerge.SheetName, progressKey);
+
+            if (enabled && !string.IsNullOrWhiteSpace(mergedPath) && File.Exists(mergedPath))
+                return new SharedWorkbookTarget(mergedPath, SharedWorkbookMerge.SheetName, ProgressPrefix + (shop.Id ?? ""));
+
+            var fallbackKey = enabled ? ProgressPrefix + (shop.Id ?? "") : defaultSheet;
+            return new SharedWorkbookTarget(sourcePath, defaultSheet, fallbackKey);
         }
 
-        string wbPath;
-        if (!string.IsNullOrWhiteSpace(account.WorkbookPath) && File.Exists(account.WorkbookPath))
-            wbPath = account.WorkbookPath;
-        else if (!string.IsNullOrWhiteSpace(sourcePath) && File.Exists(sourcePath))
-            wbPath = sourcePath;
-        else
-            wbPath = account.WorkbookPath ?? "";
+        string wbPath = !string.IsNullOrWhiteSpace(account.WorkbookPath) && File.Exists(account.WorkbookPath)
+            ? account.WorkbookPath
+            : (account.WorkbookPath ?? "");
 
         var sheet = !string.IsNullOrWhiteSpace(wbPath) && File.Exists(wbPath)
             ? (MatchShopSheet(wbPath, shop) ?? defaultSheet)
             : defaultSheet;
+
         return new SharedWorkbookTarget(wbPath, sheet, sheet);
     }
 
-    private static string? MatchShopSheet(string workbookPath, BigSellerShop shop)
+    public static string NormalizeSheetKey(string? s)
     {
-        var sheets = WorkbookSheets.ListSheetNames(workbookPath);
-        if (sheets.Count == 0) return null;
+        if (string.IsNullOrWhiteSpace(s)) return "";
+        var trimmed = s.Trim();
+        trimmed = Regex.Replace(trimmed, @"\s*\.\s*", ".");
+        trimmed = Regex.Replace(trimmed, @"\s+", ".");
+        return trimmed.ToLowerInvariant();
+    }
 
+    public static string? MatchShopSheet(string workbookPath, BigSellerShop shop)
+    {
+        if (string.IsNullOrWhiteSpace(workbookPath) || !File.Exists(workbookPath)) return null;
+        return MatchShopSheet(WorkbookSheets.ListSheetNames(workbookPath), shop);
+    }
+
+    public static string? MatchShopSheet(IReadOnlyList<string> sheets, BigSellerShop shop)
+    {
+        if (sheets == null || sheets.Count == 0) return null;
+
+        // 1. Khớp chính xác (case-insensitive, trim) với shop.Name
+        if (!string.IsNullOrWhiteSpace(shop.Name))
+        {
+            var target = shop.Name.Trim();
+            var match = sheets.FirstOrDefault(x => string.Equals(x.Trim(), target, StringComparison.OrdinalIgnoreCase));
+            if (match is not null) return match;
+        }
+
+        // 2. Khớp chuẩn hóa (NormalizeSheetKey) với shop.Name
+        if (!string.IsNullOrWhiteSpace(shop.Name))
+        {
+            var targetNorm = NormalizeSheetKey(shop.Name);
+            var match = sheets.FirstOrDefault(x => NormalizeSheetKey(x) == targetNorm);
+            if (match is not null) return match;
+        }
+
+        // 3. Khớp chính xác (case-insensitive, trim) với shop.ShopeeDataSheet
         if (!string.IsNullOrWhiteSpace(shop.ShopeeDataSheet))
         {
             var target = shop.ShopeeDataSheet.Trim();
@@ -70,10 +103,11 @@ public static class SharedWorkbookCatalog
             if (match is not null) return match;
         }
 
-        if (!string.IsNullOrWhiteSpace(shop.Name))
+        // 4. Khớp chuẩn hóa (NormalizeSheetKey) với shop.ShopeeDataSheet
+        if (!string.IsNullOrWhiteSpace(shop.ShopeeDataSheet))
         {
-            var target = shop.Name.Trim();
-            var match = sheets.FirstOrDefault(x => string.Equals(x.Trim(), target, StringComparison.OrdinalIgnoreCase));
+            var targetNorm = NormalizeSheetKey(shop.ShopeeDataSheet);
+            var match = sheets.FirstOrDefault(x => NormalizeSheetKey(x) == targetNorm);
             if (match is not null) return match;
         }
 

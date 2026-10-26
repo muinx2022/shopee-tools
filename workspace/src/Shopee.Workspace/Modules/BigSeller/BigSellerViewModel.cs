@@ -434,9 +434,12 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
                 await using var output = new FileStream(dest, FileMode.Create, FileAccess.Write, FileShare.None);
                 await input.CopyToAsync(output);
             }
-            SharedWorkbookStore.ReplaceSource(Path.GetFileName(path));
+            SharedWorkbookStore.ReplaceSource(Path.GetFileName(path), path);
             LoadSharedUi();
-            Status = $"Đã chọn {Path.GetFileName(path)}. Tick sheet rồi bấm Gộp và dùng.";
+            if (WorkspaceAppConfig.IsImportUpdateOnly)
+                Status = $"Đã chọn {Path.GetFileName(path)}. Tự động nhận diện sheet theo tên từng shop khi chạy Import / Update.";
+            else
+                Status = $"Đã chọn {Path.GetFileName(path)}. Tick sheet rồi bấm Gộp và dùng.";
         }
         catch (Exception ex)
         {
@@ -511,6 +514,13 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         {
             var notes = snap.ColumnNotes.Count == 0 ? "" : " " + string.Join("; ", snap.ColumnNotes) + ".";
             SharedHint = $"Đang dùng {snap.SelectedSheets.Count} sheet, {snap.MergedRowCount} dòng. Mọi shop đọc bản gộp này.{notes}";
+        }
+        else if (SharedWorkbookStore.HasSharedSource && !snap.Enabled)
+        {
+            if (WorkspaceAppConfig.IsImportUpdateOnly)
+                SharedHint = $"Đang dùng file chung \"{SharedSourceLabel}\" — tự động lấy sheet tương ứng với tên từng shop.";
+            else
+                SharedHint = $"Đã chọn \"{SharedSourceLabel}\". Update tự lấy sheet theo tên shop; Scrape cần tick sheet rồi bấm Gộp và dùng.";
         }
         else
             SharedHint = "Đang dùng workbook riêng của từng tài khoản.";
