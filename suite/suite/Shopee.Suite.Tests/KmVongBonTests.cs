@@ -410,7 +410,7 @@ public class KmVongBonTests : IDisposable
     public void FormKm_CoDungBonNut()
     {
         Assert.Equal(
-            new[] { "Chạy chương trình", "Chạy Combo", "Máy này nhận chủ trì", "Đóng" }
+            new[] { "Chạy chương trình", "Chạy Combo", "Đóng" }
                 .OrderBy(x => x, StringComparer.Ordinal),
             NhanCacNutTrenForm().OrderBy(x => x, StringComparer.Ordinal));
     }
@@ -433,7 +433,7 @@ public class KmVongBonTests : IDisposable
         // thật. Neo vào CÁI GIÁ mà người dùng phải biết trước khi bật. Từ 01/09/2026 cái giá ĐỔI: hết cửa sổ
         // 21-24h cắt vòng ("20:00 tới 24:00" cũ), thay bằng nhiều gói nhỏ cả ngày — mỗi gói chiếm một khe nghỉ.
         Assert.Contains(chu, c => c.Contains("chiếm trọn một khe nghỉ")); // tab Flash Sale
-        Assert.True(chu.Count >= 34, $"chỉ gom được {chu.Count} dòng chữ — vòng rà đang bỏ sót tab nào đó");
+        Assert.True(chu.Count >= 31, $"chỉ gom được {chu.Count} dòng chữ — vòng rà đang bỏ sót tab nào đó");
     }
 
     /// <summary>
@@ -512,13 +512,11 @@ public class KmVongBonTests : IDisposable
         // một lượt layout thật.
         // (26/08/2026) Ngưỡng đếm nâng 15 → 32 cho khớp thực tế: 15 là con số của thời danh sách còn ngắn, để
         // nguyên thì mất non nửa số câu vẫn không ai biết.
-        Assert.Contains(cacCau, c => c.Contains("MÁY CHỦ TRÌ là"));
         Assert.Contains(cacCau, c => c.Contains("CẤU HÌNH KHÔNG DÙNG ĐƯỢC"));
         Assert.Contains(cacCau, c => c.Contains("CÙNG mốc sửa"));
         Assert.Contains(cacCau, c => c.Contains("CHẠY THẬT"));            // tooltip "Chạy chương trình"
-        Assert.Contains(cacCau, c => c.Contains("Đóng dấu MÁY NÀY"));     // tooltip "Máy này nhận chủ trì"
-        Assert.True(cacCau.Count >= 32, $"chỉ rà được {cacCau.Count} câu — thiếu chỗ nào đó");
-        Assert.True(cacCau.Sum(c => CumTrongNgoacKep(c).Count()) >= 6, "không có cụm trong ngoặc kép nào để rà");
+        Assert.True(cacCau.Count >= 29, $"chỉ rà được {cacCau.Count} câu — thiếu chỗ nào đó");
+        Assert.True(cacCau.Sum(c => CumTrongNgoacKep(c).Count()) >= 5, "không có cụm trong ngoặc kép nào để rà");
 
         foreach (var cau in cacCau)
         {
@@ -552,15 +550,15 @@ public class KmVongBonTests : IDisposable
         Assert.Contains("KHÔNG ghi", tip, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>Và cụ thể: câu của lượt PHÁ HOÀ thôi bảo người dùng "LƯU lại" (nút không tồn tại), thay bằng
-    /// đúng hai đường có thật.</summary>
+    /// <summary>Và cụ thể: câu của lượt PHÁ HOÀ thôi bảo người dùng "LƯU lại" (nút không tồn tại) và không nhắc
+    /// nút "Máy này nhận chủ trì" đã gỡ khỏi form.</summary>
     [Fact]
     public void CauPhaHoa_ThoiKhuyenMotThaoTacKhongTonTai()
     {
         var cau = OrdersModuleHost.CauPhaHoa();
 
         Assert.DoesNotContain("LƯU lại", cau);
-        Assert.Contains("Máy này nhận chủ trì", cau);
+        Assert.DoesNotContain("Máy này nhận chủ trì", cau);
         Assert.Contains("Đóng", cau);
     }
 
@@ -718,17 +716,6 @@ public class KmVongBonTests : IDisposable
     private static IEnumerable<string> DongNhipLichKm(AppServices svc, long id)
     {
         var trongKhung = new DateTime(2026, 8, 22, 2, 5, 0);
-        svc.MayNay = () => MayMot;   // chủ trì đang là "may-khac:orders" ⇒ máy này đứng ngoài
-        new AccountsViewModel(svc).NhipLichKmAsync(trongKhung).GetAwaiter().GetResult();
-
-        // …rồi cảnh cấu hình hỏng: máy này chủ trì nhưng GIỜ SAI ĐỊNH DẠNG.
-        //
-        // Cảnh dựng đã đổi HAI LẦN, ghi lại để đừng đổi ngược:
-        //  · trước 25/08/2026 dùng `GioBatDau = "01:00"` (mốc quá khứ so với lượt 02:05) — bản đẩy chương trình
-        //    đi 180 ngày làm cấu hình ấy thành HỢP LỆ, cảnh im lặng không sinh dòng nào để rà;
-        //  · rồi dùng `GioKetThuc < GioBatDau` — bản 26/08/2026 BỎ hẳn luật đó (hai đầu khoảng cùng một giờ),
-        //    nên cảnh lại im lặng.
-        // Vế ĐỊNH DẠNG GIỜ thì không phụ thuộc vào hai quyết định trên.
         svc.KmConfig.Save(svc.KmConfig.Get(id) with { OwnerMachine = MayMot, GioBatDau = "2h00" });
         new AccountsViewModel(svc).NhipLichKmAsync(trongKhung).GetAwaiter().GetResult();
 

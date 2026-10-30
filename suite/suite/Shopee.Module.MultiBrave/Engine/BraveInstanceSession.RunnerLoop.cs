@@ -1,4 +1,4 @@
-using Shopee.Core.BigSeller;
+﻿using Shopee.Core.BigSeller;
 
 namespace OpenMultiBraveLauncherV3;
 
@@ -169,12 +169,7 @@ internal sealed partial class BraveInstanceSession
                         // 1/8 Brave) bị "login first" khi chạy nhiều Brave/1 tk: nó tình cờ restart extension
                         // giữa chừng rồi nạp đè token cũ. App cũ KHÔNG re-import khi restart nên không bị.
                         if (_bigSeller.HasCookieFile)
-                        {
-                            if (await _bigSeller.BrowserHasAuthCookieAsync().ConfigureAwait(false))
-                                Log("BigSeller cookie: profile mở lại vẫn còn muc_token — GIỮ phiên sống, KHÔNG nạp đè.");
-                            else
-                                await _bigSeller.ImportCookiesIfConfiguredAsync(loopToken).ConfigureAwait(false);
-                        }
+                            await _bigSeller.ImportCookiesIfConfiguredAsync(loopToken).ConfigureAwait(false);
                         proxyAttempt--;
                         continue;
                     }

@@ -42,6 +42,9 @@ public sealed class UpdateProductRunner
     /// <summary>(lane 0-based, dòng Excel) — lane vừa mở dòng này để sửa.</summary>
     public event Action<int, int>? RowOpening;
 
+    /// <summary>True nếu trong lượt chạy Update vừa rồi, shop đã chạm giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).</summary>
+    public bool ListingLimitReached { get; private set; }
+
     private ProductNameRewriteRunner? _nameRunner;
     private readonly WorkflowPauseToken _pause = new();
 
@@ -155,6 +158,7 @@ public sealed class UpdateProductRunner
     // ── Update product (C# + Playwright) — N lane song song nếu UpdateMaxProcess > 1 ──
     public async Task RunUpdateAsync(UpdateProductContext ctx, CancellationToken ct)
     {
+        ListingLimitReached = false;
         var wf = BuildWorkflow(ctx);
         var n = Math.Clamp(ctx.UpdateMaxProcess, 1, 10);
         // CACHE CHUNG dữ liệu shop (dòng → record, khớp theo item id): nạp MỘT LẦN trước mọi lane rồi chia sẻ
@@ -175,8 +179,28 @@ public sealed class UpdateProductRunner
         // chung 1 store). Runner bỏ qua SP đã update ĐÚNG tên hiện tại; MarkDone lúc save gọi thẳng OpProgressStore
         // singleton (thread-safe) nên snapshot này chỉ để SKIP, không cần refresh trong lượt.
         var updateDone = OpProgressStore.Shared.GetDone(wf.AccountId, wf.ProgressKey, AssignmentOps.Update);
+        if (updateDone.Count > 0)
+        {
+            int minDoneRow = int.MaxValue, maxDoneRow = 0;
+            foreach (var doneId in updateDone.Keys)
+            {
+                if (records.Records.TryGetValue(doneId, out var rec) && rec.LineIndex > 0)
+                {
+                    if (rec.LineIndex < minDoneRow) minDoneRow = rec.LineIndex;
+                    if (rec.LineIndex > maxDoneRow) maxDoneRow = rec.LineIndex;
+                }
+            }
+            if (maxDoneRow > 0)
+                OpProgressStore.Shared.SetRowRange(wf.AccountId, wf.ProgressKey, AssignmentOps.Update, minDoneRow, maxDoneRow);
+        }
         var importDone = OpProgressStore.Shared.GetDone(wf.AccountId, wf.ProgressKey, AssignmentOps.Import);
-        var targetTracker = new UpdateTargetTracker(records.Records, updateDone, importDone);
+        using var shopLimitCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var shopCt = shopLimitCts.Token;
+        var targetTracker = new UpdateTargetTracker(records.Records, updateDone, importDone, () =>
+        {
+            ListingLimitReached = true;
+            try { shopLimitCts.Cancel(); } catch { }
+        });
         Log?.Invoke($"Shop \"{wf.ShopName}\": tiến độ đã update {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP mục tiêu (sheet {records.Records.Count} dòng).");
         if (targetTracker.IsAllCompleted)
         {
@@ -186,22 +210,37 @@ public sealed class UpdateProductRunner
         // Điều phối dọn Material Center DÙNG CHUNG mọi lane (1 account): đếm bắt-đầu-sửa TOÀN account (quota kho
         // per-account, đếm per-lane là lệch) + cổng pause-all khi kho đầy. Sống ở facade → xuyên qua lane-restart.
         var mediaCoord = new MediaCleanupCoordinator();
-        if (n == 1)
+        try
         {
-            await using var runner = new BigSellerProductUpdateRunner(wf, m => Log?.Invoke(m), _pause, mediaCoord: mediaCoord, sharedRecords: records, updateDone: updateDone, targetTracker: targetTracker);
-            runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
-            runner.RowOpening += row => RowOpening?.Invoke(0, row);
-            await runner.RunAsync(ct);
-            return;
+            if (n == 1)
+            {
+                await using var runner = new BigSellerProductUpdateRunner(wf, m => Log?.Invoke(m), _pause, mediaCoord: mediaCoord, sharedRecords: records, updateDone: updateDone, targetTracker: targetTracker);
+                runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
+                runner.RowOpening += row => RowOpening?.Invoke(0, row);
+                await runner.RunAsync(shopCt).ConfigureAwait(false);
+                return;
+            }
+            Log?.Invoke($"▶ Update SONG SONG {n} lane (claim chống trùng SP; mỗi lane 1 Brave/profile/port riêng).");
+            await RunLanesAsync(wf, n, shopCt, async (laneWf, lane, count, claim, export, c) =>
+            {
+                await using var runner = new BigSellerProductUpdateRunner(laneWf, m => Log?.Invoke($"[L{lane}] {m}"), _pause, claim, mediaCoord, export, records, updateDone, targetTracker);
+                runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
+                runner.RowOpening += row => RowOpening?.Invoke(lane, row);
+                await runner.RunAsync(c).ConfigureAwait(false);
+            }).ConfigureAwait(false);
         }
-        Log?.Invoke($"▶ Update SONG SONG {n} lane (claim chống trùng SP; mỗi lane 1 Brave/profile/port riêng).");
-        await RunLanesAsync(wf, n, ct, async (laneWf, lane, count, claim, export, c) =>
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested && targetTracker.IsListingLimitReached)
         {
-            await using var runner = new BigSellerProductUpdateRunner(laneWf, m => Log?.Invoke($"[L{lane}] {m}"), _pause, claim, mediaCoord, export, records, updateDone, targetTracker);
-            runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
-            runner.RowOpening += row => RowOpening?.Invoke(lane, row);
-            await runner.RunAsync(c);
-        });
+            // Dừng chủ động toàn bộ các lane do shop đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).
+        }
+        finally
+        {
+            if (targetTracker.IsListingLimitReached)
+            {
+                ListingLimitReached = true;
+                Log?.Invoke($"⛔ Shop \"{wf.ShopName}\": Đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng update shop này (đã update {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP).");
+            }
+        }
     }
 
     // ── Xóa media (Material Center) thủ công — nút "Xóa Medias" ở trang cấu hình BigSeller ──
@@ -230,6 +269,8 @@ public sealed class UpdateProductRunner
         var claim = new ClaimStore();
         var ports = new List<int>();
         var tasks = new List<Task>();
+        var abortedLanes = 0;
+        string? lastAbortError = null;
         try
         {
             for (var i = 0; i < n; i++)
@@ -269,6 +310,8 @@ public sealed class UpdateProductRunner
                             if (fails > 6)
                             {
                                 Log?.Invoke($"[L{lane}] ✖ lane chết NHANH liên tục {fails} lần — DỪNG lane. Kiểm tra đăng nhập BigSeller/mạng. Lỗi cuối: {ex.Message}");
+                                lastAbortError = ex.Message;
+                                Interlocked.Increment(ref abortedLanes);
                                 return;
                             }
                             var delaySec = fails == 0 ? 5 : Math.Min(60, 8 * fails);
@@ -280,6 +323,8 @@ public sealed class UpdateProductRunner
                 }, ct));
             }
             await Task.WhenAll(tasks).ConfigureAwait(false);
+            if (abortedLanes >= n && !ct.IsCancellationRequested)
+                throw new InvalidOperationException($"Tất cả {n} lane đều dừng do lỗi liên tiếp: {lastAbortError}");
         }
         finally
         {

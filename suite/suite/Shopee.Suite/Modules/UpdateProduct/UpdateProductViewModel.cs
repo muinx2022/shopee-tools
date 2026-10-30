@@ -243,7 +243,10 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             }
             else
             {
-                LogA($"{prefix} ✔ xong {name}.");
+                if (runner.ListingLimitReached)
+                    LogA($"{prefix} ⛔ dừng {name}: shop '{s.DisplayName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).");
+                else
+                    LogA($"{prefix} ✔ xong {name}.");
                 Coordination.Hub.PublishCompletion(coordKey, LedgerStatus.Completed, 0);
                 if (opProg != null) OpProgressStore.Shared.FinishRun(a.Id, s.ShopeeDataSheet, opProg, completed: true);
             }

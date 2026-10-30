@@ -17,6 +17,10 @@ internal sealed record BigSellerWorkflowSettings
     /// KHÔNG mở <see cref="WorkbookPath"/>. Mọi nhánh hub-mode phải nằm SAU cờ này để acc excel giữ nguyên.</summary>
     public bool UseHubData { get; init; }
     public string DataSheet { get; init; } = "";
+    /// <summary>Khóa tiến độ Import/Update. Trống thì dùng <see cref="DataSheet"/>. Workbook chung để
+    /// <c>shared:{shopId}</c> trong khi <see cref="DataSheet"/> vẫn là sheet Excel <c>Gop</c>.</summary>
+    public string ProgressSheet { get; init; } = "";
+    public string ProgressKey => string.IsNullOrEmpty(ProgressSheet) ? DataSheet : ProgressSheet;
     public string BigSellerCookieFile { get; init; } = "";
     public string BatchId { get; init; } = "";
     public int StartRow { get; init; } = 2;

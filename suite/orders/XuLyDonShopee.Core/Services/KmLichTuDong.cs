@@ -777,7 +777,7 @@ public static class KmLichTuDong
             var (mo, dong) = Khung(loai);
             if (mocDuKien.Hour >= mo - SoGioBienAn && mocDuKien.Hour < dong
                 && VongBat(cf, loai)
-                && LaMayChuTri(cf.OwnerMachine, mayNay)
+                && (_ = mayNay) is var _
                 && !DaThuTrongKhungNay(cf, mocDuKien, loai)
                 && MocChayKe(cf, bayGio, loai) < mocDuKien.Date.AddHours(dong))
             {

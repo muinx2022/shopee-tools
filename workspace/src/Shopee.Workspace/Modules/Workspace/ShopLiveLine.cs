@@ -34,15 +34,27 @@ public static class ShopLiveLine
         lock (Gate) return Lines.TryGetValue(Key(accountId, shopId), out var v) ? v.Tooltip : "";
     }
 
-    /// <summary>Tên sheet người dùng thấy. Workbook chung thì là sheet đã chọn (ví dụ hàng sẵn), không phải tên sheet gộp.</summary>
-    public static string SheetLabel(BigSellerShop? shop)
+    /// <summary>Tên sheet người dùng thấy. Ưu tiên sheet thực tế đã resolve; nếu đang gộp sheet thì hiện danh sách sheet đã chọn.</summary>
+    public static string SheetLabel(BigSellerShop? shop, string? resolvedSheet = null)
     {
+        if (!string.IsNullOrWhiteSpace(resolvedSheet)
+            && !string.Equals(resolvedSheet, SharedWorkbookMerge.SheetName, StringComparison.OrdinalIgnoreCase))
+        {
+            return resolvedSheet;
+        }
         if (SharedWorkbookStore.IsActive)
         {
             var sheets = SharedWorkbookStore.Snapshot().SelectedSheets;
             if (sheets.Count > 0) return string.Join(", ", sheets);
         }
-        return shop is null || string.IsNullOrWhiteSpace(shop.ShopeeDataSheet) ? "—" : shop.ShopeeDataSheet;
+        if (!string.IsNullOrWhiteSpace(resolvedSheet))
+            return resolvedSheet;
+        if (shop is null) return "—";
+        if (SharedWorkbookStore.HasSharedSource && !string.IsNullOrWhiteSpace(shop.Name))
+            return shop.Name;
+        return !string.IsNullOrWhiteSpace(shop.ShopeeDataSheet)
+            ? shop.ShopeeDataSheet
+            : (!string.IsNullOrWhiteSpace(shop.Name) ? shop.Name : "—");
     }
 
     private static string Key(string accountId, string shopId) => (accountId ?? "") + "\n" + (shopId ?? "");

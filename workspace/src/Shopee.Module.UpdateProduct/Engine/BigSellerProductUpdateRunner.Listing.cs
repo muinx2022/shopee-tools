@@ -87,9 +87,9 @@ internal sealed partial class BigSellerProductUpdateRunner
 
     private IPage? PickListingPage(IBrowserContext context)
     {
-        foreach (var p in context.Pages)
+        foreach (var p in context.Pages.ToArray())
             if (IsDraftPage(p.Url)) return p;
-        foreach (var p in context.Pages)
+        foreach (var p in context.Pages.ToArray())
             if ((p.Url ?? "").Contains("bigseller.com", StringComparison.OrdinalIgnoreCase)) return p;
         return context.Pages.FirstOrDefault();
     }

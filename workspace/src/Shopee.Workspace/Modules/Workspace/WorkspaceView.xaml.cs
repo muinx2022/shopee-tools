@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using Shopee.Workspace.Infrastructure;
@@ -12,6 +12,9 @@ public partial class WorkspaceView : UserControl
         InitializeComponent();
 
         ColScrape.Visibility = WorkspaceAppConfig.ShowScrape ? Visibility.Visible : Visibility.Collapsed;
+        ColScrapeStatus.Visibility = (!WorkspaceAppConfig.ShowScrape && WorkspaceAppConfig.ShowImportUpdate)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         ColImport.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
         ColUpdate.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
         ColRewrite.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;

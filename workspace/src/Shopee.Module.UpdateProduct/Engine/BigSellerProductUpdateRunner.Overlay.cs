@@ -35,7 +35,8 @@ internal sealed partial class BigSellerProductUpdateRunner
     {
         var ctx = _context;
         if (ctx is null) return;
-        foreach (var pg in ctx.Pages)
+        IPage[] pages; try { pages = ctx.Pages.ToArray(); } catch { return; }
+        foreach (var pg in pages)
         {
             if (pg.IsClosed) continue;
             try { await pg.EvaluateAsync(OverlayJs, line); } catch { /* overlay best-effort */ }

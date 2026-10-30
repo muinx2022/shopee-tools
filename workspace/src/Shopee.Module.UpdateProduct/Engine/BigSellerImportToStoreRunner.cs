@@ -245,7 +245,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                 }
                 consecutiveErrors = 0;   // đọc được bảng → tab còn sống
 
-                var cycleSec = Math.Max(3, _settings.ListingReloadSeconds);
+
 
                 if (checkedIds.Length == 0)
                 {
@@ -266,7 +266,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                             LogLedgerSummary();
                             return;
                         }
-                        if (!_settings.ImportFromClaimedTab || emptySheetPageStreak >= 2)
+                        if (emptySheetPageStreak >= 2)
                         {
                             _log($"✔ Trang hiện tại không có SP nào thuộc sheet '{_settings.DataSheet}' — dừng ngay, bỏ qua các trang tiếp theo.");
                             LogLedgerSummary();
@@ -359,22 +359,22 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                 await DelayAsync(2000, cancellationToken);
                 await BigSellerCrawlHelper.DismissPostImportDialogsAsync(page, _log);
 
-                if (_settings.ImportFromClaimedTab)
+                if (true)
                 {
                     // Ở tab "Đã nhận", SP sau khi import KHÔNG rời khỏi danh sách. Nếu forceReload sẽ bị quay về trang 1
                     // và phải lật lại từ đầu. Chuyển thẳng sang trang kế tiếp (nếu hết trang thì kết thúc luôn).
                     if (await BigSellerCrawlHelper.ClickNextCrawlPageAsync(page, _log))
                         continue;
 
-                    _log($"✔ Hết trang tab Đã nhận — đã import {_importedIds.Count}/{_importIds.Count} SP. Kết thúc.");
+                    _log($"✔ Hết trang — đã import {_importedIds.Count}/{_importIds.Count} SP. Kết thúc.");
                     LogLedgerSummary();
                     return;
                 }
 
-                _log($"Reload màn import sau {cycleSec}s…");
-                await DelayAsync(TimeSpan.FromSeconds(cycleSec), cancellationToken);
-                await BigSellerCrawlHelper.GoToCrawlPageAsync(page, forceReload: true, targetUrl: crawlUrl, log: _log);
-                await SelectSourceTabIfNeededAsync(page, cancellationToken);
+
+
+
+
             }
             catch (OperationCanceledException) { throw; }   // Stop / cancel → thoát sạch
             catch (Exception ex)
@@ -815,14 +815,14 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
     private Task<IPage?> FindBigSellerPageAsync(IBrowserContext context, CancellationToken ct)
     {
-        foreach (var p in context.Pages)
+        foreach (var p in context.Pages.ToArray())
         {
             ct.ThrowIfCancellationRequested();
             if (BigSellerCrawlHelper.IsCrawlPage(p, _settings.CrawlUrl))
                 return Task.FromResult<IPage?>(p);
         }
 
-        foreach (var p in context.Pages)
+        foreach (var p in context.Pages.ToArray())
         {
             if ((p.Url ?? "").Contains("bigseller.com", StringComparison.OrdinalIgnoreCase))
                 return Task.FromResult<IPage?>(p);

@@ -71,7 +71,7 @@ public static class SharedWorkbookStore
     public static SharedWorkbookTarget Resolve(BigSellerAccount account, BigSellerShop shop)
     {
         lock (Gate)
-            return SharedWorkbookCatalog.Resolve(Current.Enabled, MergedPath, account, shop);
+            return SharedWorkbookCatalog.ResolveForUpdate(Current.Enabled, ActiveSourcePathLocked(), MergedPath, account, shop);
     }
 
     public static SharedWorkbookTarget ResolveForUpdate(BigSellerAccount account, BigSellerShop shop)

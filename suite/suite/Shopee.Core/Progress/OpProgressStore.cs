@@ -36,9 +36,11 @@ public sealed class OpProgressStore
 
     private static readonly string FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), "op-progress.json");
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
+    private static DateTime GetFileWriteUtc() => File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : DateTime.MinValue;
 
     private readonly object _lock = new();
     private readonly List<OpProgress> _items = [];
+    private DateTime _lastWriteUtc;
 
     public event Action? Changed;
 
@@ -56,10 +58,27 @@ public sealed class OpProgressStore
             _items.Clear();
             var list = JsonAtomicFile.TryLoad<List<OpProgress>>(FilePath);
             if (list is not null) _items.AddRange(list);
+            _lastWriteUtc = GetFileWriteUtc();
         }
     }
 
-    private void SaveLocked() => JsonAtomicFile.Save(FilePath, _items, JsonOpts);
+    private void SaveLocked()
+    {
+        JsonAtomicFile.Save(FilePath, _items, JsonOpts);
+        _lastWriteUtc = GetFileWriteUtc();
+    }
+
+    public bool ReloadIfExternalChange()
+    {
+        lock (_lock)
+        {
+            var diskUtc = GetFileWriteUtc();
+            if (diskUtc == _lastWriteUtc) return false;
+            Load();
+        }
+        Changed?.Invoke();
+        return true;
+    }
 
     private OpProgress GetOrCreateLocked(string accountId, string sheet, string op, string accountName)
     {
@@ -115,12 +134,27 @@ public sealed class OpProgressStore
         Changed?.Invoke();
     }
 
+    /// <summary>Đánh dấu hoàn thành thủ công (Mark as done) cho (acc + sheet + op) — tự tạo bản ghi nếu chưa có.</summary>
+    public void MarkCompleted(string accountId, string sheet, string op, string accountName = "")
+    {
+        lock (_lock)
+        {
+            var p = GetOrCreateLocked(accountId, sheet, op, accountName);
+            p.Status = LedgerStatus.Completed;
+            p.LastRunAt ??= DateTimeOffset.Now;
+            SaveLocked();
+        }
+        Changed?.Invoke();
+    }
+
     /// <summary>Kết thúc lượt chạy: completed (chạy trọn) hoặc stopped (bị hủy giữa chừng). GIỮ NGUYÊN Done.</summary>
     public void FinishRun(string accountId, string sheet, string op, bool completed)
     {
         lock (_lock)
         {
-            var p = _items.FirstOrDefault(x => KeyEq(x, accountId, sheet, op));
+            var p = completed
+                ? GetOrCreateLocked(accountId, sheet, op, "")
+                : _items.FirstOrDefault(x => KeyEq(x, accountId, sheet, op));
             if (p is null) return;
             p.Status = completed ? LedgerStatus.Completed : LedgerStatus.Stopped;
             SaveLocked();
@@ -134,6 +168,18 @@ public sealed class OpProgressStore
         lock (_lock)
         {
             _items.RemoveAll(x => KeyEq(x, accountId, sheet, op));
+            SaveLocked();
+        }
+        Changed?.Invoke();
+    }
+
+    /// <summary>Xoá toàn bộ tiến độ của 1 shop (mọi op) cho accountId + sheet.</summary>
+    public void ClearAllOps(string accountId, string sheet)
+    {
+        lock (_lock)
+        {
+            _items.RemoveAll(x => string.Equals(x.AccountId, accountId, StringComparison.OrdinalIgnoreCase)
+                               && string.Equals(x.Sheet, sheet, StringComparison.OrdinalIgnoreCase));
             SaveLocked();
         }
         Changed?.Invoke();

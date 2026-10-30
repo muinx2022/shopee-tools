@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Runtime;
 using Shopee.Core.Infrastructure;
 using Shopee.Core.Platform;
@@ -33,7 +33,13 @@ public static class BraveFleet
 {
     // Thư mục gốc chứa MỌI profile Brave do app tạo (persistent-data). Brave có --user-data-dir nằm
     // trong đây = "của app"; ngoài đây = Brave cá nhân/khác → tuyệt đối không đụng.
-    private static readonly string ManagedRoot = NormalizePath(SuitePaths.ModuleDir("persistent-data"));
+    private static string ManagedRoot = NormalizePath(SuitePaths.ModuleDir("persistent-data"));
+
+    public static void SetManagedSubRoot(string subFolder)
+    {
+        if (string.IsNullOrWhiteSpace(subFolder)) return;
+        ManagedRoot = NormalizePath(Path.Combine(SuitePaths.ModuleDir("persistent-data"), subFolder));
+    }
 
     // Root phụ (vd %APPDATA%\XuLyDonShopee\profiles của module Đơn hàng) — đăng ký lúc boot qua
     // AddManagedRoot. Sweep chỉ đụng browser có --user-data-dir nằm dưới các root này.
@@ -244,7 +250,7 @@ public static class BraveFleet
         // AN TOÀN ĐA-INSTANCE: registry profile-sống là TRONG-tiến-trình → nếu có ShopeeSuite KHÁC đang
         // chạy, Brave của nó (cùng persistent-data) sẽ bị coi nhầm là mồ côi. Khi không phải instance duy
         // nhất → KHÔNG quét (để Job Object + governor lo). Trường hợp thường (1 app) vẫn được bảo vệ đủ.
-        if (!IsSoleAppInstance())
+        if (!IsSoleSweepInstance())
             return 0;
 
         var rootDinhKy = RootQuetDinhKy();
@@ -290,11 +296,31 @@ public static class BraveFleet
     {
         try
         {
-            var procs = Process.GetProcessesByName("ShopeeWorkspace");
+            var procs = Process.GetProcessesByName("ShopeeWorkspace")
+                .Concat(Process.GetProcessesByName("ShopeeScrape"))
+                .Concat(Process.GetProcessesByName("ShopeeUpdate"))
+                .Concat(Process.GetProcessesByName("ShopeeSuite"))
+                .ToArray();
             try { return procs.Length <= 1; }
             finally { foreach (var p in procs) p.Dispose(); }
         }
         catch { return true; }   // không đếm được → coi như duy nhất (giữ hành vi dọn ở máy thường)
+    }
+
+    private static bool IsSoleSweepInstance()
+    {
+        try
+        {
+            string[] names = ManagedRoot.EndsWith("\\profiles", StringComparison.OrdinalIgnoreCase)
+                ? ["ShopeeScrape", "ShopeeWorkspace", "ShopeeSuite"]
+                : ManagedRoot.EndsWith("\\bigseller-profiles", StringComparison.OrdinalIgnoreCase)
+                    ? ["ShopeeUpdate", "ShopeeWorkspace", "ShopeeSuite"]
+                    : ["ShopeeWorkspace", "ShopeeScrape", "ShopeeUpdate", "ShopeeSuite"];
+            var procs = names.SelectMany(Process.GetProcessesByName).ToArray();
+            try { return procs.Length <= 1; }
+            finally { foreach (var p in procs) p.Dispose(); }
+        }
+        catch { return true; }
     }
 
     private static bool IsUnderManagedRoot(string normalizedDir)

@@ -16,7 +16,7 @@ namespace UpdateProduct;
 internal sealed class MediaCleanupCoordinator
 {
     // Giữ nhịp "10 SP mỗi wipe" như bản Python 1-worker (DELETE_IMAGES_AFTER) — nhưng đếm ĐÚNG phạm vi account.
-    private const int CleanupThreshold = 10;
+    internal const int CleanupThreshold = 60;
 
     private readonly object _lock = new();
     // != null = cổng ĐANG ĐÓNG (một lane đang dọn) → lane khác đậu; == null = cổng mở.

@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:Shopee.Workspace.ViewModels"
         xmlns:c="clr-namespace:Shopee.Workspace.Controls"
-        Title="{Binding WindowTitle, FallbackValue='Shopee Workspace'}" Icon="/Assets/app-icon.ico"
+        Title="{Binding WindowTitle, FallbackValue='Shopee Workspace'}" Icon="{Binding WindowIcon, FallbackValue='/Assets/app-icon.ico'}"
         Width="1500" Height="1040" MinWidth="1024" MinHeight="720"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource WindowBackgroundBrush}"
@@ -45,7 +45,7 @@
                 <Button Grid.Column="0" Style="{StaticResource brand}" VerticalAlignment="Center"
                         Command="{Binding GoHomeCommand}" ToolTip="Về màn hình chính">
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <Image Width="20" Height="20" Margin="0,0,9,0" Source="/Assets/app-icon.ico"
+                        <Image Width="20" Height="20" Margin="0,0,9,0" Source="{Binding WindowIcon, FallbackValue='/Assets/app-icon.ico'}"
                                RenderOptions.BitmapScalingMode="HighQuality" />
                         <TextBlock Text="{Binding WindowTitle}" FontSize="12.5"
                                    Foreground="{StaticResource TextPrimaryBrush}" VerticalAlignment="Center" />

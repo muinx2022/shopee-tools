@@ -100,8 +100,8 @@ public class KmNhanMayTests
         Assert.DoesNotContain(MayNay, vm.MoTaChuTri);
     }
 
-    /// <summary>Và trên FORM THẬT (sau một lượt layout thật) — property đúng mà XAML tra nhầm ràng buộc thì
-    /// người dùng vẫn đọc phải GUID.</summary>
+    /// <summary>Và trên FORM THẬT (sau một lượt layout thật) — vùng chủ trì đã bỏ nên không lộ GUID thô,
+    /// đồng thời vòng dựng đi qua đủ các tab.</summary>
     [StaFact]
     public void MoTaChuTri_TrenFormThat_KhongLoGuidTho()
     {
@@ -109,11 +109,11 @@ public class KmNhanMayTests
             1, "sub@shopee.vn", 3, Dong(MayKhac), MayNay, _ => "Máy kho 2"));
         var phanTu = LayoutQuaTungTab(dlg);
 
-        Assert.Contains("Máy kho 2 (aa11bb)", dlg.ChuTriText.Text);
-        Assert.DoesNotContain(MayKhac, dlg.ChuTriText.Text);
+        Assert.Null(dlg.FindName("ChuTriText"));
+        Assert.DoesNotContain(phanTu.OfType<System.Windows.Controls.TextBlock>(),
+            t => (t.Text ?? "").Contains(MayKhac, StringComparison.Ordinal));
 
-        // LƯỚI CHỐNG RÀ RỖNG: dòng chủ trì ở VÙNG CHUNG (ngoài tab) nên nó xanh kể cả khi vòng dựng form bỏ
-        // sót tab — chốt luôn ở đây rằng vòng dựng đi qua CẢ ô của tab đầu lẫn ô của tab combo.
+        // LƯỚI CHỐNG RÀ RỖNG: chốt luôn ở đây rằng vòng dựng đi qua CẢ ô của tab đầu lẫn ô của tab combo.
         Assert.Contains((DependencyObject)dlg.TenBox, phanTu);
         Assert.Contains((DependencyObject)dlg.ComboGiamBox, phanTu);
     }

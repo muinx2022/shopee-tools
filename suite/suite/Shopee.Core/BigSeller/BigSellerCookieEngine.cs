@@ -8,13 +8,14 @@ namespace Shopee.Core.BigSeller;
 /// Tự chứa: nói CDP qua <see cref="CdpSession"/> của Core (port-based) nên KHÔNG phụ thuộc CdpClient riêng
 /// của từng module. Gói trọn "bí quyết" giữ phiên mà trước đây chỉ Scrape có:
 ///  • <see cref="ImportKeepingLiveTokenAsync"/> — KHÔNG đè muc_token đang sống trong browser bằng token cũ
-///    từ file (server xoay token liên tục; đè token cũ = server đá phiên = "log in first").
+///    từ file (server xoay token liên tục; đè token cũ = server đá phiên = "log in first"), NHƯNG luôn nạp đè
+///    nếu muc_token trong browser thuộc tài khoản BigSeller khác (uid/puid khác nhau).
 ///  • <see cref="WriteBackLiveTokenAsync"/> — ghi NGƯỢC token (server vừa xoay) trở lại file sau mỗi lần
-///    thành công, để lần mở sau dùng token tươi thay vì token thiu.
+///    thành công, để lần mở sau dùng token tươi thay vì token thiu (chỉ khi cùng uid).
 /// muc_token = cookie giữ phiên BigSeller. Xem ghi chú dự án [[bigseller-single-session]].
 /// <para>Chia làm 4 file cùng class (partial): file này = hằng + predicate + đọc cookie từ browser;
 /// <c>.CookieFile.cs</c> = đọc/ghi FILE cookie (atomic); <c>.Importer.cs</c> = nạp file → browser qua 2
-/// transport CDP + ghi ngược ra file; <c>.SessionPolicy.cs</c> = luật giữ token sống / so tuổi token.</para>
+/// transport CDP + ghi ngược ra file; <c>.SessionPolicy.cs</c> = luật giữ token sống / so tuổi &amp; uid token.</para>
 /// </summary>
 public static partial class BigSellerCookieEngine
 {
@@ -112,8 +113,8 @@ public static partial class BigSellerCookieEngine
         catch { return null; }
     }
 
-    /// <summary>Chuỗi CHẨN ĐOÁN muc_token đang có trong browser (giá trị rút gọn + hạn) để trả lời
-    /// "login first thì token mất đi đâu": không có / server đá phiên / token hết hạn.</summary>
+    /// <summary>Chuỗi CHẨN ĐOÁN muc_token đang có trong browser (giá trị rút gọn + uid + hạn) để trả lời
+    /// "login first / nhầm tài khoản": không có / khác uid / server đá phiên / token hết hạn.</summary>
     public static async Task<string> GetAuthCookieDebugAsync(int cdpPort, CancellationToken ct = default)
     {
         try
@@ -125,6 +126,8 @@ public static partial class BigSellerCookieEngine
 
             var val = c.GetValueOrDefault("value") as string ?? "";
             var prefix = val.Length <= 8 ? val : val[..8];
+            var uid = GetJwtUserId(val);
+            var uidStr = uid.HasValue ? $" uid={uid.Value}" : "";
             var expStr = "session (không hạn)";
             if (c.TryGetValue("expires", out var e) && e is not null)
             {
@@ -140,7 +143,7 @@ public static partial class BigSellerCookieEngine
                     expStr = $"{exp.LocalDateTime:dd/MM HH:mm} (còn {(exp - DateTimeOffset.Now).TotalHours:0.0}h)";
                 }
             }
-            return $"muc_token={prefix}…(len {val.Length}) hạn={expStr}";
+            return $"muc_token={prefix}…(len {val.Length}){uidStr} hạn={expStr}";
         }
         catch (Exception ex) { return $"(lỗi đọc token: {ex.Message})"; }
     }

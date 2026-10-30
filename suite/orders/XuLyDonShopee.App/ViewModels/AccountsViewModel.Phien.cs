@@ -303,20 +303,10 @@ public partial class AccountsViewModel
         MocNhipDaNhanChoTest?.Invoke("KM", bayGio);
         if (_dangChayKmTuDong || _bridgeRunning) { return; }
 
-        var mayNay = _services.MayNay?.Invoke() ?? "";
-
         foreach (var acc in _services.Accounts.GetAll())
         {
             var cf = _services.KmConfig.Get(acc.Id);
             if (!KmLichTuDong.DenGioChay(cf, bayGio, LoaiChuongTrinh.ChuongTrinhShop)) { continue; }
-
-            if (!KmLichTuDong.LaMayChuTri(cf.OwnerMachine, mayNay))
-            {
-                // KHÔNG ghi `LanThuTuDong`: mốc đó là "tài khoản này đã dùng lượt thử của khung đêm nay", mà
-                // lượt ấy không phải của mình — ghi vào là ĐỐT lượt của đúng máy chủ trì, và nó mất trắng đêm.
-                BaoKhongPhaiChuTri(acc.Id, acc.Email, cf.OwnerMachine, bayGio);
-                continue;
-            }
 
             // DỰNG THAM SỐ MỘT LẦN, RỒI MỌI THỨ ĐỌC TỪ CHÍNH NÓ — kể cả dòng nhật ký. ĐỪNG tách ra thành vài
             // biến rời rồi mỗi chỗ tự dùng một biến.
@@ -990,11 +980,6 @@ public partial class AccountsViewModel
     /// <summary>Cờ chặn lượt FLASH tự động thứ hai chồng lên lượt đang chạy — xem <see cref="NhipLichFlashAsync"/>.</summary>
     private bool _dangChayFlashTuDong;
 
-    /// <summary>Tài khoản → NGÀY đã ghi dòng "không phải chủ trì" của vòng FLASH. Map RIÊNG với hai vòng kia:
-    /// dùng chung thì dòng của vòng KM lúc 2h sáng nuốt mất dòng của vòng flash lúc 21h CÙNG NGÀY, và người
-    /// dùng không bao giờ biết flash cũng đang đứng ngoài.</summary>
-    private readonly Dictionary<long, DateTime> _daBaoChuTriFlash = new();
-
     /// <summary>
     /// <b>Một nhịp của LỊCH FLASH SALE TỰ ĐỘNG</b> (gọi từ CÙNG đồng hồ 60 giây với hai nhịp kia, nối đuôi
     /// trong <c>ChayNhipLichKmAsync</c>). Cấu trúc song song với <see cref="NhipLichComboAsync"/> — cùng ba
@@ -1051,8 +1036,6 @@ public partial class AccountsViewModel
 
         DoiNgayThiDemLaiGoiFlash(bayGio);
 
-        var mayNay = _services.MayNay?.Invoke() ?? "";
-
         foreach (var acc in _services.Accounts.GetAll())
         {
             var cf = _services.KmConfig.Get(acc.Id);
@@ -1062,14 +1045,6 @@ public partial class AccountsViewModel
             if (SoGoiFlashDaMoTrongNgay(acc.Id) >= KmLichTuDong.TranGoiThuMoiNgayFlash) { continue; }
 
             var ngayDich = KmLichTuDong.NgayDichFlash(bayGio);
-
-            if (!KmLichTuDong.LaMayChuTri(cf.OwnerMachine, mayNay))
-            {
-                // KHÔNG ghi mốc thử: lượt ấy không phải của mình — ghi vào là ĐỐT lượt của đúng máy chủ trì,
-                // và với vòng flash thì máy đó mất trắng NGÀY MAI chứ không phải "chờ chu kỳ sau".
-                BaoKhongPhaiChuTriFlash(acc.Id, acc.Email, cf.OwnerMachine, bayGio);
-                continue;
-            }
 
             // ══ CỬA SỔ BRAVE ĐANG ĐỂ LẠI ⇒ VỀ ÊM ══
             // `CuaSoXemDangMo` = một lượt "Mở list shop" còn để cửa sổ cho người dùng thao tác tay, và hồ sơ
@@ -1248,30 +1223,8 @@ public partial class AccountsViewModel
             + "lần. ĐÂY KHÔNG PHẢI LỖI.");
     }
 
-    /// <summary>Ghi MỘT dòng nhật ký "lượt flash tự động là của máy khác" cho mỗi tài khoản mỗi NGÀY — cùng lý
-    /// do chống spam với <see cref="BaoKhongPhaiChuTri"/> (cửa chủ trì cố ý không ghi mốc thử, nên
-    /// <c>DenGioChay</c> còn trả <c>true</c> suốt khung 3 tiếng = 180 nhịp).</summary>
-    private void BaoKhongPhaiChuTriFlash(long accountId, string email, string ownerMachine, DateTime bayGio)
-    {
-        if (_daBaoChuTriFlash.TryGetValue(accountId, out var ngayDaBao) && ngayDaBao == bayGio.Date)
-        {
-            return;
-        }
-        _daBaoChuTriFlash[accountId] = bayGio.Date;
-        var nhan = KmLichTuDong.NhanMay(ownerMachine, _services.TenMay?.Invoke(ownerMachine ?? ""));
-        _services.Log.Append(email,
-            $"Lịch Flash Sale tự động: tới hạn nhưng MÁY CHỦ TRÌ là \"{nhan}\", không phải máy này — bỏ qua, "
-            + "không đốt lượt thử của đêm nay. Muốn máy này chủ trì thì mở form 'KM của Shop' ở đây rồi bấm nút "
-            + "\"Máy này nhận chủ trì\", sau đó bấm \"Đóng\" (nút đó chỉ có hiệu lực khi đóng form).");
-    }
-
     /// <summary>Cờ chặn lượt COMBO tự động thứ hai chồng lên lượt đang chạy — xem <see cref="NhipLichComboAsync"/>.</summary>
     private bool _dangChayComboTuDong;
-
-    /// <summary>Tài khoản → NGÀY đã ghi dòng "không phải chủ trì" của vòng COMBO. Riêng với
-    /// <see cref="_daBaoChuTri"/>: dùng chung một map thì dòng của vòng KM lúc 2h sáng nuốt mất dòng của vòng
-    /// combo lúc 6h cùng ngày, và người dùng không bao giờ biết combo cũng đang đứng ngoài.</summary>
-    private readonly Dictionary<long, DateTime> _daBaoChuTriCombo = new();
 
     /// <summary>
     /// <b>Một nhịp của LỊCH COMBO TỰ ĐỘNG</b> (gọi từ cùng đồng hồ 60 giây với <see cref="NhipLichKmAsync"/>).
@@ -1290,19 +1243,10 @@ public partial class AccountsViewModel
         MocNhipDaNhanChoTest?.Invoke("Combo", bayGio);
         if (_dangChayComboTuDong || _dangChayKmTuDong || _bridgeRunning) { return; }
 
-        var mayNay = _services.MayNay?.Invoke() ?? "";
-
         foreach (var acc in _services.Accounts.GetAll())
         {
             var cf = _services.KmConfig.Get(acc.Id);
             if (!KmLichTuDong.DenGioChay(cf, bayGio, LoaiChuongTrinh.Combo)) { continue; }
-
-            if (!KmLichTuDong.LaMayChuTri(cf.OwnerMachine, mayNay))
-            {
-                // KHÔNG ghi mốc thử: lượt ấy không phải của mình — ghi vào là ĐỐT lượt của đúng máy chủ trì.
-                BaoKhongPhaiChuTriCombo(acc.Id, acc.Email, cf.OwnerMachine, bayGio);
-                continue;
-            }
 
             // MỘT GÓI, MỘT NGUỒN — mọi thứ dưới đây (luật kiểm, dòng nhật ký, gói gửi xuống ext) đọc từ chính
             // `thamSo`. Xem xmldoc của `DungThamSoCombo`.
@@ -1410,23 +1354,6 @@ public partial class AccountsViewModel
             cf.PhanTram);
     }
 
-    /// <summary>Ghi MỘT dòng nhật ký "lượt combo tự động là của máy khác" cho mỗi tài khoản mỗi NGÀY — cùng lý
-    /// do chống spam với <see cref="BaoKhongPhaiChuTri"/> (cửa chủ trì cố ý không ghi mốc thử, nên
-    /// <c>DenGioChay</c> còn trả true suốt khung).</summary>
-    private void BaoKhongPhaiChuTriCombo(long accountId, string email, string ownerMachine, DateTime bayGio)
-    {
-        if (_daBaoChuTriCombo.TryGetValue(accountId, out var ngayDaBao) && ngayDaBao == bayGio.Date)
-        {
-            return;
-        }
-        _daBaoChuTriCombo[accountId] = bayGio.Date;
-        var nhan = KmLichTuDong.NhanMay(ownerMachine, _services.TenMay?.Invoke(ownerMachine ?? ""));
-        _services.Log.Append(email,
-            $"Lịch Combo tự động: tới hạn nhưng MÁY CHỦ TRÌ là \"{nhan}\", không phải máy này — bỏ qua, "
-            + "không đốt lượt thử của đêm nay. Muốn máy này chủ trì thì mở form 'KM của Shop' ở đây rồi bấm nút "
-            + "\"Máy này nhận chủ trì\", sau đó bấm \"Đóng\" (nút đó chỉ có hiệu lực khi đóng form).");
-    }
-
     /// <summary>
     /// <b>Hiện các nút CHẨN ĐOÁN (dò DOM) hay không.</b> Mặc định ẨN — chúng không phải tính năng cho người
     /// dùng, và một nút "Dò DOM KM" bấm nhầm sẽ tạo một chương trình khuyến mãi THẬT.
@@ -1456,32 +1383,6 @@ public partial class AccountsViewModel
     internal static bool DocCoDev(string? giaTri) => giaTri is "1" or "true" or "TRUE";
 
     /// <summary>
-    /// Ghi MỘT dòng nhật ký "lượt tự động là của máy khác" cho mỗi tài khoản mỗi NGÀY.
-    /// <para>Nhịp lịch chạy mỗi 60 giây và cửa chủ trì cố ý KHÔNG ghi <c>LanThuTuDong</c>, nên
-    /// <c>DenGioChay</c> còn trả <c>true</c> suốt khung 2–6h ⇒ không chặn thì đúng một dòng này lặp 240 lần
-    /// mỗi đêm. Nhật ký spam thì người dùng thôi đọc, tức là mất luôn tác dụng của chính dòng log.</para>
-    /// <para><b>Câu chữ phải khớp HÀNH VI THẬT</b> (phản biện vòng 3): bản vòng 2 bảo người dùng "mở form và
-    /// lưu lại", nhưng cùng vòng đó <c>BanLuuSauForm</c> lại trả <c>null</c> khi không có gì đổi ⇒ làm đúng lời
-    /// khuyên thì KHÔNG có gì xảy ra, và một máy chủ trì đã nghỉ hưu (cài lại Windows ⇒ đổi id) khoá chết KM
-    /// trên cả fleet. Nay chỉ đúng nút "Máy này nhận chủ trì" — nút có thật, xem
-    /// <c>KmDialogViewModel.NhanChuTri</c>.</para>
-    /// </summary>
-    private void BaoKhongPhaiChuTri(long accountId, string email, string ownerMachine, DateTime bayGio)
-    {
-        if (_daBaoChuTri.TryGetValue(accountId, out var ngayDaBao) && ngayDaBao == bayGio.Date)
-        {
-            return;
-        }
-        _daBaoChuTri[accountId] = bayGio.Date;
-        // TÊN máy + id ngắn, không phải GUID thô (X6): người đọc phải nhận ra ngay đó là máy nào trong nhà.
-        var nhan = KmLichTuDong.NhanMay(ownerMachine, _services.TenMay?.Invoke(ownerMachine ?? ""));
-        _services.Log.Append(email,
-            $"Lịch KM tự động: tới hạn nhưng MÁY CHỦ TRÌ là \"{nhan}\", không phải máy này — bỏ qua, "
-            + "không đốt lượt thử của đêm nay. Muốn máy này chủ trì thì mở form 'KM của Shop' ở đây rồi bấm nút "
-            + "\"Máy này nhận chủ trì\", sau đó bấm \"Đóng\" (nút đó chỉ có hiệu lực khi đóng form).");
-    }
-
-    /// <summary>
     /// Dựng ViewModel của form "KM của Shop" — <b>tách khỏi <see cref="MoFormKm"/> để CHỖ NỐI hook
     /// <c>MayNay</c> ⇄ form đo được bằng test</b> (đường thật đi qua <c>DialogService.ShowKm</c>, một modal WPF
     /// không dựng headless được).
@@ -1493,9 +1394,6 @@ public partial class AccountsViewModel
     internal KmDialogViewModel DungFormKm(long accountId, string email, int soShop)
         => new(accountId, email, soShop, _services.KmConfig.Get(accountId),
             _services.MayNay?.Invoke() ?? "", _services.TenMay);
-
-    /// <summary>Tài khoản → NGÀY đã ghi dòng "không phải chủ trì" (xem <see cref="BaoKhongPhaiChuTri"/>).</summary>
-    private readonly Dictionary<long, DateTime> _daBaoChuTri = new();
 
     /// <summary>Cờ chặn lượt KM tự động thứ hai chồng lên lượt đang chạy — xem <see cref="NhipLichKmAsync"/>.</summary>
     private bool _dangChayKmTuDong;

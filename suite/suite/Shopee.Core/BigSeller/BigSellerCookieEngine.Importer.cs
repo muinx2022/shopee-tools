@@ -1,4 +1,4 @@
-using Shopee.Core.Cdp;
+﻿using Shopee.Core.Cdp;
 
 namespace Shopee.Core.BigSeller;
 
@@ -194,6 +194,12 @@ public static partial class BigSellerCookieEngine
         {
             var cookies = await GetBigSellerCookiesAsync(cdpPort, ct).ConfigureAwait(false);
             if (!HasAuthCookie(cookies)) return;   // token không sống → đừng ghi đè file bằng rác
+            var browserMuc = cookies.FirstOrDefault(x => string.Equals(x.GetValueOrDefault("name") as string, AuthCookieName, StringComparison.OrdinalIgnoreCase))?.GetValueOrDefault("value") as string;
+            if (GetFileAuthTokenInfo(cookieFile) is { } fileTok && GetJwtUserId(fileTok.Value) is { } fileUid && GetJwtUserId(browserMuc) is { } browserUid && fileUid != browserUid)
+            {
+                log?.Invoke($"BigSeller cookie: chặn ghi ngược vì muc_token trong browser thuộc uid={browserUid} ≠ file uid={fileUid}.");
+                return;
+            }
             TryWriteCookieFile(cookieFile, cookies, log);
         }
         catch { /* best-effort */ }

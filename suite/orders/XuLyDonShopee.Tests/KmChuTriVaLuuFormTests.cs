@@ -91,12 +91,11 @@ public class KmChuTriVaLuuFormTests
         Assert.False(KmLichTuDong.LaMayChuTri(MayKhac, null));
     }
 
-    // ══════════════════════════ Nhịp lịch: cửa chủ trì ══════════════════════════
+    // ══════════════════════════ Nhịp lịch: chạy độc lập trên từng client ══════════════════════════
 
     /// <summary>
-    /// <b>Máy khác chủ trì ⇒ KHÔNG chạy và KHÔNG ghi <c>LanThuTuDong</c>.</b> Vế "không ghi" quan trọng ngang
-    /// vế "không chạy": mốc đó là "tài khoản này đã dùng lượt thử của khung đêm nay" và nó là mốc CHUNG xuyên
-    /// máy — ghi vào là đốt lượt của đúng máy chủ trì, nó mất trắng đêm đó.
+    /// <b>Hồ sơ ghi <c>OwnerMachine</c> là máy khác ⇒ vẫn CHẠY và ghi <c>LanThuTuDong</c>.</b>
+    /// Mỗi client nay chạy độc lập, không còn bị chặn bởi <c>OwnerMachine</c> của máy khác.
     /// </summary>
     [StaFact]
     public async Task MayKhacChuTri_ThiKhongChay_VaKhongGhiMocThu()
@@ -107,12 +106,9 @@ public class KmChuTriVaLuuFormTests
 
         await vm.NhipLichKmAsync(TrongKhung);
 
-        Assert.Null(services.KmConfig.Get(id).LanThuTuDong);
-
-        // (W12) Assert TRỰC TIẾP là lượt KM KHÔNG vào thân — vế "mốc thử còn null" ở trên chỉ suy ra gián tiếp
-        // từ thứ tự các câu lệnh trong impl, nên một bản "vẫn chạy nhưng quên ghi mốc" cũng làm nó xanh.
-        Assert.Equal(0, _soLanXinKhoa);
-        Assert.DoesNotContain(services.Log.Snapshot("km-chutri-khac@mail.com"),
+        Assert.Equal(TrongKhung, services.KmConfig.Get(id).LanThuTuDong);
+        Assert.Equal(1, _soLanXinKhoa);
+        Assert.Contains(services.Log.Snapshot("km-chutri-khac@mail.com"),
             e => e.Message.Contains("bắt đầu lượt KM"));
     }
 
@@ -160,16 +156,7 @@ public class KmChuTriVaLuuFormTests
     }
 
     /// <summary>
-    /// Hồ sơ ghi MỘT MÁY KHÁC chủ trì, còn máy này không biết mình là ai (hook <c>MayNay</c> null: chưa cấu hình
-    /// hub, vừa bấm NGẮT ở Cài đặt, hoặc đang trong cửa sổ <c>Reconnect()</c>) ⇒ <b>KHÔNG chạy</b>, và
-    /// <b>KHÔNG đốt <c>LanThuTuDong</c></b> — lượt của đêm nay là của máy chủ trì thật.
-    /// <para><b>Khẳng định này vừa bị LẬT (22/08/2026)</b>, và bản cũ chính là con bug: nó assert rằng máy không
-    /// hub vẫn chạy "y hành vi hiện tại, KỂ CẢ khi hồ sơ ghi một máy chủ trì khác". Hậu quả thật: bấm NGẮT hub ở
-    /// Cài đặt (một cú, không cần khởi động lại) là 2h sáng máy này chạy trọn lượt KM của tài khoản máy A đang
-    /// chủ trì — hai máy cùng TẠO CHƯƠNG TRÌNH KHUYẾN MÃI THẬT trên cùng tập shop, rồi mốc thử chung bị đốt nên
-    /// máy A mất luôn lượt của đêm đó.</para>
-    /// <para>Ca "máy một mình, không hub" KHÔNG bị ảnh hưởng: ở đó chẳng ai đóng dấu chủ trì nên
-    /// <c>owner_machine</c> rỗng, và <c>LaMayChuTri("", …)</c> vẫn trả <c>true</c> — xem test ngay trên.</para>
+    /// Hồ sơ ghi MỘT MÁY KHÁC chủ trì, còn máy này không có hook <c>MayNay</c> ⇒ vẫn chạy độc lập bình thường.
     /// </summary>
     [StaFact]
     public async Task KhongBietMinhLaAi_MaHoSoGhiMayKhac_ThiKhongChay()
@@ -180,14 +167,11 @@ public class KmChuTriVaLuuFormTests
 
         await vm.NhipLichKmAsync(TrongKhung);
 
-        Assert.Null(services.KmConfig.Get(id).LanThuTuDong);
+        Assert.Equal(TrongKhung, services.KmConfig.Get(id).LanThuTuDong);
     }
 
     /// <summary>
-    /// Dòng nhật ký "máy khác chủ trì" ghi ĐÚNG MỘT LẦN mỗi tài khoản mỗi đêm.
-    /// <para>Cửa chủ trì cố ý không ghi <c>LanThuTuDong</c>, nên <c>DenGioChay</c> còn trả true suốt khung
-    /// 2–6h ⇒ nhịp 60 giây đi qua ~240 lần. Không chặn thì đúng một dòng này lặp 240 lần mỗi đêm, và nhật ký
-    /// spam thì người dùng thôi đọc — mất luôn tác dụng của chính dòng log.</para>
+    /// Khi <c>OwnerMachine</c> là máy khác, nhịp KM chạy bình thường và KHÔNG ghi dòng "MÁY CHỦ TRÌ".
     /// </summary>
     [StaFact]
     public async Task MayKhacChuTri_ChiGhiMotDongLogMoiDem()
@@ -202,20 +186,8 @@ public class KmChuTriVaLuuFormTests
 
         var dong = services.Log.Snapshot("km-chutri-log@mail.com")
             .Where(e => e.Message.Contains("MÁY CHỦ TRÌ")).ToList();
-        Assert.Single(dong);
-        // Máy chủ trì hiện bằng NHÃN (tên + id NGẮN), không phải id thô — X6, vòng 4.
-        Assert.Contains(KmLichTuDong.NhanMay(MayKhac, null), dong[0].Message);
-        Assert.DoesNotContain(MayKhac, dong[0].Message);
-
-        // (W4) Câu log phải nêu ĐÚNG thao tác có thật. Vòng 2 bảo "mở form và lưu lại" — làm đúng vậy thì
-        // `BanLuuSauForm` trả null và KHÔNG có gì xảy ra; nay chỉ đúng nút "Máy này nhận chủ trì".
-        Assert.Contains("Máy này nhận chủ trì", dong[0].Message);
-        Assert.DoesNotContain("và lưu lại", dong[0].Message);
-
-        // Đêm SAU thì được nói lại — cùng một tài khoản, khung khác.
-        await vm.NhipLichKmAsync(TrongKhung.AddDays(1));
-        Assert.Equal(2, services.Log.Snapshot("km-chutri-log@mail.com")
-            .Count(e => e.Message.Contains("MÁY CHỦ TRÌ")));
+        Assert.Empty(dong);
+        Assert.Equal(TrongKhung, services.KmConfig.Get(id).LanThuTuDong);
     }
 
     // ══════════════════════════ Đường LƯU FORM (V5 + V6) ══════════════════════════

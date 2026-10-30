@@ -801,8 +801,7 @@ public static partial class OrdersModuleHost
            + "(thường gặp ngay sau lượt nâng cấp, khi mọi máy được đóng dấu cùng một mốc). Đã chọn bản thắng "
            + "theo thứ tự cố định: lịch đang BẬT thắng lịch đang tắt, rồi tới máy chủ trì có id nhỏ hơn. Muốn "
            + "chốt bản của máy nào thì sang máy đó mở form 'KM của Shop', SỬA LẠI thông số cho đúng ý rồi bấm "
-           + "\"Đóng\" — form chỉ ghi khi có thay đổi thật, mở ra xem rồi đóng thì không đóng dấu gì. Chỉ muốn "
-           + "giành quyền chủ trì mà không đổi thông số thì bấm nút \"Máy này nhận chủ trì\" rồi \"Đóng\".";
+           + "\"Đóng\" — form chỉ ghi khi có thay đổi thật, mở ra xem rồi đóng thì không đóng dấu gì.";
 
     /// <summary>
     /// (THUẦN) Gộp hồ sơ hub vào một bản <c>km_config</c> cục bộ — CỬA ĐỔI MÚI GIỜ chiều KÉO: mốc trên dây là

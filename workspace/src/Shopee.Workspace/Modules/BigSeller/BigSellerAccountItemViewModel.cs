@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Shopee.Core.BigSeller;
 using Shopee.Workspace.Services;
@@ -172,7 +172,10 @@ public sealed class BigSellerAccountItemViewModel : ObservableObject
 
         // Danh sách mong muốn = sheet trong workbook + sheet đang gán cho các shop (để combo
         // SelectedItem luôn khớp, không bị reset null).
-        var desired = WorkbookSheets.ListSheetNames(Model.WorkbookPath);
+        var wbPath = SharedWorkbookStore.HasSharedSource && !string.IsNullOrWhiteSpace(SharedWorkbookStore.ActiveSourcePath)
+            ? SharedWorkbookStore.ActiveSourcePath
+            : Model.WorkbookPath;
+        var desired = WorkbookSheets.ListSheetNames(wbPath);
         MergeShopSheets(desired);
         ApplySheetOptions(desired);
     }
@@ -181,24 +184,6 @@ public sealed class BigSellerAccountItemViewModel : ObservableObject
     // sheet đang gán cho shop). Cập nhật collection trên UI thread (SheetOptions bind trực tiếp vào combo).
     private Task RefreshSheetsFromHubAsync() => Task.CompletedTask;
     /* Hub sheet refresh bị gỡ - app local chỉ dùng workbook */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     /// <summary>Bổ sung sheet đang gán cho các shop (để combo SelectedItem luôn khớp, không bị reset null).</summary>
     private void MergeShopSheets(List<string> desired)

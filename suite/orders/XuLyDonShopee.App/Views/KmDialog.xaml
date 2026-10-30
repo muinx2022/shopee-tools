@@ -49,7 +49,7 @@
                 </StackPanel>
             </Button>
             <Button x:Name="DongButton" Margin="8,0,0,0" Click="OnDong"
-                    ToolTip="Đóng form. Thay đổi bạn vừa sửa được lưu nếu HỢP LỆ; mở ra XEM mà không sửa gì thì KHÔNG ghi gì (cấu hình lẫn máy chủ trì đều giữ nguyên); dữ liệu còn sai thì giữ nguyên cấu hình cũ.">
+                    ToolTip="Đóng form. Thay đổi bạn vừa sửa được lưu nếu HỢP LỆ; mở ra XEM mà không sửa gì thì KHÔNG ghi gì; dữ liệu còn sai thì giữ nguyên cấu hình cũ.">
                 <StackPanel Orientation="Horizontal">
                     <c:PathIcon Data="{DynamicResource IconClose}" />
                     <TextBlock Text="Đóng" Style="{StaticResource btnLabel}" />
@@ -57,7 +57,7 @@
             </Button>
         </StackPanel>
 
-        <!-- Bố cục (26/08/2026): VÙNG CHUNG ở trên (máy chủ trì + chu kỳ dùng chung) → dải TAB một tab cho mỗi
+        <!-- Bố cục (26/08/2026): VÙNG CHUNG ở trên (chu kỳ dùng chung) → dải TAB một tab cho mỗi
              loại chương trình → khung lỗi + dòng tổng kết ở dưới. Lỗi và tổng kết nằm NGOÀI tab có chủ đích:
              chúng nói về cả form, để trong tab thì đổi tab một cái là câu cảnh báo biến mất. -->
         <Grid>
@@ -69,53 +69,28 @@
             </Grid.RowDefinitions>
 
             <!-- ══════════ VÙNG CHUNG — thứ dùng chung cho CẢ BA vòng, nên phải nằm NGOÀI tab ══════════ -->
-            <Grid Grid.Row="0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
-
-                <!-- MÁY CHỦ TRÌ + nút nhận quyền. Trước bản này form không lộ chủ trì, nên một máy chủ trì đã
-                     nghỉ hưu (cài lại Windows ⇒ đổi id) là KM chết vĩnh viễn trên cả fleet mà không thao tác
-                     nào trong app gỡ được — xem KmDialogViewModel.DaBamNhanChuTri. Chủ trì là của TÀI KHOẢN,
-                     không của riêng vòng nào ⇒ vùng chung. -->
-                <Border x:Name="ChuTriBox" Grid.Column="0" Padding="10,7" CornerRadius="5"
-                        Background="{StaticResource CardBg}"
-                        BorderBrush="{StaticResource BorderSoft}" BorderThickness="1">
-                    <StackPanel>
-                        <TextBlock x:Name="ChuTriText" Text="{Binding MoTaChuTri}" FontSize="12"
-                                   TextWrapping="Wrap" Foreground="{StaticResource TextMuted}" />
-                        <Button x:Name="NhanChuTriButton" Margin="0,8,0,0" HorizontalAlignment="Left"
-                                Command="{Binding NhanChuTriCommand}" IsEnabled="{Binding CoTheNhanChuTri}"
-                                ToolTip="Đóng dấu MÁY NÀY là máy chủ trì lịch KM của tài khoản này. Chỉ máy chủ trì mới chạy lượt KM tự động 2-6h sáng; các máy khác đứng ngoài. Có hiệu lực khi đóng form.">
-                            <TextBlock Text="Máy này nhận chủ trì" Style="{StaticResource btnLabel}" />
-                        </Button>
-                    </StackPanel>
-                </Border>
-
-                <!-- CHU KỲ "sau xx ngày" — MỘT ô cho CẢ BA vòng (không phải của riêng tab đang mở), nên nó ở
-                     đây chứ không nằm cạnh ô "Chạy tự động" như bản một-tab.
-                     ⚠ Điều kiện mở KHÔNG còn là `ChoNhapSoNgay` (chỉ theo `TuDong` của Chương Trình Của Shop):
-                     bật riêng vòng combo mà ô này mờ thì không còn đường nào chỉnh nhịp của nó. -->
-                <Border x:Name="ChuKyBox" Grid.Column="1" Margin="12,0,0,0" Padding="10,7" CornerRadius="5"
-                        Background="{StaticResource CardBg}"
-                        BorderBrush="{StaticResource BorderSoft}" BorderThickness="1">
-                    <StackPanel>
-                        <StackPanel x:Name="ChuKyRow" Orientation="Horizontal"
-                                    IsEnabled="{Binding ChoNhapChuKyChung}">
-                            <TextBlock Text="Sau" VerticalAlignment="Center" FontSize="12"
-                                       Foreground="{StaticResource TextMuted}" />
-                            <TextBox x:Name="SoNgayBox" Width="56" Margin="8,0,0,0"
-                                     Text="{Binding SoNgay, UpdateSourceTrigger=PropertyChanged}" />
-                            <TextBlock Text="ngày" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12"
-                                       Foreground="{StaticResource TextMuted}" />
-                        </StackPanel>
-                        <TextBlock Text="Chu kỳ DÙNG CHUNG cho cả ba vòng — không phải của riêng tab đang mở."
-                                   FontSize="11" Margin="0,4,0,0" MaxWidth="240" TextWrapping="Wrap"
+            <!-- CHU KỲ "sau xx ngày" — MỘT ô cho CẢ BA vòng (không phải của riêng tab đang mở), nên nó ở
+                 đây chứ không nằm cạnh ô "Chạy tự động" như bản một-tab.
+                 ⚠ Điều kiện mở KHÔNG còn là `ChoNhapSoNgay` (chỉ theo `TuDong` của Chương Trình Của Shop):
+                 bật riêng vòng combo mà ô này mờ thì không còn đường nào chỉnh nhịp của nó. -->
+            <Border x:Name="ChuKyBox" Grid.Row="0" Padding="10,7" CornerRadius="5"
+                    Background="{StaticResource CardBg}"
+                    BorderBrush="{StaticResource BorderSoft}" BorderThickness="1">
+                <StackPanel>
+                    <StackPanel x:Name="ChuKyRow" Orientation="Horizontal"
+                                IsEnabled="{Binding ChoNhapChuKyChung}">
+                        <TextBlock Text="Sau" VerticalAlignment="Center" FontSize="12"
+                                   Foreground="{StaticResource TextMuted}" />
+                        <TextBox x:Name="SoNgayBox" Width="56" Margin="8,0,0,0"
+                                 Text="{Binding SoNgay, UpdateSourceTrigger=PropertyChanged}" />
+                        <TextBlock Text="ngày" VerticalAlignment="Center" Margin="8,0,0,0" FontSize="12"
                                    Foreground="{StaticResource TextMuted}" />
                     </StackPanel>
-                </Border>
-            </Grid>
+                    <TextBlock Text="Chu kỳ DÙNG CHUNG cho cả ba vòng — không phải của riêng tab đang mở."
+                               FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"
+                               Foreground="{StaticResource TextMuted}" />
+                </StackPanel>
+            </Border>
 
             <!-- ══════════ MỘT TAB CHO MỖI LOẠI CHƯƠNG TRÌNH ══════════ -->
             <!-- ⚠ BẪY WPF: TabControl KHÔNG dựng nội dung của tab CHƯA CHỌN vào cây trực quan. Test nào đi bộ

@@ -13,6 +13,7 @@ internal sealed partial class BigSellerProductUpdateRunner
     private const string ListingRows = "tr.product_native_row, tr.vxe-body--row, tbody.ant-table-tbody tr";
     private const string ListingEditButton = "a.action_btn.addEditProduct";   // (vxe + bảng Vue mới vẫn giữ class này)
     private const string ListingReadySelector = "tr.product_native_row, tr.vxe-body--row, tbody.ant-table-tbody tr, a.action_btn.addEditProduct, .ant-empty, .ant-table-placeholder, .vxe-table--empty-block, .vxe-table--empty-placeholder";
+    private const string ListingRowShopTag = "div.card_shop span.tag";   // tên gian hàng của dòng draft ("Sully Store")
     private const string ListingRowKeyAttr = "rowid";   // vxe: <tr rowid="..."> (cũ: data-row-key; bảng Vue mới KHÔNG có → fallback hash ảnh, xem DraftRowKeyAsync)
     private const string DeleteBtn1 = "a.action_btn[title='Xóa'], a.action_btn[title='Delete']";
     private const string DeleteBtn2 = "a[title='Xóa'], a[title='Delete']";

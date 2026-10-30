@@ -146,6 +146,19 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         ScrapeProgressStore.Shared.Changed += OnProgressStoresChanged;
         OpProgressStore.Shared.Changed += OnProgressStoresChanged;
 
+        // Tự động đồng bộ tiến độ giữa 2 tiến trình ShopeeScrape và ShopeeUpdate chạy song song trên cùng máy
+        // (ReloadIfExternalChange chỉ đọc timestamp file, rất nhẹ; chỉ nạp lại khi file thực sự đổi trên đĩa).
+        var externalSyncTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(4)
+        };
+        externalSyncTimer.Tick += (_, _) =>
+        {
+            ScrapeProgressStore.Shared.ReloadIfExternalChange();
+            OpProgressStore.Shared.ReloadIfExternalChange();
+        };
+        externalSyncTimer.Start();
+
         // Hub hủy/bỏ-hẳn 1 việc → client phải BỎ khỏi "việc dở" + Clear tiến độ local. Fleet cập nhật theo nhịp
         // poll 12s của Hub (bắn Changed) → hook cùng event fleet như WorkspaceAccountViewModel để RecomputeResume-
         // Pending chạy lại kịp thời (không phải đợi 2 store đổi). VM này sống suốt vòng đời app → KHÔNG cần gỡ handler.
@@ -702,8 +715,12 @@ public sealed partial class WorkspaceViewModel : ObservableObject
             finally { _recomputing = false; }
         }
         foreach (var account in Accounts)
+        {
+            account.ScrapeTarget.RefreshProgress();
             foreach (var shop in account.Shops)
-                shop.RefreshFleet();
+                shop.RefreshStatus();
+            account.RefreshProgressSummary();
+        }
     }
 
     /// <summary>Nút "⏯ Tiếp tục việc dở (N)": chạy lại TẤT CẢ mục còn dở qua đúng entry-point silent (fire-and-

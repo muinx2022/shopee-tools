@@ -23,6 +23,12 @@ internal sealed partial class BigSellerProductUpdateRunner
                 return await BigSellerSaveSuccessHelper.ConfirmSavedThenCloseAsync(page, _context!, 5000, _log, DelayAsync, onSaved, ct);
             try
             {
+                if (attempt > 0)
+                {
+                    await DismissBlockingModalAsync(page);
+                    await CloseVisibleAntModalAsync(page, 2000);
+                }
+
                 if (hasImage && !await IsImageUploadedAsync(page))
                 {
                     if (!await UploadImageWithRetryAsync(page, imagePath!, 1, ct))
@@ -102,7 +108,24 @@ internal sealed partial class BigSellerProductUpdateRunner
                     }
                 }
 
-                if (await BigSellerSaveSuccessHelper.ConfirmSavedThenCloseAsync(page, _context!, 60000, _log, DelayAsync, onSaved, ct)) return true;
+                string? publishFailReason = null;
+                if (await BigSellerSaveSuccessHelper.ConfirmSavedThenCloseAsync(
+                    page, _context!, 60000, _log, DelayAsync, onSaved, ct,
+                    onPublishFailure: r => publishFailReason = r))
+                {
+                    return true;
+                }
+
+                var fatalModal = publishFailReason ?? await BigSellerSaveSuccessHelper.TryDetectPublishFailureDialogAsync(page);
+                if (BigSellerSaveSuccessHelper.IsListingLimitFailure(fatalModal))
+                {
+                    _listingLimitDetected = true;
+                    _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — DỪNG update toàn bộ shop này ngay.");
+                    _targetTracker?.MarkListingLimitReached();
+                    return false;
+                }
+                await DismissBlockingModalAsync(page);
+                await CloseVisibleAntModalAsync(page, 2000);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { _log($"  ↳ Lưu attempt {attempt + 1} lỗi: {ex.Message}"); }

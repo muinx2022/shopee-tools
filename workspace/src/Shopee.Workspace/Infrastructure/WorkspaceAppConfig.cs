@@ -60,6 +60,12 @@ public static class WorkspaceAppConfig
     public static bool ShowImportUpdate => Role is WorkspaceRole.Full or WorkspaceRole.ImportUpdate;
     public static bool IsScrapeOnly => Role == WorkspaceRole.Scrape;
     public static bool IsImportUpdateOnly => Role == WorkspaceRole.ImportUpdate;
+    public static string WindowIcon => Role switch
+    {
+        WorkspaceRole.Scrape => "pack://application:,,,/ShopeeWorkspace;component/Assets/scrape-icon.ico",
+        WorkspaceRole.ImportUpdate => "pack://application:,,,/ShopeeWorkspace;component/Assets/update-icon.ico",
+        _ => "pack://application:,,,/ShopeeWorkspace;component/Assets/app-icon.ico"
+    };
     public static string WindowTitle => Role switch
     {
         WorkspaceRole.Scrape => "Shopee Scrape",

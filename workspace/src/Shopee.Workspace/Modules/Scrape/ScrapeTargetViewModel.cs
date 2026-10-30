@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Windows.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Shopee.Core.BigSeller;
@@ -179,8 +179,8 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
 
     public string DisplayName => Account.DisplayName;
     public string CookieStatus => Account.HasCookie ? "✓ cookie" : "⚠ chưa cookie";
-    public string WorkbookPath => Account.WorkbookPath;
-    public string SheetName => SelectedShop?.ShopeeDataSheet ?? "";
+    public string WorkbookPath => SelectedShop is { } s ? SharedWorkbookStore.Resolve(Account, s).DataPath : Account.WorkbookPath;
+    public string SheetName => SelectedShop is { } s ? SharedWorkbookStore.Resolve(Account, s).DataSheet : "";
     public bool ShopChosen => SelectedShop is not null;
 
     /// <summary>Tóm tắt tiến độ đã lưu của (BigSeller + sheet) hiện chọn — cho nhãn ở panel chi tiết.</summary>
@@ -216,7 +216,8 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
     private ShopScrapeStatus BuildShopStatus(BigSellerShop shop)
     {
         var active = SharedWorkbookStore.IsActive;
-        var sheet = shop.ShopeeDataSheet ?? "";
+        var resolved = SharedWorkbookStore.Resolve(Account, shop);
+        var sheet = resolved.DataSheet ?? "";
         if (!active && string.IsNullOrWhiteSpace(sheet))
             return new ShopScrapeStatus
             {

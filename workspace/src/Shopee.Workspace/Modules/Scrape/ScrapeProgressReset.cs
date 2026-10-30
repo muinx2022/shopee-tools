@@ -33,7 +33,9 @@ internal static class ScrapeProgressReset
     {
         var account = BigSellerStore.Shared.Find(accountId);
         var shops = account?.Shops.Where(s =>
-            string.Equals(s.ShopeeDataSheet ?? "", sheet ?? "", StringComparison.OrdinalIgnoreCase)).ToList() ?? [];
+            string.Equals(s.ShopeeDataSheet ?? "", sheet ?? "", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(s.Name ?? "", sheet ?? "", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(SharedWorkbookStore.Resolve(account, s).ProgressKey, sheet ?? "", StringComparison.OrdinalIgnoreCase)).ToList() ?? [];
         if (shops.Count == 0)
         {
             ScrapeProgressStore.Shared.Clear(accountId, sheet ?? "");

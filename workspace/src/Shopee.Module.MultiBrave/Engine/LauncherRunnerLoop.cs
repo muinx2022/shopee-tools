@@ -276,7 +276,7 @@ internal static class LauncherRunnerLoop
                 // báo "No SW", KHÔNG click được nút scrape (chỉ tải video rồi sang dòng kế → "chạy mà không
                 // cào"). Ném lỗi extension để runner tự ĐÓNG/MỞ LẠI profile (dựng lại service worker) rồi chạy
                 // tiếp ĐÚNG dòng, thay vì im lặng "No SW" mọi dòng. (retryExtensionStart cap 4 lần chống lặp.)
-                if (!step.ScrapeOk && (step.Message?.Contains("No SW", StringComparison.OrdinalIgnoreCase) ?? false))
+                if (!step.ScrapeOk && ((step.Message?.Contains("No SW", StringComparison.OrdinalIgnoreCase) ?? false) || (step.Message?.Contains("Brave không lắng nghe", StringComparison.OrdinalIgnoreCase) ?? false) || (step.Message?.Contains("actively refused", StringComparison.OrdinalIgnoreCase) ?? false) || !await RunnerExtensionTargets.IsCdpPortReachableAsync(cdpPort, cancellationToken).ConfigureAwait(false)))
                     throw new InvalidOperationException(
                         $"Extension Shopee Data Runner mất kết nối CDP (No SW) tại dòng {rowNumber} — mở lại profile để dựng lại service worker.");
 
@@ -412,6 +412,8 @@ internal static class LauncherRunnerLoop
                     var errMsg = $"Lỗi quét video dòng {rowNumber}: {ex.Message}";
                     config.LastRunnerMessage = errMsg;
                     log(errMsg);
+                    if (!await RunnerExtensionTargets.IsCdpPortReachableAsync(cdpPort, cancellationToken).ConfigureAwait(false))
+                        throw new InvalidOperationException($"Extension Shopee Data Runner mất kết nối CDP tại dòng {rowNumber} ({ex.Message}) — mở lại profile.");
                 rowOutcomeOverlay = errMsg;
                     await TryShowOverlayAsync(
                         cdpPort, profileRoot, tabId, errMsg, cancellationToken)
@@ -649,6 +651,8 @@ internal static class LauncherRunnerLoop
             if (cancellationToken.IsCancellationRequested || DateTimeOffset.Now >= deadline)
                 break;
 
+            if (!await RunnerExtensionTargets.IsCdpPortReachableAsync(cdpPort, cancellationToken).ConfigureAwait(false))
+                throw new InvalidOperationException("Extension Shopee Data Runner mất kết nối CDP trong lúc chờ link kế — mở lại profile.");
             await PageCdpHelper.SimulateHumanBrowsingAsync(cdpPort, pageUrlHint, cancellationToken)
                 .ConfigureAwait(false);
         }

@@ -105,25 +105,31 @@ internal sealed class WorkbookRecordCache
 
 /// <summary>
 /// Theo dõi số lượng sản phẩm mục tiêu cần update của shop trong phiên chạy (dùng chung mọi lane, thread-safe).
-/// Khi số SP đã update đạt đủ <see cref="TargetCount"/>, các lane dừng ngay và bỏ qua các trang Hộp nháp còn lại.
+/// Khi số SP đã update đạt đủ <see cref="TargetCount"/> hoặc shop chạm giới hạn đăng SP trên Shopee (<see cref="IsListingLimitReached"/>),
+/// các lane dừng ngay và bỏ qua các trang Hộp nháp còn lại.
 /// </summary>
 internal sealed class UpdateTargetTracker
 {
     private readonly ConcurrentDictionary<string, byte> _completedIds = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, byte> _handledIds = new(StringComparer.Ordinal);
+    private readonly Action? _onListingLimitReached;
+    private volatile bool _listingLimitReached;
 
     public int TargetCount { get; }
     public int CompletedCount => _completedIds.Count;
     public int HandledCount => _handledIds.Count;
+    public bool IsListingLimitReached => _listingLimitReached;
     public bool IsAllCompleted => TargetCount > 0 && _completedIds.Count >= TargetCount;
     public bool IsAllHandled => TargetCount > 0 && _handledIds.Count >= TargetCount;
 
     public UpdateTargetTracker(
         IReadOnlyDictionary<string, WorkbookRecord> records,
         IReadOnlyDictionary<string, string?>? updateDone = null,
-        IReadOnlyDictionary<string, string?>? importDone = null)
+        IReadOnlyDictionary<string, string?>? importDone = null,
+        Action? onListingLimitReached = null)
     {
         TargetCount = records.Count;
+        _onListingLimitReached = onListingLimitReached;
 
         if (updateDone is { Count: > 0 })
         {
@@ -149,5 +155,12 @@ internal sealed class UpdateTargetTracker
     {
         if (string.IsNullOrEmpty(itemId)) return;
         _handledIds.TryAdd(itemId, 0);
+    }
+
+    public void MarkListingLimitReached()
+    {
+        if (_listingLimitReached) return;
+        _listingLimitReached = true;
+        try { _onListingLimitReached?.Invoke(); } catch { }
     }
 }

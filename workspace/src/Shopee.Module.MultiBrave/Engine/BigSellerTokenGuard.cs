@@ -5,8 +5,9 @@ namespace OpenMultiBraveLauncherV3;
 /// <summary>
 /// GIỮ TOKEN BigSeller (<c>muc_token</c>) SỐNG cho một instance: tự đăng nhập đầu phiên (mint token khớp IP
 /// proxy của Brave này), nạp cookie từ file CHỈ khi thật sự cần, và ghi ngược token server-vừa-xoay về file
-/// sau mỗi dòng cào xong. Toàn bộ quy tắc "khi nào được đè token" nằm ở đây — đè sai là mất phiên
-/// ("log in BigSeller first"), nên tách khỏi <see cref="BraveInstanceSession"/> để đọc/kiểm được một chỗ.
+/// sau mỗi dòng cào xong. Toàn bộ quy tắc "khi nào được đè token" đi qua <see cref="BigSellerCookieEngine.ShouldImportFromFile"/>
+/// (kiểm tra cả <c>uid</c> bên trong JWT để không bao giờ dùng nhầm phiên của tài khoản BigSeller khác trên
+/// profile Shopee dùng chung).
 /// </summary>
 internal sealed class BigSellerTokenGuard(
     int cdpPort,
@@ -48,25 +49,15 @@ internal sealed class BigSellerTokenGuard(
         BigSellerCookieEngine.HasAuthCookieInBrowserAsync(cdpPort);
 
     /// <summary>
-    /// GHI NGƯỢC token BigSeller server-VỪA-XOAY về FILE sau khi cào xong 1 dòng. Server xoay muc_token mỗi
-    /// lần dùng → token TĨNH trong file "ôi" dần; process khác rớt token mà nạp lại token ôi = đập server
-    /// bằng token chết → chuỗi auth-thất-bại dồn dập → BigSeller đá nguyên account. Lưu token MỚI NHẤT (từ
-    /// browser vừa cào THÀNH CÔNG nên chắc chắn còn sống) vào file → process khác nạp lại token HIỆN HÀNH →
-    /// tự hồi, không đập server. Best-effort: lỗi ghi không được làm hỏng vòng cào.
+    /// GHI NGƯỢC token BigSeller server-VỪA-XOAY về FILE sau khi cào xong 1 dòng. Đi qua
+    /// <see cref="BigSellerCookieEngine.WriteBackLiveTokenAsync"/> để kiểm tra <c>uid</c> khớp với file trước khi
+    /// ghi (tránh ghi đè nhầm token của tài khoản BigSeller khác).
     /// </summary>
-    public async Task WriteBackTokenAsync(CancellationToken cancellationToken)
+    public Task WriteBackTokenAsync(CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(_cookieFile) || !isRunning() || cancellationToken.IsCancellationRequested)
-            return;
-        try
-        {
-            var cookies = await BigSellerCookieEngine.GetBigSellerCookiesAsync(cdpPort).ConfigureAwait(false);
-            // Chỉ ghi khi token còn sống (có muc_token) — tránh ghi đè file bằng cookie rỗng/chết.
-            if (!BigSellerCookieEngine.HasAuthCookie(cookies))
-                return;
-            BigSellerCookieEngine.TryWriteCookieFile(_cookieFile, cookies, log);
-        }
-        catch { /* best-effort */ }
+            return Task.CompletedTask;
+        return BigSellerCookieEngine.WriteBackLiveTokenAsync(cdpPort, _cookieFile, log, cancellationToken);
     }
 
     /// <summary>Tk BigSeller của instance này (theo AccountId) đã nhập mật khẩu chưa — để quyết định có thử
@@ -108,36 +99,28 @@ internal sealed class BigSellerTokenGuard(
             return;
 
         // CHẨN ĐOÁN "token mất đi đâu": ghi token ĐANG có trong browser TRƯỚC khi import (để biết import
-        // có ghi đè token đang sống không, và token có hết hạn không).
+        // có ghi đè token đang sống không, uid nào đang giữ, và token có hết hạn không).
         var tokenBefore = await BigSellerCookieEngine.GetAuthCookieDebugAsync(cdpPort).ConfigureAwait(false);
         // Log RÕ tk BigSeller + file cookie đang nạp (để bắt nếu multi-BigSeller nạp nhầm file của tk khác).
         log($"BigSeller nạp cookie: tk=\"{config()?.BigSellerAccountName ?? "?"}\" file=\"{Path.GetFileName(_cookieFile)}\"");
         log($"BigSeller token (trước import): {tokenBefore}");
 
-        // ─── GIỮ TOKEN SỐNG — chống "log in first" sau vài vòng ──────────────────────────────────────
-        // Server BigSeller XOAY muc_token mỗi khi cào → profile bền của instance giữ token MỚI HƠN token
-        // TĨNH trong file. Trước đây hàm này LUÔN nhập đè token-file lên token-đang-sống ⇒ ép browser quay
-        // về token cũ ⇒ sau vài vòng server đã xoay qua từ lâu nên TỪ CHỐI ⇒ "log in BigSeller first"
-        // (xảy ra ở CẢ đi-IP-máy lẫn đi-proxy-instance vì lỗi nằm ở lệnh đè, không phải IP).
-        // Quy tắc mới (cùng tinh thần đường restart-extension ở trên): chỉ nhập từ file khi
-        //   • browser CHƯA có muc_token (seed lần đầu / profile mới), HOẶC
-        //   • token trong file MỚI HƠN browser theo hạn (tức user vừa ĐĂNG NHẬP LẠI → file cập nhật).
-        // Nếu token browser mới hơn/bằng hoặc TRÙNG giá trị file ⇒ GIỮ phiên server vừa cấp, KHÔNG đè.
+        // ─── GIỮ TOKEN SỐNG & KIỂM ĐÚNG TÀI KHOẢN BIGSELLER (uid) ─────────────────────────────────────
+        // Đi qua BigSellerCookieEngine.ShouldImportFromFile:
+        //   • Nếu muc_token trong browser thuộc tk BigSeller KHÁC (uid khác với file do dùng chung kho
+        //     profile Shopee) → BẮT BUỘC nạp đè cookie của tk hiện tại.
+        //   • Nếu cùng tk BigSeller và browser có token mới hơn/bằng file (server vừa xoay) → GIỮ phiên.
+        //   • Nếu file mới hơn (user vừa đăng nhập lại) hoặc browser chưa có token → nạp đè.
         var browserTok = await BigSellerCookieEngine.GetBrowserAuthTokenInfoAsync(cdpPort).ConfigureAwait(false);
-        if (browserTok is { } bt)
+        if (browserTok is not null)
         {
             var fileTok = BigSellerCookieEngine.GetFileAuthTokenInfo(_cookieFile);
-            var sameValue = fileTok is { } ft && string.Equals(ft.Value, bt.Value, StringComparison.Ordinal);
-            // File mới hơn khi: file CÓ hạn rõ VÀ (browser KHÔNG hạn — session cookie, thường do user vừa
-            // login lại → cần nạp token mới; HOẶC cả hai có hạn nhưng file trễ hơn). Cả hai có hạn mà browser
-            // ≥ file ⇒ server vừa xoay ⇒ GIỮ (đây là fix bug "login first sau vài vòng", KHÔNG được phá).
-            var fileNewer = fileTok is { Expires: { } fe } && (bt.Expires is not { } be || fe > be);
-            if (sameValue || !fileNewer)
+            if (!BigSellerCookieEngine.ShouldImportFromFile(browserTok, fileTok, out var reason))
             {
-                log("BigSeller: browser đã có muc_token sống (server vừa xoay) — GIỮ phiên, KHÔNG nạp đè token cũ từ file.");
+                log($"BigSeller: {reason}");
                 return;
             }
-            log("BigSeller: token trong file MỚI HƠN browser (có thể bạn vừa đăng nhập lại) → nạp đè để cập nhật.");
+            log($"BigSeller: {reason}");
         }
 
         // Nạp + XÁC NHẬN có muc_token; thử lại tối đa 3 lần (import lần đầu hay flaky do CDP/page chưa

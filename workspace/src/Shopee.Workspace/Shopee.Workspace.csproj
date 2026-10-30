@@ -39,6 +39,8 @@
 
   <ItemGroup>
     <Resource Include="..\..\assets\app-icon.ico" Link="Assets\app-icon.ico" />
+    <Resource Include="..\..\assets\scrape-icon.ico" Link="Assets\scrape-icon.ico" />
+    <Resource Include="..\..\assets\update-icon.ico" Link="Assets\update-icon.ico" />
   </ItemGroup>
 
   <ItemGroup>

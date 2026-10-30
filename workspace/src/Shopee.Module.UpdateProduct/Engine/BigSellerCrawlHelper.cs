@@ -268,15 +268,21 @@ internal static class BigSellerCrawlHelper
         string nextSelector = DefaultNextPageSelector,
         string? nowPageSelector = null, string? readySelector = null,
         Func<int, CancellationToken, Task>? delay = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default, Action<string>? onStaleTable = null)
     {
         Task Wait(int ms) => delay is not null ? delay(ms, ct) : Task.Delay(ms, ct);
         try
         {
-            // (Listing) đọc nhãn "X / Y" TRƯỚC để lát so sánh, xác nhận đã lật trang thật.
+            // (Listing) đọc nhãn "X / Y" + chữ ký các dòng hiện tại TRƯỚC khi bấm Next để lát đối chiếu,
+            // xác nhận bảng ĐÃ tải dữ liệu trang mới thật (tránh trường hợp rớt phiên BigSeller → nhãn số trang
+            // tự tăng phía client 2/199 → 199/199 nhưng XHR lỗi nên 50 dòng DOM cũ giữ nguyên suốt 197 trang).
             string before = "";
+            string beforeRowSig = "";
             if (nowPageSelector is not null)
+            {
                 try { before = (await page.Locator(nowPageSelector).First.InnerTextAsync(new() { Timeout = 1500 })).Trim(); } catch { }
+                beforeRowSig = await GetListingRowsSignatureAsync(page);
+            }
 
             var clicked = await page.EvaluateAsync<bool>(
                 @"(sel) => {
@@ -296,22 +302,50 @@ internal static class BigSellerCrawlHelper
 
             if (nowPageSelector is not null)
             {
-                // Chờ nhãn trang "X / Y" ĐỔI = xác nhận trang ĐÃ sang thật. Nếu bấm được nhưng nhãn KHÔNG đổi trong
-                // ~10s ⇒ trang không lật (glitch) → trả FALSE (caller kết thúc lane) thay vì lặp bấm-Next vô tận.
+                // Chờ nhãn trang "X / Y" ĐỔI = xác nhận nút Next đã ăn. Nếu bấm được nhưng nhãn KHÔNG đổi trong
+                // ~10s ⇒ trang bị kẹt / rớt phiên → báo onStaleTable để caller khởi động lại lane thay vì coi như hết trang.
                 var changed = false;
+                string now = "";
                 for (var i = 0; i < 40; i++)
                 {
                     ct.ThrowIfCancellationRequested();
-                    string now = "";
                     try { now = (await page.Locator(nowPageSelector).First.InnerTextAsync(new() { Timeout = 500 })).Trim(); } catch { }
-                    if (!string.IsNullOrEmpty(now) && !string.Equals(now, before, StringComparison.Ordinal)) { changed = true; log?.Invoke($"→ Sang trang Listing: {before} → {now}."); break; }
+                    if (!string.IsNullOrEmpty(now) && !string.Equals(now, before, StringComparison.Ordinal)) { changed = true; break; }
                     await Wait(250);
                 }
                 if (!changed)
                 {
-                    log?.Invoke($"  (bấm Next nhưng trang không lật sau ~10s — coi như hết trang: '{before}')");
+                    var msg = $"bấm Next trang Listing ('{before}') nhưng nhãn số trang không đổi sau ~10s";
+                    log?.Invoke($"  ⚠ {msg} — nghi kẹt bảng hoặc rớt phiên BigSeller.");
+                    onStaleTable?.Invoke(msg);
                     return false;
                 }
+
+                // Chờ các dòng trong bảng THỰC SỰ đổi sang trang mới (tránh quét lại 50 dòng DOM cũ khi XHR đang tải
+                // hoặc khi rớt phiên BigSeller khiến XHR lỗi và DOM giữ nguyên dòng trang cũ).
+                if (!string.IsNullOrEmpty(beforeRowSig))
+                {
+                    var rowsChanged = false;
+                    for (var i = 0; i < 40; i++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        var nowRowSig = await GetListingRowsSignatureAsync(page);
+                        if (!string.IsNullOrEmpty(nowRowSig) && !string.Equals(nowRowSig, beforeRowSig, StringComparison.Ordinal))
+                        {
+                            rowsChanged = true;
+                            break;
+                        }
+                        await Wait(250);
+                    }
+                    if (!rowsChanged)
+                    {
+                        var msg = $"bấm Next ({before} → {now}) nhưng các dòng SP trên bảng giữ nguyên không đổi sau ~10s (nghi rớt phiên BigSeller)";
+                        log?.Invoke($"  ⚠ {msg}.");
+                        onStaleTable?.Invoke(msg);
+                        return false;
+                    }
+                }
+                log?.Invoke($"→ Sang trang Listing: {before} → {now}.");
             }
             else
             {
@@ -338,6 +372,30 @@ internal static class BigSellerCrawlHelper
                 : $"Chuyển trang tiếp theo lỗi: {ex.Message}");
             return false;
         }
+    }
+
+    private static async Task<string> GetListingRowsSignatureAsync(IPage page)
+    {
+        try
+        {
+            return await page.EvaluateAsync<string>(
+                @"() => {
+                    const rows = Array.from(document.querySelectorAll('tr.product_native_row, tr.vxe-body--row, tbody.ant-table-tbody tr'));
+                    if (!rows.length) return '';
+                    const idxs = [0, Math.min(1, rows.length - 1), Math.floor(rows.length / 2), rows.length - 1];
+                    return rows.length + ':' + idxs.map(i => {
+                        const r = rows[i];
+                        const cb = r.querySelector(""input[type='checkbox'][name]"");
+                        const cbName = cb ? (cb.getAttribute('name') || '') : '';
+                        const rowId = r.getAttribute('rowid') || r.getAttribute('data-row-key') || '';
+                        const img = r.querySelector(""img[src*='/file/'], img[src]"");
+                        const src = (img && img.getAttribute('src')) || '';
+                        const txt = (r.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+                        return [cbName, rowId, src, txt].join('~');
+                    }).join('|');
+                }") ?? "";
+        }
+        catch { return ""; }
     }
 
     /// <summary>Gỡ lớp phủ HƯỚNG DẪN của BigSeller (vd <c>.language_switch_guide_mask</c> — overlay nhắc đổi

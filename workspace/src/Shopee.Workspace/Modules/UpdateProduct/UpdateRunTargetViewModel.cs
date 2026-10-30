@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Linq;
 using CommunityToolkit.Mvvm.ComponentModel;
 using Shopee.Core.BigSeller;
@@ -100,7 +100,7 @@ public sealed class UpdateRunTargetViewModel : ObservableObject
 
     public string DisplayName => Account.DisplayName;
     public string CookieStatus => Account.HasCookie ? "✓ cookie" : "⚠ chưa cookie";
-    public string WorkbookPath => Account.WorkbookPath;
-    public string SheetName => SelectedShop?.ShopeeDataSheet ?? "";
+    public string WorkbookPath => SelectedShop is { } s ? SharedWorkbookStore.ResolveForUpdate(Account, s).DataPath : Account.WorkbookPath;
+    public string SheetName => SelectedShop is { } s ? SharedWorkbookStore.ResolveForUpdate(Account, s).DataSheet : "";
     public bool ShopChosen => SelectedShop is not null;
 }

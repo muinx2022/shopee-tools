@@ -174,32 +174,24 @@ public class KmNhanChuTriVaSoDungCapTests
     // ══════════════════════════ Nút THẬT trên form THẬT ══════════════════════════
 
     /// <summary>
-    /// <b>Dựng <c>KmDialog</c> THẬT và đo nút + dòng chữ chủ trì.</b>
-    /// <para>Vì sao không dừng ở test VM: một property đúng mà XAML quên ràng buộc (hoặc tra nhầm tên tài
-    /// nguyên) thì người dùng vẫn không có nút nào để bấm — mà bộ test VM vẫn xanh. Đúng bài học của
-    /// <c>NutChanDoanAnTests</c>: phải đo thứ người dùng NHÌN THẤY, sau một lượt layout thật (chưa layout thì
-    /// binding còn <c>Unattached</c> và mọi phép đo đều rỗng).</para>
+    /// <b>Dựng <c>KmDialog</c> THẬT và kiểm tra phần lựa chọn máy chủ trì đã được gỡ khỏi form.</b>
     /// </summary>
     [StaFact]
     public void NutNhanChuTri_HienThat_TrenFormThat()
     {
         var dlg = DungDialog(Dong(ownerMachine: MayKhac), MayNay);
+        var phanTu = LayoutMotLuot(dlg);
 
-        Assert.True(dlg.NhanChuTriButton.IsEnabled);
-        Assert.Contains(KmLichTuDong.NhanMay(MayKhac, null), dlg.ChuTriText.Text);   // nhãn, không phải id thô (X6)
-
-        // Bấm nút THẬT (qua Command của nút, đúng đường người dùng đi) ⇒ chữ đổi và nút tự tắt.
-        dlg.NhanChuTriButton.Command.Execute(null);
-        LayoutMotLuot(dlg);
-
-        Assert.Contains(KmLichTuDong.NhanMay(MayNay, null), dlg.ChuTriText.Text);
-        Assert.False(dlg.NhanChuTriButton.IsEnabled);
+        Assert.Null(dlg.FindName("ChuTriBox"));
+        Assert.Null(dlg.FindName("NhanChuTriButton"));
+        Assert.DoesNotContain(phanTu.OfType<System.Windows.Controls.TextBlock>(),
+            t => (t.Text ?? "").Contains("Máy này nhận chủ trì", StringComparison.Ordinal));
     }
 
-    /// <summary>Không có hub ⇒ nút TẮT trên form thật (không chỉ trong VM).</summary>
+    /// <summary>Không có hub ⇒ form vẫn dựng bình thường và không có nút nhận chủ trì.</summary>
     [StaFact]
     public void KhongCoHub_ThiNutTat_TrenFormThat()
-        => Assert.False(DungDialog(Dong(ownerMachine: MayKhac), mayNay: "").NhanChuTriButton.IsEnabled);
+        => Assert.Null(DungDialog(Dong(ownerMachine: MayKhac), mayNay: "").FindName("NhanChuTriButton"));
 
     /// <summary>
     /// <b>Ô tick "Combo Khuyến Mãi — chạy tự động" phải KHOÁ khi luồng combo chưa chạy được</b>, và dòng chữ

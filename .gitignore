@@ -6,3 +6,6 @@ obj/
 TestResults/
 artifacts/
 publish/
+
+*.lock
+~$*

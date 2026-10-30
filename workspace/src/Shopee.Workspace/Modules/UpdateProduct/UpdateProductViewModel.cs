@@ -237,9 +237,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             var ctx = BuildContext(t, ai, startRow, endRow, importFromClaimedTab, kind == UpdateKind.Update ? img : null, processes, reloadSeconds, kind);
             var runner = new UpdateProductRunner();
             runner.Log += m => LogA($"{prefix} {m}");
-            var liveSheet = kind == UpdateKind.Update && !string.IsNullOrWhiteSpace(ctx.DataSheet)
-                ? ctx.DataSheet
-                : ShopLiveLine.SheetLabel(s);
+            var liveSheet = ShopLiveLine.SheetLabel(s, ctx.DataSheet);
             var verb = kind switch
             {
                 UpdateKind.Import => "import",
@@ -303,16 +301,29 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             }
             else
             {
-                LogA($"{prefix} ✔ xong {name}.");
+                if (runner.ListingLimitReached)
+                    LogA($"{prefix} ⛔ dừng {name}: shop '{s.DisplayName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).");
+                else
+                    LogA($"{prefix} ✔ xong {name}.");
             // [bỏ] Hub.PublishCompletion Completed
                 // Lượt update không sửa được id nào, và shop này cũng chưa có id đã lưu → đừng ghi "xong".
                 // Nếu không, shop vừa chuyển sang bị đánh dấu xong dù list id của shop đó vẫn trống.
-                var markCompleted = !((kind == UpdateKind.Update || kind == UpdateKind.Import) && touched == 0 && priorDone == 0);
+                // Riêng khi shop chạm giới hạn đăng SP của Shopee (listing limit) → đánh dấu xong để Auto Run chuyển sang shop tiếp theo.
+                var markCompleted = runner.ListingLimitReached || !((kind == UpdateKind.Update || kind == UpdateKind.Import) && touched == 0 && priorDone == 0);
                 if (opProg != null) OpProgressStore.Shared.FinishRun(a.Id, resolved.ProgressKey, opProg, markCompleted);
             }
         }
             // [bỏ] catch: Hub.PublishCompletion Stopped (canceled)
-            // [bỏ] catch: Hub.PublishCompletion Stopped (exception)
+        catch (OperationCanceledException)
+        {
+            LogA($"{prefix} ■ đã dừng (hủy giữa chừng).");
+            if (opProg != null) OpProgressStore.Shared.FinishRun(a.Id, resolved.ProgressKey, opProg, completed: false);
+        }
+        catch (Exception ex)
+        {
+            LogA($"{prefix} ✖ {name} dừng do lỗi: {ex.Message}");
+            if (opProg != null) OpProgressStore.Shared.FinishRun(a.Id, resolved.ProgressKey, opProg, completed: false);
+        }
         finally
         {
             if (lease is not null) { try { await lease.DisposeAsync().ConfigureAwait(false); } catch { } }

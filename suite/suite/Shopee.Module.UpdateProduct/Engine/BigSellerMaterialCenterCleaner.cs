@@ -17,7 +17,7 @@ internal sealed class BigSellerMaterialCenterCleaner
     internal const string MaterialCenterUrl = "https://www.bigseller.com/web/product/materialCenter/index.htm";
     // Sau mỗi X lần BẮT ĐẦU sửa SP (vào trang edit + thực sự điền/sửa, kể cả lưu fail) thì xóa sạch Material
     // Center (thư viện ảnh) — mirror main.py DELETE_IMAGES_AFTER.
-    private const int DeleteMediaAfterUpdates = 10;
+    private const int DeleteMediaAfterUpdates = MediaCleanupCoordinator.CleanupThreshold;
 
     // ── Material Center (dọn media định kỳ — selector verbatim từ image_manager.py) ──
     // BigSeller render 2 ngôn ngữ (VN/EN). ƯU TIÊN selector CẤU TRÚC (class/icon, độc-lập-ngôn-ngữ) rồi mới
@@ -345,6 +345,7 @@ internal sealed class BigSellerMaterialCenterCleaner
 
             var disabledDeleteCount = 0;
             var emptyStreak = 0;   // số lần LIÊN TIẾP nghi 'trống' + 0 checkbox item (cần 2 để chốt) — reset khi thấy item.
+            var alreadyCheckedStreak = 0;   // số vòng liên tiếp 'Chọn tất cả' đã tick sẵn (API xóa lỗi/rớt phiên khiến bảng không reload)
 
             // Chống-oan 2 lớp cho MỌI dấu hiệu 'trống' (dùng chung cho cả 3 đường kết luận-trống bên dưới):
             //  • Lớp 1 — veto theo item: CountItemCheckboxesAsync > 0 nghĩa là list CÒN item (chỉ đang tải/ẩn nút)
@@ -389,6 +390,27 @@ internal sealed class BigSellerMaterialCenterCleaner
                     }
 
                     var selectResult = await EnsureMaterialSelectAllAsync(mediaPage, ct).ConfigureAwait(false);
+                    if (selectResult == "already_checked")
+                    {
+                        alreadyCheckedStreak++;
+                        if (alreadyCheckedStreak == 2)
+                        {
+                            _log("… 'Chọn tất cả' vẫn đang chọn sẵn từ vòng trước (lệnh xóa chưa ăn) — reload Material Center thử lại.");
+                            try { await mediaPage.ReloadAsync(new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 30000 }); } catch { }
+                            await WaitMaterialListReadyAsync(mediaPage, 8000, ct).ConfigureAwait(false);
+                            await CloseMaterialPopupAsync(mediaPage);
+                            continue;
+                        }
+                        if (alreadyCheckedStreak >= 4)
+                        {
+                            _log("⚠ 'Chọn tất cả' giữ nguyên sau nhiều lần xóa liên tiếp (nghi rớt phiên BigSeller hoặc kẹt API) — dừng dọn Material Center sớm.");
+                            return;
+                        }
+                    }
+                    else if (selectResult == "checked")
+                    {
+                        alreadyCheckedStreak = 0;
+                    }
                     // Đường (2): click 'Chọn tất cả' không tick được → CHỈ nghi trống khi 0 checkbox (qua chống-oan 2 lớp).
                     if (selectResult == "empty")
                     {
@@ -601,7 +623,7 @@ internal sealed class BigSellerMaterialCenterCleaner
     {
         var selectAll = await FindMaterialSelectAllAsync(page);
         if (selectAll is null) return "missing";
-        if (await IsMaterialSelectAllCheckedAsync(selectAll)) { _log("☑️ 'Chọn tất cả' đã được chọn."); return "checked"; }
+        if (await IsMaterialSelectAllCheckedAsync(selectAll)) { _log("☑️ 'Chọn tất cả' đã được chọn."); return "already_checked"; }
 
         _log("☑️ Click 'Chọn tất cả'.");
         var targets = new[]

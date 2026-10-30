@@ -15,6 +15,7 @@ public sealed class WorkspaceAppConfigTests
         Assert.True(WorkspaceAppConfig.IsScrapeOnly);
         Assert.False(WorkspaceAppConfig.IsImportUpdateOnly);
         Assert.Equal("Shopee Scrape", WorkspaceAppConfig.WindowTitle);
+        Assert.EndsWith("/Assets/scrape-icon.ico", WorkspaceAppConfig.WindowIcon);
     }
 
     [Fact]
@@ -28,6 +29,7 @@ public sealed class WorkspaceAppConfigTests
         Assert.False(WorkspaceAppConfig.IsScrapeOnly);
         Assert.True(WorkspaceAppConfig.IsImportUpdateOnly);
         Assert.Equal("Shopee Import & Update", WorkspaceAppConfig.WindowTitle);
+        Assert.EndsWith("/Assets/update-icon.ico", WorkspaceAppConfig.WindowIcon);
     }
 
     [Fact]
@@ -41,6 +43,7 @@ public sealed class WorkspaceAppConfigTests
         Assert.False(WorkspaceAppConfig.IsScrapeOnly);
         Assert.False(WorkspaceAppConfig.IsImportUpdateOnly);
         Assert.Equal("Shopee Workspace", WorkspaceAppConfig.WindowTitle);
+        Assert.EndsWith("/Assets/app-icon.ico", WorkspaceAppConfig.WindowIcon);
     }
 
     [Theory]

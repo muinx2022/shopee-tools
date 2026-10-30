@@ -41,6 +41,24 @@ internal sealed partial class BigSellerProductUpdateRunner
         catch { return "txt:"; }
     }
 
+    private async Task<bool> IsRowOfCurrentShopAsync(ILocator row)
+    {
+        var want = (_settings.ShopName ?? "").Trim();
+        if (want.Length == 0) return true;
+        string shop;
+        try
+        {
+            var tag = row.Locator(ListingRowShopTag).First;
+            if (await tag.CountAsync() == 0) return true;   // bảng không hiện gian hàng → không lọc được
+            shop = Regex.Replace((await tag.InnerTextAsync(new() { Timeout = 3000 })) ?? "", @"\s+", " ").Trim();
+        }
+        catch { return true; }
+        if (shop.Length == 0 || string.Equals(shop, want, StringComparison.OrdinalIgnoreCase)) return true;
+        if (_otherShopsLogged.Add(shop))
+            _log($"  ↷ listing có draft của shop \"{shop}\" — bỏ qua, chỉ update dòng của shop \"{want}\".");
+        return false;
+    }
+
     // KHÔNG còn được gọi: theo yêu cầu, KHÔNG xóa dòng nào trên BigSeller. Giữ lại để bật lại nhanh nếu cần.
 #pragma warning disable IDE0051 // private member chưa dùng (cố ý)
     private async Task DeleteListingRowAsync(ILocator row)
@@ -69,9 +87,9 @@ internal sealed partial class BigSellerProductUpdateRunner
 
     private IPage? PickListingPage(IBrowserContext context)
     {
-        foreach (var p in context.Pages)
+        foreach (var p in context.Pages.ToArray())
             if (IsDraftPage(p.Url)) return p;
-        foreach (var p in context.Pages)
+        foreach (var p in context.Pages.ToArray())
             if ((p.Url ?? "").Contains("bigseller.com", StringComparison.OrdinalIgnoreCase)) return p;
         return context.Pages.FirstOrDefault();
     }

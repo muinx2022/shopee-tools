@@ -72,6 +72,8 @@ public partial class App : Application
             Shopee.Core.Browser.BraveFleet.MaxConcurrentWindows =
                 Shopee.Core.Browser.BraveFleet.WindowsForBudget(perf.UsableCpuCores, perf.UsableRamGb);
             Shopee.Core.Browser.BraveFleet.ConfigureJobLimits();
+            if (WorkspaceAppConfig.IsScrapeOnly) Shopee.Core.Browser.BraveFleet.SetManagedSubRoot("profiles");
+            else if (WorkspaceAppConfig.IsImportUpdateOnly) Shopee.Core.Browser.BraveFleet.SetManagedSubRoot("bigseller-profiles");
             var swept = Shopee.Core.Browser.BraveFleet.StartupSweep();
             if (swept > 0) TryLog("BraveFleet.StartupSweep", new Exception($"Đã dọn {swept} Brave mở cũ lúc khởi động."));
             Shopee.Core.Browser.BraveFleet.StartMaintenance();

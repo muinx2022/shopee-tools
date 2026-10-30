@@ -31,7 +31,26 @@ public sealed class BigSellerShopViewModel : ObservableObject
     public string Name
     {
         get => Model.Name;
-        set { if (Model.Name != value) { Model.Name = value; OnPropertyChanged(); OnPropertyChanged(nameof(DisplayName)); Persist(); } }
+        set
+        {
+            if (Model.Name == value) return;
+            var oldName = Model.Name;
+            Model.Name = value;
+            if (string.IsNullOrWhiteSpace(Model.ShopeeDataSheet)
+                || string.Equals(Model.ShopeeDataSheet.Trim(), oldName?.Trim(), StringComparison.OrdinalIgnoreCase)
+                || (SharedWorkbookStore.HasSharedSource && !string.IsNullOrWhiteSpace(SharedWorkbookCatalog.MatchShopSheet(SharedWorkbookStore.ActiveSourcePath, Model))))
+            {
+                var matched = SharedWorkbookStore.HasSharedSource
+                    ? SharedWorkbookCatalog.MatchShopSheet(SharedWorkbookStore.ActiveSourcePath, Model)
+                    : null;
+                Model.ShopeeDataSheet = !string.IsNullOrWhiteSpace(matched) ? matched : (value?.Trim() ?? "");
+                OnPropertyChanged(nameof(ShopeeDataSheet));
+                OnPropertyChanged(nameof(SheetDisplay));
+            }
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(DisplayName));
+            Persist();
+        }
     }
 
     public string DisplayName => Model.DisplayName;

@@ -40,6 +40,8 @@
          | Sinh mới / AI            | IconSparkle      | 🆕 🤖 📄 ●                    |
          | Đồng bộ                  | IconSync         | ⇅ ⟲ 🔌                        |
          | Hủy / đóng               | IconClose        | ✕ ↶ · "Hủy" · "Đóng"         |
+         | Trạng thái hoàn thành    | IconStatusDone   | ✔ ● (chỉ báo đã xong)        |
+         | Trạng thái chưa xong     | IconStatusPending| ○ 🕒 (chỉ báo chưa xong)      |
     -->
 
     <!-- Mũi tên play — Chạy / Bắt đầu. -->
@@ -128,4 +130,10 @@
 
     <!-- Dấu nhân — Hủy / đóng. -->
     <Geometry x:Key="IconClose">M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z</Geometry>
+
+    <!-- Tròn tích đặc — Chỉ báo trạng thái Đã hoàn thành (chỉ hiển thị, không phải nút bấm). -->
+    <Geometry x:Key="IconStatusDone">M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z</Geometry>
+
+    <!-- Đồng hồ tròn — Chỉ báo trạng thái Chưa xong / đang chờ (chỉ hiển thị, không phải nút bấm). -->
+    <Geometry x:Key="IconStatusPending">M11.99 2C6.47 2 2 6.48 2 12s4.47 10 9.99 10C17.52 22 22 17.52 22 12S17.52 2 11.99 2zM12 20c-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8-3.58 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67z</Geometry>
 </ResourceDictionary>

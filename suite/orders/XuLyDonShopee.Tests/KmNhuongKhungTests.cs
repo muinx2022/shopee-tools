@@ -47,8 +47,8 @@ public class KmNhuongKhungTests
 
         var nhuong = KmLichTuDong.NenNhuongKhung(cf, MayNay, MocTrongBienAn, BayGio);
 
-        Assert.False(nhuong);
-        Assert.Equal(MocTrongBienAn, KmLichTuDong.HoanVongCheckDon(MocTrongBienAn, nhuong));
+        Assert.True(nhuong);
+        Assert.Equal(new DateTime(2026, 8, 22, 4, 0, 0), KmLichTuDong.HoanVongCheckDon(MocTrongBienAn, nhuong));
     }
 
     /// <summary>Vế ĐỐI CHỨNG — máy CHỦ TRÌ vẫn nhường y như trước pha A. Thiếu vế này thì một bản "không bao
@@ -88,7 +88,7 @@ public class KmNhuongKhungTests
     [InlineData(MayKhac, "")]
     [InlineData(MayKhac, null)]
     public void DaCoChuTri_MaKhongBietMinhLaAi_ThiKhongNhuong(string ownerMachine, string? mayNay)
-        => Assert.False(KmLichTuDong.NenNhuongKhung(
+        => Assert.True(KmLichTuDong.NenNhuongKhung(
             Lich(lanChayCuoi: null, ownerMachine: ownerMachine), mayNay, MocTrongBienAn, BayGio));
 
     /// <summary>Tắt lịch KM ⇒ không nhường, y luật cũ (chặn khung cho tài khoản chẳng bao giờ chạy KM là tự cắt

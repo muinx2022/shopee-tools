@@ -25,13 +25,13 @@ public static class SharedWorkbookCatalog
     }
 
     /// <summary>
-    /// Giải quyết file &amp; sheet cho luồng Update Product: đến shop nào thì chọn đúng sheet của shop đó
-    /// (<see cref="BigSellerShop.ShopeeDataSheet"/> hoặc <see cref="BigSellerShop.Name"/>) trong file đã chọn.
+    /// Giải quyết file &amp; sheet cho luồng Scrape / Import / Update Product: đến shop nào thì chọn đúng sheet của shop đó
+    /// (<see cref="BigSellerShop.Name"/> hoặc <see cref="BigSellerShop.ShopeeDataSheet"/>) trong file đã chọn.
     /// LUÔN ưu tiên sourcePath (file Excel chung đã chọn) hơn account.WorkbookPath.
     /// </summary>
     public static SharedWorkbookTarget ResolveForUpdate(bool enabled, string sourcePath, string mergedPath, BigSellerAccount account, BigSellerShop shop)
     {
-        var defaultSheet = !string.IsNullOrWhiteSpace(shop.ShopeeDataSheet) ? shop.ShopeeDataSheet.Trim() : (shop.Name?.Trim() ?? "");
+        var defaultSheet = !string.IsNullOrWhiteSpace(shop.Name) ? shop.Name.Trim() : (shop.ShopeeDataSheet?.Trim() ?? "");
 
         if (!string.IsNullOrWhiteSpace(sourcePath) && File.Exists(sourcePath))
         {
@@ -49,13 +49,14 @@ public static class SharedWorkbookCatalog
             return new SharedWorkbookTarget(sourcePath, defaultSheet, fallbackKey);
         }
 
+        var accountDefaultSheet = !string.IsNullOrWhiteSpace(shop.ShopeeDataSheet) ? shop.ShopeeDataSheet.Trim() : defaultSheet;
         string wbPath = !string.IsNullOrWhiteSpace(account.WorkbookPath) && File.Exists(account.WorkbookPath)
             ? account.WorkbookPath
             : (account.WorkbookPath ?? "");
 
         var sheet = !string.IsNullOrWhiteSpace(wbPath) && File.Exists(wbPath)
-            ? (MatchShopSheet(wbPath, shop) ?? defaultSheet)
-            : defaultSheet;
+            ? (MatchShopSheet(wbPath, shop) ?? accountDefaultSheet)
+            : accountDefaultSheet;
 
         return new SharedWorkbookTarget(wbPath, sheet, sheet);
     }

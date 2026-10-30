@@ -388,7 +388,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
                 restWindow: restWindow);
             s.Jobs.TryUpdate(account.Id, j => j.Runner = runner);   // gán Runner DƯỚI lock (vs snapshot ở Stop)
             // Mỗi chunk xong → lưu tiến độ ngay (bền với dừng/treo).
-            var liveSheet = Shopee.Workspace.Modules.Workspace.ShopLiveLine.SheetLabel(shop);
+            var liveSheet = Shopee.Workspace.Modules.Workspace.ShopLiveLine.SheetLabel(shop, dataSheet);
             int GetCompletedCount()
             {
                 var p = ScrapeProgressStore.Shared.Find(account.Id, sheet);
@@ -590,10 +590,11 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         if (!a.HasCookie) { problem = $"{a.DisplayName}: chưa có cookie BigSeller (đăng nhập ở mục BigSeller)"; return false; }
         var missing = SharedWorkbookStore.MissingMergedProblem();
         if (missing is not null) { problem = missing; return false; }
+        var resolved = SharedWorkbookStore.Resolve(a, s);
         if (!SharedWorkbookStore.IsActive)
         {
-            if (string.IsNullOrWhiteSpace(s.ShopeeDataSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
-            if (string.IsNullOrWhiteSpace(a.WorkbookPath) || !File.Exists(a.WorkbookPath)) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
+            if (string.IsNullOrWhiteSpace(resolved.DataSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
+            if (string.IsNullOrWhiteSpace(resolved.DataPath) || !File.Exists(resolved.DataPath)) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
         }
         if (Math.Max(1, t.MaxProcess) > poolCount) { problem = $"{a.DisplayName}: cần {t.MaxProcess} tk Shopee nhưng kho chỉ có {poolCount}"; return false; }
         problem = ""; return true;

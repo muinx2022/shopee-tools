@@ -36,10 +36,13 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
     /// <summary>Bắn (rowIndex, rowIndex) mỗi khi 1 dòng sheet vừa UPDATE XONG (lưu thật, result="ok") →
     /// caller đẩy lên ledger Hub để Thống kê biết "shop này đã update những dòng nào".</summary>
     public event Action<int, int>? RowsDone;
+    /// <summary>Dòng sheet sắp được update (số dòng Excel).</summary>
+    public event Action<int>? RowOpening;
 
     // SP đã xử lý / bỏ qua (gồm cả "không có trong sheet") → đánh dấu để vòng quét sau KHÔNG mở/không xử lý lại.
     // KHÔNG còn xóa dòng nào trên BigSeller → "skip" là cách duy nhất để tiến tới dòng kế.
     private readonly HashSet<string> _skippedRowKeys = new();
+    private readonly HashSet<string> _otherShopsLogged = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _skippedEditIds = new();
     private readonly Dictionary<string, int> _failCounts = new();
     // True nếu ProcessProduct fail do LỖI TẠM (AI rỗng/mạng) → caller RETRY, KHÔNG xóa dòng (tránh mất SP).
@@ -48,6 +51,8 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
     // dồn về HandleMediaEmergencyAsync (pause-all + dọn toàn cục) thay vì fail lẻ tẻ → SP bị "fail 2 lần → bỏ oan".
     // Reset đầu mỗi ProcessProductAsync.
     private bool _mediaFullDetected;
+    // True nếu phát hiện shop đã đạt giới hạn đăng sản phẩm của Shopee (The shop has reached its listing limit) → dừng ngay toàn bộ shop.
+    private bool _listingLimitDetected;
     // Đã dump 1 toast lỗi CHƯA-nhận-diện chưa (throttle 1 lần/lane để khỏi spam khi lỗi lặp).
     private bool _errorToastDumped;
     // Số SP LIÊN TIẾP (per-lane) mà import ảnh fail dù KHÔNG bắt được toast/popup đầy → ngưỡng 2 = NGHI kho đầy
@@ -79,6 +84,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
     // (nhiều lane chung 1 store). SP có key khớp & doneName == tên hiện tại → BỎ QUA (không sửa lại) — bền qua
     // kill/restart. Rỗng = chạy mới / không có tiến độ. MarkDone lúc save gọi thẳng OpProgressStore.Shared (thread-safe).
     private readonly IReadOnlyDictionary<string, string?> _updateDone;
+    private UpdateTargetTracker? _targetTracker;
     // Dọn Material Center (thư viện ảnh) — tách sang class riêng; khởi tạo sau khi có browser context.
     private BigSellerMaterialCenterCleaner? _mediaCleaner;
 
@@ -88,13 +94,15 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
         BigSellerWorkflowSettings settings, Action<string> log, WorkflowPauseToken? pauseToken = null,
         ClaimStore? claim = null, MediaCleanupCoordinator? mediaCoord = null,
         bool exportCookie = true, WorkbookRecordCache? sharedRecords = null,
-        IReadOnlyDictionary<string, string?>? updateDone = null)
+        IReadOnlyDictionary<string, string?>? updateDone = null,
+        UpdateTargetTracker? targetTracker = null)
         : base(settings, log, pauseToken, exportCookie)
     {
         _claim = claim;
         _mediaCoord = mediaCoord;
         _sharedRecords = sharedRecords;
         _updateDone = updateDone ?? new Dictionary<string, string?>(StringComparer.Ordinal);
+        _targetTracker = targetTracker;
     }
 
     public async Task RunAsync(CancellationToken ct)
@@ -121,6 +129,17 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             _log($"⚠ KHÔNG có dòng nào đủ điều kiện update trong sheet '{_settings.DataSheet}' (cột 'Tên đã sửa' trống hết " +
                  "hoặc khoảng dòng không có SP) — mọi SP trên Listing sẽ chỉ bị BỎ QUA nên DỪNG NGAY, không mở Brave. " +
                  "→ Chạy 'Update tên SP (AI)' để điền cột G trước, rồi chạy lại Update.");
+            return;
+        }
+
+        if (_targetTracker is null)
+        {
+            var importDone = OpProgressStore.Shared.GetDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import);
+            _targetTracker = new UpdateTargetTracker(_records, _updateDone, importDone);
+        }
+        if (_targetTracker.IsAllCompleted)
+        {
+            _log($"✔ Shop '{_settings.ShopName}': Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP — dừng ngay, không mở Brave.");
             return;
         }
 
@@ -158,7 +177,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             throw new InvalidOperationException("Không mở được trang Listing.");
 
         _log(new string('=', 50));
-        _log("BẮT ĐẦU UPDATE PRODUCT (C#)");
+        _log($"BẮT ĐẦU UPDATE PRODUCT for shop: {_settings.ShopName} (C#)");
         // Giá trị điền form của lượt này (cấu hình per-shop trên Hub; rỗng đã được thay bằng mặc định) — 1 dòng
         // để chẩn đoán "sao SP ra tồn kho/cân nặng/kênh khác mong đợi" mà không phải đoán.
         _log($"Giá trị điền form: tồn kho={StockValue} · cân nặng={WeightValue}g · vận chuyển='{ShippingChannel}'.");
@@ -192,11 +211,24 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
         var clickBlockedStreak = 0;
         var clickBlockedTotal = 0;
         var emptyStreak = 0;   // số lần liên tiếp trang hiển thị 0 dòng (phân biệt "đang tải" với "rỗng thật")
+        var noShopRowPageStreak = 0;
         var emptyWaitSeconds = Math.Max(3, _settings.ListingReloadSeconds);
 
         while (!ct.IsCancellationRequested)
         {
             await WaitIfNotPausedAsync(ct).ConfigureAwait(false);
+            if (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })
+            {
+                _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm trên Shopee (listing limit) — dừng lane ngay.");
+                LogSummary();
+                return;
+            }
+            if (_targetTracker is { IsAllCompleted: true })
+            {
+                _log($"✔ Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP cho shop '{_settings.ShopName}' — dừng ngay, bỏ qua các trang hộp nháp còn lại.");
+                LogSummary();
+                return;
+            }
             // Có lane đang dọn Material Center → ĐẬU tại đây tới khi dọn xong (mọi lane quay lại quét Listing cùng lúc,
             // GIỮ vị trí trang hiện tại). Cổng mở thì về ngay (rẻ). Qua cổng rồi đồng bộ Generation đã thấy (kho vừa
             // được dọn sạch — không cần làm gì thêm vì đếm đã ở coordinator).
@@ -234,6 +266,33 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
 
                 switch (result)
                 {
+                    case "listing_limit":
+                        _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng lane ngay (đã update {_targetTracker?.CompletedCount ?? _okCount}/{_targetTracker?.TargetCount ?? _records.Count} SP).");
+                        LogSummary();
+                        return;
+                    case "all_done":
+                        _log($"✔ Đã update đủ {_targetTracker?.CompletedCount}/{_targetTracker?.TargetCount} SP cho shop '{_settings.ShopName}' — dừng ngay, bỏ qua các trang hộp nháp còn lại.");
+                        LogSummary();
+                        return;
+                    case "exhausted_no_shop_rows":
+                        emptyStreak = 0;
+                        noShopRowPageStreak++;
+                        if (_targetTracker is { IsAllCompleted: true } or { IsAllHandled: true })
+                        {
+                            _log($"✔ Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP cho shop '{_settings.ShopName}' — bỏ qua các trang hộp nháp tiếp theo. Lane kết thúc.");
+                            LogSummary();
+                            return;
+                        }
+                        if (noShopRowPageStreak >= 2 || (_targetTracker is { CompletedCount: > 0 } && noShopRowPageStreak >= 1))
+                        {
+                            _log($"✔ Trang hộp nháp hiện tại không còn SP nào của shop '{_settings.ShopName}' (đã update {_targetTracker?.CompletedCount ?? 0}/{_targetTracker?.TargetCount ?? 0} SP) — dừng ngay, bỏ qua các trang hộp nháp tiếp theo.");
+                            LogSummary();
+                            return;
+                        }
+                        if (await ClickNextListingPageAsync(page, ct).ConfigureAwait(false)) break;
+                        _log("✔ Hết trang cuối — không còn item id cần update trên mọi trang. Lane kết thúc.");
+                        LogSummary();
+                        return;
                     case null:   // 0 dòng trên trang: có thể đang tải, có thể rỗng thật.
                         emptyStreak++;
                         if (emptyStreak < 2)
@@ -244,28 +303,51 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                         }
                         // Rỗng 2 lần liên tiếp → trang này rỗng thật → sang trang kế nếu còn; hết trang ⇒ kết thúc.
                         emptyStreak = 0;
+                        if (_targetTracker is { IsAllCompleted: true } or { IsAllHandled: true })
+                        {
+                            _log($"✔ Đã xử lý đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP mục tiêu của shop '{_settings.ShopName}' — bỏ qua các trang hộp nháp tiếp theo. Lane kết thúc.");
+                            LogSummary();
+                            return;
+                        }
                         if (await ClickNextListingPageAsync(page, ct).ConfigureAwait(false)) break;
                         _log("✔ Listing rỗng / hết trang cuối — không còn item id cần update. Lane kết thúc.");
                         LogSummary();
                         return;
                     case "media_full":   // Toast/popup báo kho đầy → dừng-toàn-cục + dọn; vòng sau quét lại Listing
                         emptyStreak = 0;   // GIỮ vị trí trang (KHÔNG reload về trang 1 — bug kẹt trang 1 cũ).
+                        noShopRowPageStreak = 0;
                         await HandleMediaEmergencyAsync(page, "toast/popup báo đầy", ct).ConfigureAwait(false);
                         break;
                     case "exhausted":   // Có dòng nhưng trang này hết dòng lane này xử lý được (đã xong/đã skip/lane khác giữ).
                         emptyStreak = 0;
+                        noShopRowPageStreak = 0;
+                        if (_targetTracker is { IsAllCompleted: true } or { IsAllHandled: true })
+                        {
+                            _log($"✔ Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP cho shop '{_settings.ShopName}' — bỏ qua các trang hộp nháp tiếp theo. Lane kết thúc.");
+                            LogSummary();
+                            return;
+                        }
                         if (await ClickNextListingPageAsync(page, ct).ConfigureAwait(false)) break;
                         _log("✔ Hết trang cuối — không còn item id cần update trên mọi trang. Lane kết thúc.");
                         LogSummary();
                         return;
                     case "retry":
                         emptyStreak = 0;
+                        noShopRowPageStreak = 0;
                         // SP có thể ĐÃ bắt đầu sửa rồi mới fail tạm → vẫn check ngưỡng dọn media (đếm đã diễn ra lúc bắt đầu sửa).
                         await MaybeClearMediaAfterEditsAsync(page, ct).ConfigureAwait(false);
                         await DelayAsync(1200, ct);
                         break;
                     default:   // ok / deleted / skipped → đã tiến 1 dòng, quét tiếp trang hiện tại.
                         emptyStreak = 0;
+                        noShopRowPageStreak = 0;
+                        if (_targetTracker is { IsAllCompleted: true })
+                        {
+                            _log($"✔ Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP cho shop '{_settings.ShopName}' — dừng ngay, bỏ qua các trang hộp nháp còn lại.");
+                            await MaybeWriteBackBigSellerTokenAsync(ct).ConfigureAwait(false);
+                            LogSummary();
+                            return;
+                        }
                         // Đếm đã diễn ra lúc BẮT ĐẦU sửa (RecordEditStart trong RunListingRowAsync) → ở đây chỉ
                         // check-ngưỡng-và-dọn; no-op rẻ khi chưa đủ 10 lần bắt đầu sửa.
                         await MaybeClearMediaAfterEditsAsync(page, ct).ConfigureAwait(false);
@@ -273,6 +355,12 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                         await MaybeWriteBackBigSellerTokenAsync(ct).ConfigureAwait(false);
                         break;
                 }
+            }
+            catch (OperationCanceledException) when (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })
+            {
+                _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm trên Shopee (listing limit) — dừng lane ngay.");
+                LogSummary();
+                return;
             }
             catch (OperationCanceledException) { throw; }
             catch (LaneAbortedException) { throw; }   // thoát bất thường → để supervisor restart, KHÔNG nuốt vào catch dưới
@@ -304,9 +392,10 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
     private void MarkUpdateProgress(string itemId, string productName)
     {
         if (string.IsNullOrEmpty(itemId)) return;
+        _targetTracker?.MarkCompleted(itemId);
         try
         {
-            OpProgressStore.Shared.MarkDone(_settings.AccountId, _settings.DataSheet, AssignmentOps.Update,
+            OpProgressStore.Shared.MarkDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Update,
                 new[] { new KeyValuePair<string, string?>(itemId, productName) });
         }
         catch { }
@@ -325,9 +414,19 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
     private const string ListingNextPageSelector = ".pagination li.next_item:not(.disabled)";
     private const string PaginationNowPage = ".pagination li.now_page_item";
 
-    private Task<bool> ClickNextListingPageAsync(IPage page, CancellationToken ct) =>
-        BigSellerCrawlHelper.ClickNextCrawlPageAsync(
-            page, _log, ListingNextPageSelector, PaginationNowPage, ListingReadySelector, DelayAsync, ct);
+    private async Task<bool> ClickNextListingPageAsync(IPage page, CancellationToken ct)
+    {
+        string? staleReason = null;
+        var ok = await BigSellerCrawlHelper.ClickNextCrawlPageAsync(
+            page, _log, ListingNextPageSelector, PaginationNowPage, ListingReadySelector, DelayAsync, ct,
+            onStaleTable: reason => staleReason = reason).ConfigureAwait(false);
+        if (!ok && staleReason is not null)
+        {
+            BigSellerSessionRegistry.Invalidate(_settings.AccountId);
+            throw new LaneAbortedException(staleReason);
+        }
+        return ok;
+    }
 
     // ── dọn media định kỳ ──
     // Đường CŨ (không coordinator): cleaner tự đếm per-lane + wipe khi đủ 10. Đường coordinator: bộ đếm ở
@@ -336,7 +435,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
     private async Task MaybeClearMediaAfterEditsAsync(IPage listingPage, CancellationToken ct)
     {
         if (_mediaCoord == null) { await _mediaCleaner!.MaybeClearMediaAsync(listingPage, ct).ConfigureAwait(false); return; }
-        if (_mediaCoord.CleanupPending) await HandleMediaEmergencyAsync(listingPage, "đủ 10 SP (toàn account)", ct).ConfigureAwait(false);
+        if (_mediaCoord.CleanupPending) await HandleMediaEmergencyAsync(listingPage, $"đủ {MediaCleanupCoordinator.CleanupThreshold} SP (toàn account)", ct).ConfigureAwait(false);
     }
 
     // Kho ĐẦY (toast/popup) hoặc đủ ngưỡng 10 SP toàn account → DỪNG TOÀN BỘ lane, dọn 1 lần, xong thì mọi lane quay
@@ -395,14 +494,24 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
         }
         _emptyListingDiagLogged = false;   // có dòng trở lại → cho phép log lại nếu sau này lại trống
 
+        var shopRowsOnPage = 0;
         for (var i = 0; i < count; i++)
         {
             ct.ThrowIfCancellationRequested();
+            if (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })
+                return ("listing_limit", false);
+            if (_targetTracker is { IsAllCompleted: true })
+                return ("all_done", false);
             var row = rows.Nth(i);
             try { await row.WaitForAsync(new() { Timeout = 15000 }); } catch { continue; }
 
             var editLink = row.Locator(ListingEditButton).First;
             if (await editLink.CountAsync() == 0) continue;
+
+            // Listing draft là của CẢ tài khoản (mọi shop). Không ghi rowKey vào _skippedRowKeys ở đây: cùng SP
+            // ở shop khác có chung hash ảnh ⇒ chung rowKey, ghi vào sẽ bỏ sót luôn dòng của shop mình.
+            if (!await IsRowOfCurrentShopAsync(row).ConfigureAwait(false)) continue;
+            shopRowsOnPage++;
 
             var rowKey = await DraftRowKeyAsync(row);
             var editId = await row.GetAttributeAsync(ListingRowKeyAttr) ?? "";
@@ -417,13 +526,14 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             var res = await RunListingRowAsync(page, row, editLink, rowKey, editId, ct,
                 getStreak, setStreak, getTotal, setTotal).ConfigureAwait(false);
             // NHẢ claim rowKey khi dòng CHƯA xong-hẳn: "retry" (lỗi tạm) / terminal (lane sắp chết/restart) /
-            // "media_full" (làm lại sau khi dọn kho) / "failed" (lane này bỏ cuộc sau fail 2 lần — để lane khác thử).
+            // "media_full" (làm lại sau khi dọn kho) / "failed" (lane này bỏ cuộc sau fail 2 lần — để lane khác thử) /
+            // "listing_limit" (shop đã chạm giới hạn đăng SP).
             // Nếu KHÔNG nhả → dòng bị "claim mồ côi" (ClaimStore chung không hết-hạn) → sau restart không lane nào
             // claim lại được → bỏ sót SP mà vẫn báo Hub "completed". Giữ claim (rowKey) CHỈ khi ok/deleted/skipped.
-            if (_claim is not null && (res.terminal || res.result == "retry" || res.result == "media_full" || res.result == "failed")) _claim.Release(rowKey);
+            if (_claim is not null && (res.terminal || res.result == "retry" || res.result == "media_full" || res.result == "failed" || res.result == "listing_limit")) _claim.Release(rowKey);
             return res;
         }
-        return ("exhausted", false);
+        return (shopRowsOnPage == 0 ? "exhausted_no_shop_rows" : "exhausted", false);
     }
 
     // Khi không thấy dòng SP nào để update: log RÕ vì sao (trang rỗng/sai status, hay BigSeller đã đổi bảng
@@ -478,11 +588,17 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             await DelayAsync(2000, ct);
 
             var actualEditId = ExtractEditId(editPage.Url);
-            // "skipped" phải nạp rowKey vào skipped → vòng sau KHÔNG chọn lại dòng này (tránh treo bám row #0).
             if (string.IsNullOrEmpty(actualEditId))
             {
-                if (!string.IsNullOrEmpty(rowKey)) _skippedRowKeys.Add(rowKey);
-                _skipCount++; keepClaim = true; return ("skipped", false);
+                var badUrl = editPage.Url ?? "";
+                _log($"  ⚠ Mở tab Sửa nhưng URL không có edit-id ('{badUrl}') — nghi rớt phiên BigSeller hoặc lỗi tải trang.");
+                if (badUrl.Contains("login", StringComparison.OrdinalIgnoreCase) || !badUrl.Contains("/web/", StringComparison.OrdinalIgnoreCase))
+                {
+                    BigSellerSessionRegistry.Invalidate(_settings.AccountId);
+                    _lastTerminalReason = $"rớt phiên BigSeller (tab Sửa chuyển về '{badUrl}')";
+                    return (null, true);
+                }
+                return ("retry", false);
             }
             if (_skippedEditIds.Contains(actualEditId))
             {
@@ -521,7 +637,8 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             // nhánh 'skipped' (giữ claim + chốt MarkDone để lane restart không mở lại) — không đếm là "bắt đầu sửa".
             if (_updateDone.TryGetValue(itemId, out var doneName) && doneName == record!.ProductName)
             {
-                _log("  ⏭ đã update trước đó (tiến độ đã lưu) — bỏ qua, không sửa lại.");
+                _targetTracker?.MarkCompleted(itemId);
+                _log($"  ⏭ đã update trước đó của shop {_settings.ShopName} — bỏ qua, không sửa lại.");
                 _skippedEditIds.Add(actualEditId);
                 if (!string.IsNullOrEmpty(rowKey)) _skippedRowKeys.Add(rowKey);
                 _claim?.MarkDone(editClaimKey); _claim?.MarkDone(rowKey);
@@ -532,6 +649,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             // lane khác giữ / not_in_xlsx / thiếu tên / đã-update-trước-đó) KHÔNG đếm; chỉ đếm khi thực sự vào điền/sửa SP.
             // Coordinator đếm TOÀN account (quota Material Center per-account; đếm per-lane ở cleaner là LỆCH —
             // 5 lane phải ~50 lần mới đủ 10, lại reset khi lane restart). null → giữ đường cũ per-lane.
+            if (record!.LineIndex > 0) RowOpening?.Invoke(record.LineIndex);
             if (_mediaCoord != null) _mediaCoord.RecordEditStart(_log);
             else _mediaCleaner!.RecordEditStart();
             var reported = false;
@@ -550,6 +668,9 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             var ok = await ProcessProductAsync(editPage, record!, onSaved, ct).ConfigureAwait(false);
             if (!ok)
             {
+                // Shop đã chạm giới hạn đăng SP của Shopee ("The shop has reached its listing limit") → DỪNG NGAY toàn bộ shop.
+                if (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })
+                    return ("listing_limit", false);
                 // Kho ĐẦY giữa chừng → KHÔNG đếm fail / KHÔNG add skip-set: SP này sẽ được làm lại SAU khi dọn kho
                 // (pause-all). keepClaim vẫn false → finally nhả claim tầng-2 cho lane/vòng sau claim lại.
                 if (_mediaFullDetected) return ("media_full", false);
@@ -563,6 +684,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                 // (khỏi lặp vô hạn), nhưng NHẢ khóa (keepClaim=false → finally nhả edit-id; "failed" → nhả rowKey ở
                 // RunFirstListingRow) để LANE KHÁC có 2 lượt thử riêng → tổng tự chặn ở 2×N lane, KHÔNG khóa oan SP
                 // (bug prod: kho media đầy → "fail 2 lần" khóa vĩnh viễn dù dọn xong lane khác sửa được).
+                _targetTracker?.MarkFailedPermanent(itemId);
                 _log("  ↳ fail 2 lần → lane này bỏ qua, NHẢ khóa cho lane khác thử (không xóa trên BigSeller).");
                 _skippedEditIds.Add(actualEditId);
                 if (!string.IsNullOrEmpty(rowKey)) _skippedRowKeys.Add(rowKey);
@@ -571,7 +693,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
 
             _skippedEditIds.Add(actualEditId);
             if (!string.IsNullOrEmpty(rowKey)) _skippedRowKeys.Add(rowKey);
-            _log($"✅ HOÀN TẤT XỬ LÝ SKU: {record!.Sku}");
+            _log($"✅ HOÀN TẤT XỬ LÝ SKU: {record!.Sku} ({_targetTracker?.CompletedCount ?? _okCount}/{_targetTracker?.TargetCount ?? _records.Count} SP)");
             await OverlayAsync($"✅ Hoàn tất SKU {record!.Sku}");
             _okCount++;
             // Helper PHẢI đã gọi onSaved lúc đóng tab; nếu CHƯA (đường success nào đó không qua helper) vẫn báo để Hub

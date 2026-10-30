@@ -34,6 +34,7 @@ public sealed partial class ShellViewModel : ObservableObject
     private readonly BigSellerViewModel _bigSeller;
 
     public string WindowTitle => WorkspaceAppConfig.WindowTitle;
+    public string WindowIcon => WorkspaceAppConfig.WindowIcon;
     public WorkspaceViewModel Workspace => _workspace;
     public BigSellerViewModel BigSeller => _bigSeller;
 

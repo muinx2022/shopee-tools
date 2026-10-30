@@ -126,13 +126,12 @@ CREATE TABLE km_config (
 
         var cf = hai.KmConfig.Get(idHai);
         Assert.True(cf.TuDong);                       // lịch ĐÃ đồng bộ sang máy hai…
-        Assert.Equal(MayMot, cf.OwnerMachine);        // …nhưng chủ trì là máy một
-        Assert.False(KmLichTuDong.LaMayChuTri(cf.OwnerMachine, MayHai));
+        Assert.Equal(MayMot, cf.OwnerMachine);        // …và mỗi client chạy độc lập không bị chặn bởi OwnerMachine
 
         await new AccountsViewModel(hai).NhipLichKmAsync(TrongKhung);
 
-        Assert.Null(hai.KmConfig.Get(idHai).LanThuTuDong);   // KHÔNG đốt lượt thử của máy một
-        Assert.Equal(0, soLanXinKhoa);                       // và KHÔNG vào thân lượt KM
+        Assert.Equal(TrongKhung, hai.KmConfig.Get(idHai).LanThuTuDong);
+        Assert.Equal(1, soLanXinKhoa);
     }
 
     /// <summary>Vế ĐỐI CHỨNG — chính MÁY MỘT (máy chủ trì sau backfill) vẫn chạy lượt tự động. Thiếu vế này thì

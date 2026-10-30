@@ -32,9 +32,55 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     public string Name => Shop.DisplayName;
     public string DisplayName => Name;
 
-    /// <summary>Chỉ shop đang chạy mới có chữ. Shop khác để trống.</summary>
-    public string ProgressLine => ShopLiveLine.For(Parent.Account.Id, Shop.Id);
-    public string ProgressTooltip => ShopLiveLine.TooltipFor(Parent.Account.Id, Shop.Id);
+    /// <summary>Đang chạy thì hiện tiến độ trực tiếp; nếu đã update xong thì hiện tổng số dòng &amp; khoảng dòng đã cập nhật.</summary>
+    public string ProgressLine
+    {
+        get
+        {
+            var live = ShopLiveLine.For(Parent.Account.Id, Shop.Id);
+            if (!string.IsNullOrEmpty(live)) return live;
+            return UpdateDone ? GetCompletedUpdateProgressText() : "";
+        }
+    }
+
+    public string ProgressTooltip
+    {
+        get
+        {
+            var live = ShopLiveLine.TooltipFor(Parent.Account.Id, Shop.Id);
+            if (!string.IsNullOrEmpty(live)) return live;
+            return UpdateDone ? GetCompletedUpdateProgressText() : "";
+        }
+    }
+
+    private string GetCompletedUpdateProgressText()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
+        var summary = OpProgressStore.Shared.TryGetSummary(
+            account.Id,
+            new[] { resolved.ProgressKey, Shop.ShopeeDataSheet, Shop.Name },
+            AssignmentOps.Update);
+
+        if (summary is not { DoneCount: > 0 } s)
+            return "Đã cập nhật 0 dòng";
+
+        if (s.MinRow > 0 && s.MaxRow > 0)
+            return $"Đã cập nhật {s.DoneCount} dòng (từ dòng {s.MinRow} đến dòng {s.MaxRow})";
+
+        WorkbookRowRangeResolver.QueueResolveIfMissing(
+            account.Id, s.Sheet, AssignmentOps.Update,
+            resolved.DataPath, resolved.DataSheet,
+            Shop.ColumnMap.ItemIdColumn, Shop.ColumnMap.LinkColumn,
+            s.DoneCount);
+
+        return $"Đã cập nhật {s.DoneCount} dòng";
+    }
+
+    /// <summary>Tooltip cho ô icon trạng thái Scrape (chỉ xem ở app Import &amp; Update).</summary>
+    public string ScrapeReadOnlyTip => ScrapeDone
+        ? (string.IsNullOrWhiteSpace(ScrapeTooltip) ? "Scrape: Đã hoàn thành" : $"Scrape: Đã hoàn thành · {ScrapeTooltip}")
+        : (string.IsNullOrWhiteSpace(ScrapeTooltip) ? "Scrape: Chưa xong" : $"Scrape: Chưa xong · {ScrapeTooltip}");
 
     public void NotifyLiveLine()
     {
@@ -157,8 +203,18 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
             var scrapeResolved = SharedWorkbookStore.Resolve(account, Shop);
             var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, scrapeResolved.ProgressKey);
             var progress = ScrapeProgressStore.Shared.Find(account.Id, key);
-            return progress is not null
-                && string.Equals(progress.Status, LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase);
+            if (progress is not null && string.Equals(progress.Status, LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var updateResolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
+            if (!string.IsNullOrWhiteSpace(updateResolved.ProgressKey))
+            {
+                var altKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, updateResolved.ProgressKey);
+                var altProg = ScrapeProgressStore.Shared.Find(account.Id, altKey);
+                if (altProg is not null && string.Equals(altProg.Status, LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
         }
 
         var opName = op switch
@@ -212,6 +268,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
             nameof(ScrapeToggleTip), nameof(ImportToggleTip), nameof(UpdateToggleTip), nameof(RewriteToggleTip),
             nameof(CanScrape), nameof(CanStartUpdate), nameof(IsUpdatingAnyLocal),
             nameof(ScrapeDone), nameof(ImportDone), nameof(UpdateDone), nameof(RewriteDone),
+            nameof(ScrapeReadOnlyTip), nameof(ProgressLine), nameof(ProgressTooltip),
             nameof(CanReset),
         }) OnPropertyChanged(n);
     }
@@ -225,7 +282,10 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     {
         var account = Parent.Account;
         var resolved = SharedWorkbookStore.Resolve(account, Shop);
-        var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
+        var progressKey = !string.IsNullOrWhiteSpace(resolved.ProgressKey)
+            ? resolved.ProgressKey
+            : SharedWorkbookStore.ResolveForUpdate(account, Shop).ProgressKey;
+        var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, progressKey);
         ScrapeProgressStore.Shared.MarkCompleted(account.Id, key);
         RefreshStatus();
         Parent.ScrapeTarget.RefreshProgress();
@@ -238,6 +298,12 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
         var resolved = SharedWorkbookStore.Resolve(account, Shop);
         var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
         ScrapeProgressStore.Shared.Clear(account.Id, key);
+        var updateResolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
+        if (!string.Equals(resolved.ProgressKey, updateResolved.ProgressKey, StringComparison.OrdinalIgnoreCase))
+        {
+            var altKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, updateResolved.ProgressKey);
+            ScrapeProgressStore.Shared.Clear(account.Id, altKey);
+        }
         RefreshStatus();
         Parent.ScrapeTarget.RefreshProgress();
     }
@@ -247,7 +313,10 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     {
         var account = Parent.Account;
         var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
-        OpProgressStore.Shared.FinishRun(account.Id, resolved.ProgressKey, AssignmentOps.Import, completed: true);
+        var key = !string.IsNullOrWhiteSpace(resolved.ProgressKey)
+            ? resolved.ProgressKey
+            : (!string.IsNullOrWhiteSpace(Shop.ShopeeDataSheet) ? Shop.ShopeeDataSheet : Shop.Name);
+        OpProgressStore.Shared.MarkCompleted(account.Id, key, AssignmentOps.Import, account.DisplayName);
         RefreshFleet();
     }
 
@@ -256,17 +325,42 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     {
         var account = Parent.Account;
         var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
-        OpProgressStore.Shared.FinishRun(account.Id, resolved.ProgressKey, AssignmentOps.Update, completed: true);
+        var key = !string.IsNullOrWhiteSpace(resolved.ProgressKey)
+            ? resolved.ProgressKey
+            : (!string.IsNullOrWhiteSpace(Shop.ShopeeDataSheet) ? Shop.ShopeeDataSheet : Shop.Name);
+        OpProgressStore.Shared.MarkCompleted(account.Id, key, AssignmentOps.Update, account.DisplayName);
+        RefreshFleet();
+    }
+
+    [RelayCommand]
+    private void MarkRewriteDone()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
+        var key = !string.IsNullOrWhiteSpace(resolved.ProgressKey)
+            ? resolved.ProgressKey
+            : (!string.IsNullOrWhiteSpace(Shop.ShopeeDataSheet) ? Shop.ShopeeDataSheet : Shop.Name);
+        OpProgressStore.Shared.MarkCompleted(account.Id, key, AssignmentOps.Rewrite, account.DisplayName);
         RefreshFleet();
     }
 
     [RelayCommand] private void ResetImportProgress() => ResetOpProgress(AssignmentOps.Import);
     [RelayCommand] private void ResetUpdateProgress() => ResetOpProgress(AssignmentOps.Update);
+    [RelayCommand] private void ResetRewriteProgress() => ResetOpProgress(AssignmentOps.Rewrite);
 
     private void ResetOpProgress(string op)
     {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
+        if (!string.IsNullOrWhiteSpace(resolved.ProgressKey))
+            OpProgressStore.Shared.Clear(account.Id, resolved.ProgressKey, op);
+        if (!string.IsNullOrWhiteSpace(Shop.ShopeeDataSheet))
+            OpProgressStore.Shared.Clear(account.Id, Shop.ShopeeDataSheet, op);
+        if (!string.IsNullOrWhiteSpace(Shop.Name))
+            OpProgressStore.Shared.Clear(account.Id, Shop.Name, op);
         Parent.UpdateTarget.SelectedShop = Shop;   // ResetOpProgressAsync đọc target.SelectedShop
         _ = Parent.UpdateVm.ResetOpProgressAsync(Parent.UpdateTarget, op);
+        RefreshFleet();
     }
 
     public void ResetScrapeProgressOnly()

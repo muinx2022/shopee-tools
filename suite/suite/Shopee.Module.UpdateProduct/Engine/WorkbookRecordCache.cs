@@ -14,6 +14,112 @@ internal sealed class LaneAbortedException(string reason) : Exception(reason);
 internal sealed record WorkbookRecord(string Link, string Sku, string ProductName, string Price, int LineIndex, string Description = "");
 
 /// <summary>
+/// Theo dõi số lượng sản phẩm mục tiêu cần Update của shop đang chạy (dùng chung mọi lane).
+/// Khi toàn bộ SP mục tiêu của shop đã được update xong, báo hiệu để các lane DỪNG NGAY,
+/// không bấm Next Page quét tiếp các trang hộp nháp của các shop khác trong cùng tài khoản BigSeller.
+/// </summary>
+internal sealed class UpdateTargetTracker
+{
+    private readonly object _gate = new();
+    private readonly HashSet<string> _targetIds;
+    private readonly HashSet<string> _completedIds = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _failedIds = new(StringComparer.Ordinal);
+    private readonly Action? _onListingLimitReached;
+    private volatile bool _isListingLimitReached;
+
+    public UpdateTargetTracker(
+        IReadOnlyDictionary<string, WorkbookRecord> records,
+        IReadOnlyDictionary<string, string?> updateDone,
+        IReadOnlyDictionary<string, string?>? importDone = null,
+        Action? onListingLimitReached = null)
+    {
+        _onListingLimitReached = onListingLimitReached;
+        // Nếu shop đã có danh sách SP đã Import vào hộp nháp (importDone), tập mục tiêu cần Update trên hộp nháp
+        // chính là giao của (records trong khoảng dòng cấu hình) và (importDone). Nếu chưa có lịch sử importDone
+        // (ví dụ import từ ngoài hoặc dữ liệu cũ), dùng toàn bộ records.
+        if (importDone is not null && importDone.Count > 0)
+        {
+            var importedTargets = records.Keys.Where(importDone.ContainsKey).ToHashSet(StringComparer.Ordinal);
+            _targetIds = importedTargets.Count > 0
+                ? importedTargets
+                : new HashSet<string>(records.Keys, StringComparer.Ordinal);
+        }
+        else
+        {
+            _targetIds = new HashSet<string>(records.Keys, StringComparer.Ordinal);
+        }
+
+        foreach (var (itemId, rec) in records)
+        {
+            if (!_targetIds.Contains(itemId)) continue;
+            if (updateDone.TryGetValue(itemId, out var doneName) && doneName == rec.ProductName)
+                _completedIds.Add(itemId);
+        }
+    }
+
+    public int TargetCount => _targetIds.Count;
+
+    public int CompletedCount
+    {
+        get { lock (_gate) return _completedIds.Count; }
+    }
+
+    public bool IsAllCompleted
+    {
+        get { lock (_gate) return _targetIds.Count > 0 && _completedIds.Count >= _targetIds.Count; }
+    }
+
+    public bool IsAllHandled
+    {
+        get { lock (_gate) return _targetIds.Count > 0 && (_completedIds.Count + _failedIds.Count) >= _targetIds.Count; }
+    }
+
+    /// <summary>Shop đã chạm giới hạn đăng sản phẩm của Shopee ("The shop has reached its listing limit") → mọi lane dừng ngay.</summary>
+    public bool IsListingLimitReached => _isListingLimitReached;
+
+    public void MarkListingLimitReached()
+    {
+        var first = false;
+        lock (_gate)
+        {
+            if (!_isListingLimitReached)
+            {
+                _isListingLimitReached = true;
+                first = true;
+            }
+        }
+        if (first)
+        {
+            try { _onListingLimitReached?.Invoke(); } catch { }
+        }
+    }
+
+    public bool MarkCompleted(string itemId)
+    {
+        if (string.IsNullOrEmpty(itemId)) return false;
+        lock (_gate)
+        {
+            if (_targetIds.Contains(itemId))
+            {
+                _failedIds.Remove(itemId);
+                _completedIds.Add(itemId);
+            }
+            return _targetIds.Count > 0 && _completedIds.Count >= _targetIds.Count;
+        }
+    }
+
+    public void MarkFailedPermanent(string itemId)
+    {
+        if (string.IsNullOrEmpty(itemId)) return;
+        lock (_gate)
+        {
+            if (_targetIds.Contains(itemId) && !_completedIds.Contains(itemId))
+                _failedIds.Add(itemId);
+        }
+    }
+}
+
+/// <summary>
 /// Cache DÙNG CHUNG dữ liệu shop (dòng workbook → <see cref="WorkbookRecord"/>, khóa = Shopee item id) cho
 /// TẤT CẢ lane update. Nạp MỘT LẦN trước khi mở Brave rồi chia sẻ (immutable) → thay vì mỗi lane tự đọc
 /// workbook (N lần đọc + N lần khóa file + N lần parse). Đây là "cache chung từ dòng đến dòng" trước khi

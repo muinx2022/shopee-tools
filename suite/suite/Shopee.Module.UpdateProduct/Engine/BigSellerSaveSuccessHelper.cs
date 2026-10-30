@@ -50,7 +50,8 @@ internal static class BigSellerSaveSuccessHelper
     public static async Task<bool> ConfirmSavedThenCloseAsync(
         IPage editPage, IBrowserContext context, int timeoutMs,
         Action<string> log, Func<int, CancellationToken, Task> delay,
-        Func<Task>? onSuccess, CancellationToken ct)
+        Func<Task>? onSuccess, CancellationToken ct,
+        Action<string>? onPublishFailure = null)
     {
         var deadline = timeoutMs;
         const int step = 250;
@@ -85,6 +86,16 @@ internal static class BigSellerSaveSuccessHelper
                     await CloseAcceptingDialogAsync(editPage);
                     if (onSuccess != null) await onSuccess();
                     return true;
+                }
+
+                // (4) Modal báo "Tải lên thất bại" (vd: The shop has reached its listing limit) → thoát sớm ngay,
+                //     KHÔNG chờ 60s timeout vô ích.
+                var failReason = await TryDetectPublishFailureDialogAsync(editPage);
+                if (failReason is not null)
+                {
+                    log($"⛔ BigSeller báo tải lên thất bại (modal): {failReason}");
+                    onPublishFailure?.Invoke(failReason);
+                    return false;
                 }
             }
             catch (Exception ex) when ((ex.Message ?? "").Contains("closed", StringComparison.OrdinalIgnoreCase)
@@ -124,11 +135,57 @@ internal static class BigSellerSaveSuccessHelper
             catch { }
         }
         var m = Normalize(sb.ToString());
+        if (IsPublishFailureText(m))
+            return false;
         return m.Contains("thao tac thanh cong") || m.Contains("successfully") ||
                m.Contains("de trinh") || m.Contains("pending by shopee") ||
                Regex.IsMatch(m, @"publishing\s*/\s*failed\s*/\s*active") ||
                m.Contains("close this page") || m.Contains("dong trang nay") ||
                m.Contains("create next product") || m.Contains("tao san pham tiep");
+    }
+
+    internal static async Task<string?> TryDetectPublishFailureDialogAsync(IPage page)
+    {
+        foreach (var sel in SuccessDialogSelectors)
+        {
+            try
+            {
+                foreach (var t in await page.Locator(sel).AllInnerTextsAsync())
+                {
+                    var norm = Normalize(t);
+                    if (IsPublishFailureText(norm))
+                    {
+                        var clean = Regex.Replace(t ?? "", @"\s+", " ").Trim();
+                        return clean.Length > 200 ? clean[..200] : clean;
+                    }
+                }
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    // CHÚ Ý: Modal THÀNH CÔNG tiếng Việt của BigSeller có câu:
+    // "Thao tác thành công · Sản phẩm đã đệ trình đến Shopee, đang chờ nền tảng xử lý, vui lòng kiểm tra trong
+    //  danh sách đang tải lên, tải lên thất bại và sản phẩm online" → chứa cụm "tai len that bai"!
+    // Do đó chỉ coi "tai len that bai" là lỗi khi KHÔNG đi kèm "thao tac thanh cong" / "da de trinh".
+    internal static bool IsPublishFailureText(string norm)
+    {
+        if (IsListingLimitFailure(norm)) return true;
+        if (norm.Contains("publish failed") || norm.Contains("upload failed")) return true;
+        if (norm.Contains("tai len that bai") && !norm.Contains("thao tac thanh cong") && !norm.Contains("da de trinh"))
+            return true;
+        return false;
+    }
+
+    internal static bool IsListingLimitFailure(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var norm = Normalize(text);
+        return norm.Contains("listing limit") ||
+               norm.Contains("reached its listing limit") ||
+               norm.Contains("gioi han dang") ||
+               norm.Contains("vuot qua gioi han");
     }
 
     private static async Task DumpVisibleDialogsAsync(IPage page, Action<string> log)
