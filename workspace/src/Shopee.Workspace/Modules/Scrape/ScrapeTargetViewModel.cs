@@ -179,7 +179,7 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
 
     public string DisplayName => Account.DisplayName;
     public string CookieStatus => Account.HasCookie ? "✓ cookie" : "⚠ chưa cookie";
-    public string WorkbookPath => SelectedShop is { } s ? SharedWorkbookStore.Resolve(Account, s).DataPath : Account.WorkbookPath;
+    public string WorkbookPath => SelectedShop is { } s ? SharedWorkbookStore.Resolve(Account, s).DataPath : SharedWorkbookStore.ActiveSourcePath;
     public string SheetName => SelectedShop is { } s ? SharedWorkbookStore.Resolve(Account, s).DataSheet : "";
     public bool ShopChosen => SelectedShop is not null;
 

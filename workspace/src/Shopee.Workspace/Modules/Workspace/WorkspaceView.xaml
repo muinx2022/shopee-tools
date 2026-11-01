@@ -968,11 +968,6 @@
                                                 <TextBox Style="{StaticResource cfgBox}" Text="{Binding UpdateTarget.ListingReloadSeconds}" />
                                             </StackPanel>
                                         </UniformGrid>
-                                        <CheckBox Margin="0,4,0,10"
-                                                  Content="Import từ tab Đã nhận"
-                                                  IsChecked="{Binding UpdateTarget.ImportFromClaimedTab}"
-                                                  Visibility="{Binding DataContext.ShowImportUpdate, ElementName=Root, Converter={StaticResource BoolToVis}}"
-                                                  ToolTip="Tắt: import ở tab Chưa nhận. Bật: bấm tab Đã nhận rồi mới import." />
                                         <StackPanel Margin="0,0,0,8"
                                                     Visibility="{Binding DataContext.ShowImportUpdate, ElementName=Root, Converter={StaticResource BoolToVis}}">
                                             <TextBlock Text="Ảnh Update (máy này)" Style="{StaticResource cfgLabel}" />
