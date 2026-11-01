@@ -15,16 +15,16 @@ namespace Shopee.Core.Scrape;
 /// </summary>
 public readonly record struct ScrapeRestWindow(int MinSeconds, int MaxSeconds)
 {
-    /// <summary>Mặc định 120s — ĐÚNG hằng <c>MinRestMs = 120_000</c> trước đây.</summary>
-    public const int DefaultMinSeconds = 120;
-    /// <summary>Mặc định 240s — ĐÚNG hằng <c>MaxRestMs = 240_000</c> trước đây.</summary>
-    public const int DefaultMaxSeconds = 240;
+    /// <summary>Mặc định 60s (1 phút) — ĐÚNG hằng <c>MinRestMs = 120_000</c> trước đây.</summary>
+    public const int DefaultMinSeconds = 60;
+    /// <summary>Mặc định 120s (2 phút) — ĐÚNG hằng <c>MaxRestMs = 240_000</c> trước đây.</summary>
+    public const int DefaultMaxSeconds = 120;
     /// <summary>Trần cho phép (1 giờ) — chặn ô nhập gõ nhầm số khổng lồ làm job đứng cả ngày.</summary>
     public const int MaxAllowedSeconds = 3600;
     /// <summary>Sàn cho phép (1s) — 0 đã có nghĩa "dùng mặc định" nên giá trị nhỏ nhất đặt được là 1s.</summary>
     public const int MinAllowedSeconds = 1;
 
-    /// <summary>Khoảng nghỉ mặc định (120–240s) — hành vi trước khi có cấu hình.</summary>
+    /// <summary>Khoảng nghỉ mặc định (60–120s) — hành vi trước khi có cấu hình.</summary>
     public static ScrapeRestWindow Default => new(DefaultMinSeconds, DefaultMaxSeconds);
 
     /// <summary>Hợp lệ hoá 1 cặp (min, max) tính bằng GIÂY: ≤0 → mặc định; kẹp trong

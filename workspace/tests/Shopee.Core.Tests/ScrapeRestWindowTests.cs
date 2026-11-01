@@ -15,24 +15,24 @@ public sealed class ScrapeRestWindowTests
     [Fact]
     public void MacDinh_DungBangHaiHangCu()
     {
-        Assert.Equal(120, ScrapeRestWindow.DefaultMinSeconds);
-        Assert.Equal(240, ScrapeRestWindow.DefaultMaxSeconds);
+        Assert.Equal(60, ScrapeRestWindow.DefaultMinSeconds);
+        Assert.Equal(120, ScrapeRestWindow.DefaultMaxSeconds);
 
         var w = ScrapeRestWindow.Default;
-        Assert.Equal(120_000, w.MinMs);
-        Assert.Equal(240_000, w.MaxMs);
+        Assert.Equal(60_000, w.MinMs);
+        Assert.Equal(120_000, w.MaxMs);
     }
 
     // ===== 2. Quy ước 0 = dùng mặc định (khớp khuôn hub-run-params) =====
     [Theory]
     [InlineData(0, 0)]
-    [InlineData(0, 240)]     // chỉ đặt max đúng bằng mặc định
+    [InlineData(0, 120)]     // chỉ đặt max đúng bằng mặc định
     [InlineData(-5, -1)]     // số âm (ô nhập gõ bậy) cũng coi như "không đặt"
     public void KhongDat_VeMacDinh(int min, int max)
     {
         var w = ScrapeRestWindow.Resolve(min, max);
-        Assert.Equal(120, w.MinSeconds);
-        Assert.Equal(240, w.MaxSeconds);
+        Assert.Equal(60, w.MinSeconds);
+        Assert.Equal(120, w.MaxSeconds);
     }
 
     // ===== 3. Chỉ đặt MỘT vế: vế còn lại vẫn là mặc định =====
@@ -41,7 +41,7 @@ public sealed class ScrapeRestWindowTests
     {
         var w = ScrapeRestWindow.Resolve(30, 0);
         Assert.Equal(30, w.MinSeconds);
-        Assert.Equal(240, w.MaxSeconds);
+        Assert.Equal(120, w.MaxSeconds);
     }
 
     /// <summary>Chỉ đặt MAX (min bỏ trống) và max NHỎ HƠN mặc định 120: min phải HẠ theo max, KHÔNG được lấy
@@ -62,7 +62,7 @@ public sealed class ScrapeRestWindowTests
     public void ChiDatMax_LonHonMacDinh_MinGiuMacDinh()
     {
         var w = ScrapeRestWindow.Resolve(0, 300);
-        Assert.Equal(120, w.MinSeconds);
+        Assert.Equal(60, w.MinSeconds);
         Assert.Equal(300, w.MaxSeconds);
     }
 
@@ -110,8 +110,8 @@ public sealed class ScrapeRestWindowTests
     public void RunConfigMoi_MangSanMacDinh()
     {
         var cfg = new BigSellerRunConfig();
-        Assert.Equal(120, cfg.RestMinSeconds);
-        Assert.Equal(240, cfg.RestMaxSeconds);
+        Assert.Equal(60, cfg.RestMinSeconds);
+        Assert.Equal(120, cfg.RestMaxSeconds);
     }
 
     /// <summary>bigseller.json CŨ (không có 2 field) → deserialize giữ nguyên khởi tạo 120/240; và kể cả nếu
@@ -121,12 +121,12 @@ public sealed class ScrapeRestWindowTests
     {
         var cfg = System.Text.Json.JsonSerializer.Deserialize<BigSellerRunConfig>(
             """{"StartRow":2,"EndRow":0,"Processes":3,"FrameSize":10,"RowsPerAccount":60,"ReloadSeconds":20}""")!;
-        Assert.Equal(120, cfg.RestMinSeconds);
-        Assert.Equal(240, cfg.RestMaxSeconds);
+        Assert.Equal(60, cfg.RestMinSeconds);
+        Assert.Equal(120, cfg.RestMaxSeconds);
 
         var w = ScrapeRestWindow.Resolve(cfg.RestMinSeconds, cfg.RestMaxSeconds);
-        Assert.Equal(120_000, w.MinMs);
-        Assert.Equal(240_000, w.MaxMs);
+        Assert.Equal(60_000, w.MinMs);
+        Assert.Equal(120_000, w.MaxMs);
     }
 
     /// <summary>Khoảng nghỉ là cấu hình RIÊNG-MÁY (nằm trên <c>BigSellerAccount.RunConfig</c>) → TUYỆT ĐỐI
