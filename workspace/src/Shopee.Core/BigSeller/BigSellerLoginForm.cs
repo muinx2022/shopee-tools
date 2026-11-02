@@ -34,9 +34,14 @@ public static class BigSellerLoginForm
         await page.GotoAsync(LoginUrl, new() { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 20000 }).ConfigureAwait(false);
         await Task.Delay(2000, ct).ConfigureAwait(false);
 
-        // Đã đăng nhập sẵn (redirect khỏi trang login) → coi như thành công.
-        if (!(page.Url ?? "").Contains("login", StringComparison.OrdinalIgnoreCase))
+        // Đã đăng nhập sẵn (chỉ khi URL thực sự chuyển hướng vào khu vực quản trị /web/ hoặc dashboard)
+        var initUrl = page.Url ?? "";
+        if (initUrl.Contains("/web/", StringComparison.OrdinalIgnoreCase) ||
+            initUrl.Contains("dashboard", StringComparison.OrdinalIgnoreCase) ||
+            initUrl.Contains("index.htm?bsStatus", StringComparison.OrdinalIgnoreCase))
+        {
             return BigSellerLoginOutcome.Success;
+        }
 
         for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
@@ -76,7 +81,10 @@ public static class BigSellerLoginForm
                 log?.Invoke("⚠ BigSeller đòi mã xác nhận email (thiết bị mới) — cần giải tay 1 lần để tạo device-trust.");
                 return BigSellerLoginOutcome.NeedsOtp;
             }
-            if (!url.Contains("login", StringComparison.OrdinalIgnoreCase))
+            if (url.Contains("/web/", StringComparison.OrdinalIgnoreCase) ||
+                url.Contains("dashboard", StringComparison.OrdinalIgnoreCase) ||
+                url.Contains("index.htm?bsStatus", StringComparison.OrdinalIgnoreCase) ||
+                (!url.Contains("login", StringComparison.OrdinalIgnoreCase) && url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) && !url.Contains("about:") && !url.Contains("error")))
             { log?.Invoke("✔ Auto-login thành công — có token mới (khớp IP proxy này)."); return BigSellerLoginOutcome.Success; }
 
             log?.Invoke("Captcha sai/khác — đổi captcha thử lại.");

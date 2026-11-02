@@ -390,7 +390,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         if (!SharedWorkbookStore.IsActive)
         {
             if (string.IsNullOrWhiteSpace(resolved.DataSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
-            if (string.IsNullOrWhiteSpace(resolved.DataPath) || !File.Exists(resolved.DataPath)) { problem = $"{a.DisplayName}: workbook không tồn tại"; return false; }
+            if (string.IsNullOrWhiteSpace(resolved.DataPath) || !File.Exists(resolved.DataPath)) { problem = $"{a.DisplayName}: chưa chọn file Excel hoặc file không còn — chọn lại ở Cấu hình BigSeller"; return false; }
         }
         if (requiresBigSellerLogin && !a.HasCookie) { problem = $"{a.DisplayName}: chưa có cookie BigSeller"; return false; }
         problem = ""; return true;

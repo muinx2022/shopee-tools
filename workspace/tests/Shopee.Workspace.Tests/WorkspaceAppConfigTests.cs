@@ -2,6 +2,7 @@ using Shopee.Workspace.Infrastructure;
 
 namespace Shopee.Workspace.Tests;
 
+[Collection("Sequential")]
 public sealed class WorkspaceAppConfigTests
 {
     [Fact]

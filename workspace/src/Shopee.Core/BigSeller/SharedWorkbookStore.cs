@@ -41,16 +41,10 @@ public static class SharedWorkbookStore
         get { lock (Gate) return Current.Enabled && File.Exists(MergedPath); }
     }
 
-    public const string DefaultSharedWorkbookPath = @"D:\Projects\shopee-tools\data\Sản phẩm shopee resell - Linh QA - 18 shops.xlsx";
-
     private static string ActiveSourcePathLocked()
     {
         if (!string.IsNullOrWhiteSpace(Current.SourceFilePath) && File.Exists(Current.SourceFilePath))
             return Current.SourceFilePath;
-        if (File.Exists(DefaultSharedWorkbookPath))
-            return DefaultSharedWorkbookPath;
-        if (File.Exists(SourcePath))
-            return SourcePath;
         return "";
     }
 
@@ -151,16 +145,7 @@ public static class SharedWorkbookStore
         var loaded = JsonAtomicFile.TryLoad<SharedWorkbookState>(ConfigPath, JsonOpts);
         var state = loaded ?? new SharedWorkbookState();
 
-        const string defaultResellPath = @"D:\Projects\shopee-tools\data\Sản phẩm shopee resell - Linh QA - 18 shops.xlsx";
         state.UseSharedSource = true;
-        if (string.IsNullOrWhiteSpace(state.SourceFilePath) || !File.Exists(state.SourceFilePath))
-        {
-            if (File.Exists(defaultResellPath))
-            {
-                state.SourceFilePath = defaultResellPath;
-                state.SourceName = Path.GetFileName(defaultResellPath);
-            }
-        }
         return state;
     }
 

@@ -36,6 +36,9 @@
             </DataTemplate>
             <DataTemplate DataType="{x:Type ws:AutoRunViewModel}">
                 <ws:AutoRunView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type ws:ScrapeMultiViewModel}">
+                <ws:ScrapeMultiView />
             </DataTemplate>
             <DataTemplate DataType="{x:Type ca:CheckAccountViewModel}">
                 <ca:CheckAccountView />

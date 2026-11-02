@@ -149,7 +149,8 @@ internal sealed partial class BraveInstanceSession
                                 // → cập nhật cờ + cột Trạng thái ("🚫 Captcha" ↔ về "Đang chạy — proxy").
                                 if (_config is not null) { _config.CaptchaError = c; RefreshRunStatusFromConfig(); }
                             },
-                            onScrapeSucceeded: () => _bigSeller.WriteBackTokenAsync(loopToken)).ConfigureAwait(false);
+                            onScrapeSucceeded: () => _bigSeller.WriteBackTokenAsync(loopToken),
+                            onProductScraped: (row, url, json) => ProductScraped?.Invoke(row, url, json) ?? Task.CompletedTask).ConfigureAwait(false);
 
                         if (string.Equals(_config?.RunnerPhase, "traffic-recheck", StringComparison.OrdinalIgnoreCase))
                         {

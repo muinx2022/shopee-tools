@@ -1,4 +1,4 @@
-﻿namespace Shopee.Workspace.Infrastructure;
+namespace Shopee.Workspace.Infrastructure;
 
 /// <summary>
 /// Icon vector ĐƠN SẮC (Material filled, viewbox 24×24) của các nút ĐIỀU HƯỚNG MÀN trên ribbon. Ở đây (C#)
@@ -82,4 +82,8 @@ public static class AppIcons
         "2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 " +
         "0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 " +
         "3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z";
+
+    /// <summary>Đám mây tải xuống — Scrape Multi.</summary>
+    public const string CloudDownload =
+        "M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z";
 }

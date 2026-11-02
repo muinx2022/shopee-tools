@@ -72,6 +72,13 @@ public sealed class ScrapeRunner
     /// thái LỖI: handler ngoài lấy lý do này báo 'failed' lên Hub.</summary>
     public event Action<string>? JobFatal;
 
+    /// <summary>(rowNumber, link, jsonData) — phát khi một sản phẩm Shopee được cào thành công để phục vụ fan-out cào đa tài khoản.</summary>
+
+    public event Func<int, string, string, Task>? ProductScraped;
+
+    /// <summary>Id tk BigSeller mà runner này chạy cho (chỉ đọc) — để handler ngoài lọc đúng runner của tk mình quan tâm.</summary>
+    public string BigSellerAccountId => _bigSellerAccountId;
+
     public ScrapeRunner(string workbookPath, string videoOutputDir, string? braveExe = null, string sourceUserData = "", string bigSellerAccountName = "",
         string bigSellerAccountId = "", bool useHubData = false, Shopee.Core.Scrape.ScrapeRestWindow? restWindow = null)
     {
@@ -411,6 +418,8 @@ public sealed class ScrapeRunner
             // Cổng warmup dùng CHUNG mọi instance: giới hạn số SW cold-start đồng thời.
             session.WarmupAcquire = WarmupGate.WaitAsync;
             session.WarmupRelease = () => WarmupGate.Release();
+
+            session.ProductScraped += (r, u, j) => ProductScraped?.Invoke(r, u, j) ?? Task.CompletedTask;
             _sessions[key] = session;
             session.StatusChanged += () =>
             {

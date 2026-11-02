@@ -25,22 +25,16 @@ public static class SharedWorkbookCatalog
     }
 
     /// <summary>
-    /// Giải quyết file &amp; sheet cho luồng Scrape / Import / Update Product: LUÔN sử dụng file Excel dùng chung,
-    /// đến shop nào thì chọn đúng sheet của shop đó (<see cref="BigSellerShop.Name"/> hoặc <see cref="BigSellerShop.ShopeeDataSheet"/>).
-    /// Tuyệt đối không dùng file riêng cũ của tài khoản.
+    /// Giải quyết file &amp; sheet cho luồng Scrape / Import / Update Product: CHỈ đọc file nguồn user đã chọn
+    /// (<paramref name="sourcePath"/>), chọn đúng sheet của shop (<see cref="BigSellerShop.Name"/> hoặc <see cref="BigSellerShop.ShopeeDataSheet"/>).
+    /// Không còn fallback sang file riêng của tài khoản hay file mặc định. File nguồn thiếu: nếu workbook gộp đang bật
+    /// và file gộp còn thì trả file gộp, ngược lại trả DataPath rỗng để caller báo lỗi.
     /// </summary>
     public static SharedWorkbookTarget ResolveForUpdate(bool enabled, string sourcePath, string mergedPath, BigSellerAccount account, BigSellerShop shop)
     {
         var defaultSheet = !string.IsNullOrWhiteSpace(shop.Name) ? shop.Name.Trim() : (shop.ShopeeDataSheet?.Trim() ?? "");
 
         var chosenPath = sourcePath;
-        if (string.IsNullOrWhiteSpace(chosenPath) || !File.Exists(chosenPath))
-        {
-            if (!string.IsNullOrWhiteSpace(account.WorkbookPath))
-                chosenPath = account.WorkbookPath;
-            else
-                chosenPath = SharedWorkbookStore.DefaultSharedWorkbookPath;
-        }
 
         if (!string.IsNullOrWhiteSpace(chosenPath) && File.Exists(chosenPath))
         {
@@ -58,7 +52,11 @@ public static class SharedWorkbookCatalog
             return new SharedWorkbookTarget(chosenPath, defaultSheet, fallbackKey);
         }
 
-        return new SharedWorkbookTarget(chosenPath ?? "", defaultSheet, defaultSheet);
+        // File nguồn thiếu: chỉ file gộp (hành động chủ động của user) mới được thay thế
+        if (enabled && !string.IsNullOrWhiteSpace(mergedPath) && File.Exists(mergedPath))
+            return new SharedWorkbookTarget(mergedPath, SharedWorkbookMerge.SheetName, ProgressPrefix + (shop.Id ?? ""));
+
+        return new SharedWorkbookTarget("", defaultSheet, defaultSheet);
     }
 
     public static string NormalizeSheetKey(string? s)

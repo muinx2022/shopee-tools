@@ -21,7 +21,8 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSelection))]
-    [NotifyCanExecuteChangedFor(nameof(DeleteCommand), nameof(LoginCommand), nameof(AddShopCommand), nameof(CleanMediasCommand), nameof(UseLocalWorkbookCommand))]
+    [NotifyPropertyChangedFor(nameof(IsSelectedProfileOpen))]
+    [NotifyCanExecuteChangedFor(nameof(DeleteCommand), nameof(LoginCommand), nameof(StopLoginCommand), nameof(AddShopCommand), nameof(CleanMediasCommand), nameof(UseLocalWorkbookCommand))]
     private BigSellerAccountItemViewModel? _selected;
 
     [ObservableProperty]
@@ -33,10 +34,15 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsIdle))]
-    [NotifyCanExecuteChangedFor(nameof(LoginCommand), nameof(StopLoginCommand), nameof(LoginAllCommand))]
-    private bool _isLoggingIn;
+    [NotifyCanExecuteChangedFor(nameof(LoginAllCommand), nameof(StopLoginAllCommand))]
+    private bool _isLoggingInAll;
 
-    public bool IsIdle => !IsLoggingIn;
+    public bool IsIdle => !IsLoggingInAll;
+
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, CancellationTokenSource> _activeProfiles = new();
+
+    public bool HasAnyOpenProfile => !_activeProfiles.IsEmpty;
+    public bool IsSelectedProfileOpen => Selected is not null && _activeProfiles.ContainsKey(Selected.Model.Id);
 
     /// <summary>Shell gán: true khi Scrape hoặc Update đang chạy. Gộp / Ngừng dùng workbook chung phải chờ job dừng.</summary>
     public Func<bool>? JobsAreBusy { get; set; }
@@ -46,7 +52,7 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
     [ObservableProperty] private string _sharedSourceLabel = "Chưa chọn file.";
     [ObservableProperty] private string _sharedHint = "Đang dùng workbook riêng của từng tài khoản.";
 
-    private CancellationTokenSource? _loginCts;
+    private CancellationTokenSource? _loginAllCts;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(CleanMediasCommand), nameof(StopCleanMediasCommand))]
@@ -204,44 +210,50 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
     // (Đã xóa lệnh "Sync shop → Đơn hàng": module Đơn hàng nay đăng nhập SUBACCOUNT rồi tự đọc danh sách shop
     //  từ /portal/shop, không cần tạo sẵn mỗi shop một dòng tài khoản bên đó nữa.)
 
-    // ── Đăng nhập BigSeller (lấy cookie chung) ──────────────────────────────────
+    // ── Đăng nhập BigSeller (Mở profile Brave) ───────────────────────────────
 
     [RelayCommand(CanExecute = nameof(CanLogin))]
-    private async Task LoginAsync()
+    private void Login()
     {
-        if (Selected is null) return;
-
-        // Mặc định file cookie nếu chưa đặt.
-        if (string.IsNullOrWhiteSpace(Selected.CookieFile))
-        {
-            Selected.CookieFile = Path.Combine(
-                SuitePaths.ModuleDir("shared"), "bigseller-cookies", Selected.Model.Id + ".json");
-            Save();
-        }
-
-        IsLoggingIn = true;
-        LogLines.Clear();
-        _loginCts = new CancellationTokenSource();
-        var cookieFile = Selected.CookieFile;
         var account = Selected;
+        if (account is null) return;
+        if (_activeProfiles.ContainsKey(account.Model.Id)) return;
+
+        var cts = new CancellationTokenSource();
+        if (!_activeProfiles.TryAdd(account.Model.Id, cts)) return;
+
+        account.IsProfileOpen = true;
+        OnPropertyChanged(nameof(HasAnyOpenProfile));
+        OnPropertyChanged(nameof(IsSelectedProfileOpen));
+        LoginCommand.NotifyCanExecuteChanged();
+        StopLoginCommand.NotifyCanExecuteChanged();
+
+        // Chạy mở profile độc lập cho tài khoản này (cho phép nhiều profile mở song song)
+        _ = RunProfileSessionAsync(account, cts);
+    }
+
+    private async Task RunProfileSessionAsync(BigSellerAccountItemViewModel account, CancellationTokenSource cts)
+    {
         try
         {
-            // Profile Brave RIÊNG theo từng tài khoản (theo Id) → mỗi tk BigSeller 1 phiên/cookie độc
-            // lập, không bị "đăng nhập vào tk cũ" do dùng chung profile.
+            if (string.IsNullOrWhiteSpace(account.CookieFile))
+            {
+                account.CookieFile = Path.Combine(
+                    SuitePaths.ModuleDir("shared"), "bigseller-cookies", account.Model.Id + ".json");
+                UiThread.Post(() => Save());
+            }
+
+            var cookieFile = account.CookieFile;
             var profileDir = Path.Combine(SuitePaths.ModuleDir("bigseller-login"), account.Model.Id);
 
-            // Tk có proxy riêng (KiotProxy key) → ĐĂNG NHẬP qua đúng proxy đó để token lưu ra khớp IP với
-            // lúc scrape (scrape route bigseller.com qua proxy này). Không có key → mở IP máy như cũ.
             string? proxyServer = null;
             if (account.Model.HasProxy)
             {
-                Log("Đang lấy proxy riêng của tk BigSeller (KiotProxy)…");
+                Log($"[{account.DisplayName}] Đang lấy proxy riêng của tk BigSeller (KiotProxy)…");
                 proxyServer = await OpenMultiBraveLauncherV3.BigSellerProxyResolver.ResolveServerAsync(
-                    account.Model.KiotProxyKey, account.Model.Region, account.Model.ProxyType, Log);
+                    account.Model.KiotProxyKey, account.Model.Region, account.Model.ProxyType, Log).ConfigureAwait(false);
             }
 
-            // Tk có email + mật khẩu → khi mở profile mà CHƯA đăng nhập, TỰ điền form + giải captcha (AI) thay vì
-            // đợi login tay. Chạy trong CHÍNH Brave vừa mở (khớp IP proxy nếu có). Thiếu email/mật khẩu → đợi tay như cũ.
             Func<int, CancellationToken, Task<bool>>? autoLogin = null;
             if (!string.IsNullOrWhiteSpace(account.Model.Email) && !string.IsNullOrWhiteSpace(account.Model.Password))
             {
@@ -250,27 +262,74 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
                     var outcome = await OpenMultiBraveLauncherV3.BigSellerAutoLogin.ForceLoginInBraveAsync(
                         port, account.Model.Id, account.Model.Email, account.Model.Password, cookieFile, Log, token);
                     if (outcome == OpenMultiBraveLauncherV3.AutoLoginOutcome.NeedsOtp)
-                        Log("⚠ BigSeller đòi mã email nhưng chưa điền được — nhập tay trong cửa sổ đang mở. Cookie sẽ tự lưu khi vào được.");
+                        Log($"[{account.DisplayName}] ⚠ BigSeller đòi mã email nhưng chưa điền được — nhập tay trong cửa sổ đang mở. Cookie sẽ tự lưu khi vào được.");
                     return outcome == OpenMultiBraveLauncherV3.AutoLoginOutcome.Success;
                 };
             }
 
-            // Lưu cookie xong, cửa sổ Brave GIỮ NGUYÊN — chỉ đóng khi bấm Dừng. onSaved báo ngay
-            // khi vừa lưu (lúc cửa sổ còn đang mở) để UI cập nhật trạng thái cookie tức thì.
+            Log($"[{account.DisplayName}] Đang mở profile Brave...");
             var ok = await BigSellerLoginRunner.RunLoginAsync(
-                cookieFile, profileDir, Log, _loginCts.Token, () => OnLoginSaved(account), proxyServer, autoLogin);
-            account.NotifyCookieChanged();
-            Status = ok ? "Đăng nhập BigSeller thành công." : "Chưa lấy được cookie BigSeller.";
+                cookieFile, profileDir, Log, cts.Token, () => OnLoginSaved(account), proxyServer, autoLogin).ConfigureAwait(false);
+
+            UiThread.Post(() =>
+            {
+                account.NotifyCookieChanged();
+                Status = ok ? $"[{account.DisplayName}] Đăng nhập BigSeller thành công." : $"[{account.DisplayName}] Đã đóng profile.";
+            });
         }
-        catch (OperationCanceledException) { Status = "■ Đã dừng đăng nhập BigSeller."; Log(Status); }
-        catch (Exception ex) { Status = "✘ Lỗi đăng nhập BigSeller: " + ex.Message; Log(Status); }
+        catch (OperationCanceledException)
+        {
+            UiThread.Post(() => Log($"[{account.DisplayName}] ■ Đã đóng profile BigSeller."));
+        }
+        catch (Exception ex)
+        {
+            UiThread.Post(() =>
+            {
+                Status = $"✘ Lỗi [{account.DisplayName}]: " + ex.Message;
+                Log(Status);
+            });
+        }
         finally
         {
-            IsLoggingIn = false;
-            _loginCts.Dispose();
-            _loginCts = null;
+            _activeProfiles.TryRemove(account.Model.Id, out _);
+            cts.Dispose();
+            UiThread.Post(() =>
+            {
+                account.IsProfileOpen = false;
+                OnPropertyChanged(nameof(HasAnyOpenProfile));
+                OnPropertyChanged(nameof(IsSelectedProfileOpen));
+                LoginCommand.NotifyCanExecuteChanged();
+                StopLoginCommand.NotifyCanExecuteChanged();
+            });
         }
     }
+
+    [RelayCommand(CanExecute = nameof(CanStopLogin))]
+    private void StopLogin()
+    {
+        var sel = Selected;
+        if (sel is null) return;
+        if (_activeProfiles.TryGetValue(sel.Model.Id, out var cts))
+        {
+            Log($"[{sel.DisplayName}] Đang đóng profile…");
+            try { cts.Cancel(); } catch { }
+        }
+    }
+
+    [RelayCommand]
+    private void StopAllProfiles()
+    {
+        var count = _activeProfiles.Count;
+        if (count == 0) return;
+        Log($"Đang đóng toàn bộ {count} profile BigSeller đang mở…");
+        foreach (var kvp in _activeProfiles)
+        {
+            try { kvp.Value.Cancel(); } catch { }
+        }
+    }
+
+    private bool CanLogin() => Selected is not null && !_activeProfiles.ContainsKey(Selected.Model.Id);
+    private bool CanStopLogin() => Selected is not null && _activeProfiles.ContainsKey(Selected.Model.Id);
 
     /// <summary>Xóa TOÀN BỘ media trong Material Center (thư viện ảnh) BigSeller của tk đang chọn — chạy
     /// luồng dọn media của Update sản phẩm theo yêu cầu (mở Brave riêng bằng cookie tk, dọn xong tự đóng).</summary>
@@ -351,15 +410,15 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
                 "Đăng nhập tất cả"))
             return;
 
-        IsLoggingIn = true;
+        IsLoggingInAll = true;
         LogLines.Clear();
-        _loginCts = new CancellationTokenSource();
+        _loginAllCts = new CancellationTokenSource();
         int ok = 0, otp = 0, fail = 0;
         try
         {
             for (var i = 0; i < accts.Count; i++)
             {
-                _loginCts.Token.ThrowIfCancellationRequested();
+                _loginAllCts.Token.ThrowIfCancellationRequested();
                 var a = accts[i];
                 Status = $"[{i + 1}/{accts.Count}] Đang tự đăng nhập \"{a.DisplayName}\"…  (✔{ok} ⚠{otp} ✘{fail})";
                 Log($"[{i + 1}/{accts.Count}] {a.DisplayName} — tự đăng nhập headless…");
@@ -380,7 +439,7 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
                 }
 
                 var outcome = await OpenMultiBraveLauncherV3.BigSellerAutoLogin.LoginHeadlessAsync(
-                    a.Model.Id, a.Model.Email, a.Model.Password, a.CookieFile, proxy, Log, _loginCts.Token);
+                    a.Model.Id, a.Model.Email, a.Model.Password, a.CookieFile, proxy, Log, _loginAllCts.Token);
 
                 switch (outcome)
                 {
@@ -397,10 +456,13 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         }
         catch (OperationCanceledException) { Status = $"Đã dừng. Đã xong ✔{ok} ⚠{otp} ✘{fail}."; }
         catch (Exception ex) { Status = "✘ Lỗi: " + ex.Message; }
-        finally { IsLoggingIn = false; _loginCts?.Dispose(); _loginCts = null; }
+        finally { IsLoggingInAll = false; _loginAllCts?.Dispose(); _loginAllCts = null; }
     }
 
     private bool CanLoginAll() => IsIdle && Items.Count > 0;
+
+    [RelayCommand(CanExecute = nameof(IsLoggingInAll))]
+    private void StopLoginAll() => _loginAllCts?.Cancel();
 
     /// <summary>Gọi từ luồng nền của runner ngay khi cookie vừa được lưu (cửa sổ vẫn mở).</summary>
     private void OnLoginSaved(BigSellerAccountItemViewModel account)
@@ -408,15 +470,10 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         void Apply()
         {
             account.NotifyCookieChanged();
-            Status = "✔ Đã lưu cookie — cửa sổ vẫn mở, bấm Dừng khi xong.";
+            Status = $"✔ [{account.DisplayName}] Đã lưu cookie — cửa sổ vẫn mở, bấm Đóng khi xong.";
         }
         UiThread.Post(Apply);
     }
-
-    private bool CanLogin() => HasSelection && IsIdle;
-
-    [RelayCommand(CanExecute = nameof(IsLoggingIn))]
-    private void StopLogin() => _loginCts?.Cancel();
 
     [RelayCommand]
     private async Task PickSharedWorkbookAsync()

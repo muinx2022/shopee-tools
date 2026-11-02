@@ -35,7 +35,8 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     public BigSellerViewModel BigSeller { get; }
     public ScrapeViewModel Scrape { get; }
     public UpdateProductViewModel Update { get; }
-    public AutoRunViewModel AutoRun { get; }
+    public AutoRunViewModel AutoRun { get; }
+    public ScrapeMultiViewModel ScrapeMulti { get; }
 
     public bool ShowScrape => WorkspaceAppConfig.ShowScrape;
     public bool ShowImportUpdate => WorkspaceAppConfig.ShowImportUpdate;
@@ -92,7 +93,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
 
     /// <summary>Có bất kỳ việc nào đang chạy? scrape · update batch · update inline theo shop · auto run.
     /// Dùng bật/tắt nút "Dừng tất cả" (không có gì chạy → nút mờ, không bấm được).</summary>
-    public bool AnyRunning => Scrape.IsBusy || Update.IsRunning || Update.HasActiveWsJob || (AutoRun?.IsRunning ?? false);
+    public bool AnyRunning => Scrape.IsBusy || Update.IsRunning || Update.HasActiveWsJob || (AutoRun?.IsRunning ?? false) || (ScrapeMulti?.IsRunning ?? false);
 
     [ObservableProperty] private string _status = "";
 
@@ -118,7 +119,8 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         BigSeller = bigSeller;
         Scrape = scrape;
         Update = update;
-        AutoRun = new AutoRunViewModel(this);
+        AutoRun = new AutoRunViewModel(this);
+        ScrapeMulti = new ScrapeMultiViewModel(this);
         _logMode = WorkspaceAppConfig.IsImportUpdateOnly ? WorkspaceLogMode.Update : WorkspaceLogMode.Scrape;
 
         // Seed lại Scrape.VideoDir từ Update.VideoFolder sau restart: Scrape.VideoDir KHÔNG persist (luôn về
@@ -231,6 +233,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         Status = $"{Accounts.Count} tài khoản BigSeller.";
         RecomputeResumePending();   // list acc đổi → map lại các mục "còn dở" theo acc/shop hiện có
         AutoRun?.RefreshAccounts();
+        ScrapeMulti?.RefreshAccounts();
     }
 
     // ── Dải chip LỌC LOG (H3.1) ────────────────────────────────────────────────

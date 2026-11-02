@@ -153,6 +153,13 @@ public static class BigSellerAutoLogin
             browser = await pw.Chromium.ConnectOverCDPAsync($"http://127.0.0.1:{cdpPort}", new() { Timeout = 30000 }).ConfigureAwait(false);
             var context = browser.Contexts.FirstOrDefault();
             if (context is null) { log?.Invoke(noContextMessage); return null; }
+
+            // Nếu là headless auto-login (cửa sổ không giữ mở), xóa cookie cũ trong session để form login luôn được hiển thị sạch sẽ
+            if (!windowStaysOpen)
+            {
+                try { await context.ClearCookiesAsync().ConfigureAwait(false); } catch { }
+            }
+
             var page = (preferBigSellerPage
                            ? context.Pages.FirstOrDefault(p => (p.Url ?? "").Contains("bigseller", StringComparison.OrdinalIgnoreCase))
                            : context.Pages.FirstOrDefault())

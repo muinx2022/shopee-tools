@@ -90,9 +90,29 @@ public sealed class BigSellerAccountItemViewModel : ObservableObject
         ? "✓ Có proxy riêng → chạy song song nhiều tk"
         : "ⓘ Không proxy → đi IP máy, các tk chạy lần lượt";
 
+    private bool _isProfileOpen;
+    public bool IsProfileOpen
+    {
+        get => _isProfileOpen;
+        set
+        {
+            if (_isProfileOpen != value)
+            {
+                _isProfileOpen = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(CookieStatus));
+                OnPropertyChanged(nameof(ProfileStatusText));
+            }
+        }
+    }
+
+    public string ProfileStatusText => IsProfileOpen ? "🌐 Profile đang mở" : "";
+
     public string DisplayName => Model.DisplayName;
     public int ShopCount => Shops.Count;
-    public string CookieStatus => Model.HasCookie ? "✓ Đã có cookie BigSeller" : "⚠ Chưa đăng nhập BigSeller";
+    public string CookieStatus => IsProfileOpen
+        ? "🌐 Profile Brave đang mở"
+        : (Model.HasCookie ? "✓ Đã có cookie BigSeller" : "⚠ Chưa đăng nhập BigSeller");
 
     /// <summary>Tk này lấy dữ liệu SP từ kho Hub (Postgres) thay vì workbook Excel local. CHỈ HIỂN THỊ ở client —
     /// đổi chế độ làm trên web Hub. Đọc từ Model (đặt lúc dựng VM / khi Hub sync + rebuild projection).</summary>

@@ -45,7 +45,8 @@ internal sealed partial class BraveInstanceSession : IDisposable, ISessionMonito
     public event Action<string>? LogLine;
     public event Action? ExtensionProgressSynced;
     /// <summary>Runner loop kết thúc (xong / dừng / lỗi) — dùng cho chạy lượt.</summary>
-    public event Action<string>? RunnerLoopEnded;
+    public event Action<string>? RunnerLoopEnded;
+    public event Func<int, string, string, Task>? ProductScraped;
 
     // Cổng warmup (do ScrapeRunner cấp): GIỚI HẠN số instance đang "dựng SW" (cold-start) ĐỒNG THỜI.
     // Acquire trước khi chờ SW (onBeforeExtensionReady), THẢ ngay khi SW lên (onAfterExtensionReady) —

@@ -112,8 +112,8 @@
                     </Button>
                     <Button Style="{StaticResource danger}" Margin="0,6,0,0"
                             HorizontalAlignment="Stretch" HorizontalContentAlignment="Center"
-                            Visibility="{Binding IsLoggingIn, Converter={StaticResource BoolToVis}}"
-                            Command="{Binding StopLoginCommand}">
+                            Visibility="{Binding IsLoggingInAll, Converter={StaticResource BoolToVis}}"
+                            Command="{Binding StopLoginAllCommand}">
                         <StackPanel Orientation="Horizontal">
                             <c:PathIcon Data="{StaticResource IconStop}" />
                             <TextBlock Style="{StaticResource btnLabel}" Text="Dừng" />
@@ -296,17 +296,27 @@
                                     <WrapPanel Orientation="Horizontal" Margin="0,0,0,4">
                                         <Button Style="{StaticResource primary}" MinWidth="132" Margin="0,0,8,6"
                                                 Command="{Binding DataContext.LoginCommand, ElementName=Root}"
-                                                ToolTip="Có proxy → đăng nhập qua proxy đó; không → IP máy. Cookie tự lưu.">
+                                                ToolTip="Mở profile Brave của tài khoản này. Có thể mở nhiều tài khoản cùng lúc. Cookie tự lưu.">
                                             <StackPanel Orientation="Horizontal">
                                                 <c:PathIcon Data="{StaticResource IconLogin}" />
                                                 <TextBlock Style="{StaticResource btnLabel}" Text="Mở Profile Bigseller" />
                                             </StackPanel>
                                         </Button>
                                         <Button Style="{StaticResource danger}" MinWidth="74" Margin="0,0,8,6"
-                                                Command="{Binding DataContext.StopLoginCommand, ElementName=Root}">
+                                                Command="{Binding DataContext.StopLoginCommand, ElementName=Root}"
+                                                ToolTip="Đóng profile của tài khoản đang chọn">
                                             <StackPanel Orientation="Horizontal">
                                                 <c:PathIcon Data="{StaticResource IconClose}" />
                                                 <TextBlock Style="{StaticResource btnLabel}" Text="Đóng" />
+                                            </StackPanel>
+                                        </Button>
+                                        <Button Style="{StaticResource danger}" MinWidth="96" Margin="0,0,8,6"
+                                                Command="{Binding DataContext.StopAllProfilesCommand, ElementName=Root}"
+                                                Visibility="{Binding DataContext.HasAnyOpenProfile, ElementName=Root, Converter={StaticResource BoolToVis}}"
+                                                ToolTip="Đóng toàn bộ các profile BigSeller đang mở">
+                                            <StackPanel Orientation="Horizontal">
+                                                <c:PathIcon Data="{StaticResource IconClose}" />
+                                                <TextBlock Style="{StaticResource btnLabel}" Text="Đóng tất cả" />
                                             </StackPanel>
                                         </Button>
                                         <Button Style="{StaticResource destructive}" MinWidth="132" Margin="0,0,8,6"

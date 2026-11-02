@@ -38,7 +38,8 @@ internal static class LauncherRunnerLoop
         Func<Task>? onBeforeExtensionReady = null,
         Func<Task>? onAfterExtensionReady = null,
         Action<bool>? onCaptchaState = null,
-        Func<Task>? onScrapeSucceeded = null)
+        Func<Task>? onScrapeSucceeded = null,
+        Func<int, string, string, Task>? onProductScraped = null)
     {
         var sheet = config.DataSheet?.Trim()
             ?? throw new InvalidOperationException("Thiếu sheet.");
@@ -167,6 +168,7 @@ internal static class LauncherRunnerLoop
                 onProgress();
 
                 var statusText = $"{accountHeader}\nĐang mở link {index + 1}/{totalLinks} — dòng {rowNumber}.";
+                await PageCdpHelper.ClearShopeeApiDataAsync(cdpPort, link, cancellationToken).ConfigureAwait(false);
 
                 var step = await ExtensionRunnerAutomation.ExecuteScrapeStepAsync(
                     cdpPort,
@@ -302,6 +304,41 @@ internal static class LauncherRunnerLoop
                     // (chuỗi auth-thất-bại dồn dập chính là thứ châm ngòi BigSeller đá nguyên account).
                     if (onScrapeSucceeded is not null)
                         await onScrapeSucceeded().ConfigureAwait(false);
+
+                    if (onProductScraped is not null)
+                    {
+                        var targetUrl = !string.IsNullOrWhiteSpace(step.PageUrl) ? step.PageUrl : link;
+                        var jsonData = "{}";
+                        // Chỉ bọc bước trích xuất: lỗi (kể cả huỷ) KHÔNG được làm mất onProductScraped — handler
+                        // cần được gọi để ghi nhận dòng (vd sổ lỗi fan-out), nếu không resume sẽ không bao giờ thử lại.
+                        try
+                        {
+                            var rawGzip = await PageCdpHelper.ExtractShopeeApiDataAsync(cdpPort, targetUrl, cancellationToken).ConfigureAwait(false);
+                            var decompressed = ShopeeApiDataHelper.TryDecompress(rawGzip);
+                            jsonData = !string.IsNullOrWhiteSpace(decompressed) ? decompressed : "{}";
+                            if (jsonData != "{}")
+                            {
+                                log($"[Dữ liệu SP] Đã trích xuất JSON Shopee API khớp cho SKU {sku} (dòng {rowNumber})");
+                            }
+                            else
+                            {
+                                log($"[Dữ liệu SP] Không tìm thấy JSON Shopee API khớp cho dòng {rowNumber} → BigSeller fan-out sẽ crawl trực tiếp URL.");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            jsonData = "{}";
+                            log($"[Dữ liệu SP] Lỗi trích xuất JSON Shopee API dòng {rowNumber}: {ex.Message} → BigSeller fan-out sẽ crawl trực tiếp URL.");
+                        }
+                        try
+                        {
+                            await onProductScraped(rowNumber, targetUrl, jsonData).ConfigureAwait(false);
+                        }
+                        catch (Exception ex)
+                        {
+                            log($"Fan-out SP dòng {rowNumber} gặp lỗi: {ex.Message}");
+                        }
+                    }
                     await TryShowOverlayAsync(
                         cdpPort, profileRoot, tabId,
                         $"Đã click scrape - dòng {rowNumber}.\nĐang quét video SKU {sku}…",

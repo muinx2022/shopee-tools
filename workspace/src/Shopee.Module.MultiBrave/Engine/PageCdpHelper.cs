@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Shopee.Core.Scrape;
 using Shopee.Core.Cdp;
 
 namespace OpenMultiBraveLauncherV3;
@@ -231,6 +232,128 @@ internal static class PageCdpHelper
         }
 
         return list;
+    }
+
+    public static async Task ClearShopeeApiDataAsync(
+        int cdpPort,
+        string pageUrlHint,
+        CancellationToken cancellationToken = default)
+    {
+        const string clearAllJs = """
+            (() => {
+                try {
+                    for (let i = localStorage.length - 1; i >= 0; i--) {
+                        const k = localStorage.key(i);
+                        if (k && k.startsWith("shopee-api-data-")) {
+                            localStorage.removeItem(k);
+                        }
+                    }
+                } catch (_) {}
+                return [];
+            })()
+        """;
+        try
+        {
+            await EvaluateOnPageAsync(cdpPort, pageUrlHint, clearAllJs, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Non-critical cleanup
+        }
+    }
+
+    public static async Task<string?> ExtractShopeeApiDataAsync(
+        int cdpPort,
+        string pageUrlHint,
+        CancellationToken cancellationToken = default)
+    {
+        const string collectJs = """
+            (() => {
+                try {
+                    const items = [];
+                    for (let i = 0; i < localStorage.length; i++) {
+                        const k = localStorage.key(i);
+                        if (k && k.startsWith("shopee-api-data-")) {
+                            const val = localStorage.getItem(k);
+                            if (val && val.length > 20) {
+                                items.push({ key: k, val: val });
+                            }
+                        }
+                    }
+                    return items;
+                } catch (_) {}
+                return [];
+            })()
+        """;
+
+        const string clearAllJs = """
+            (() => {
+                try {
+                    for (let i = localStorage.length - 1; i >= 0; i--) {
+                        const k = localStorage.key(i);
+                        if (k && k.startsWith("shopee-api-data-")) {
+                            localStorage.removeItem(k);
+                        }
+                    }
+                } catch (_) {}
+                return [];
+            })()
+        """;
+
+        var targetItemId = ShopeeApiDataHelper.TryExtractShopeeItemId(pageUrlHint);
+        string? matchedGzip = null;
+
+        // Poll tối đa 5 lần (mỗi lần cách nhau 1s) để chờ BigSeller extension ghi dữ liệu API Shopee vào localStorage
+        for (var attempt = 1; attempt <= 5; attempt++)
+        {
+            var result = await EvaluateOnPageAsync(cdpPort, pageUrlHint, collectJs, cancellationToken).ConfigureAwait(false);
+            if (result is not null && result.Value.ValueKind == JsonValueKind.Array && result.Value.GetArrayLength() > 0)
+            {
+                foreach (var el in result.Value.EnumerateArray())
+                {
+                    if (!el.TryGetProperty("val", out var vp)) continue;
+                    var val = vp.GetString();
+                    if (string.IsNullOrWhiteSpace(val)) continue;
+
+                    var decompressed = ShopeeApiDataHelper.TryDecompress(val);
+                    if (string.IsNullOrWhiteSpace(decompressed)) continue;
+
+                    if (!string.IsNullOrWhiteSpace(targetItemId))
+                    {
+                        if (ShopeeApiDataHelper.MatchesItemId(decompressed, targetItemId))
+                        {
+                            matchedGzip = val;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        matchedGzip = val;
+                        break;
+                    }
+                }
+
+                if (matchedGzip is not null)
+                    break;
+            }
+
+            if (attempt < 5)
+            {
+                await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
+            }
+        }
+
+        // Luôn dọn sạch shopee-api-data-* trong localStorage để các dòng sau không bao giờ dính dữ liệu cũ
+        try
+        {
+            await EvaluateOnPageAsync(cdpPort, pageUrlHint, clearAllJs, cancellationToken).ConfigureAwait(false);
+        }
+        catch
+        {
+            // Non-critical cleanup
+        }
+
+        return matchedGzip;
     }
 
     private static async Task<JsonElement?> EvaluateOnPageAsync(

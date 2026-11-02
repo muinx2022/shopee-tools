@@ -147,4 +147,97 @@ public static partial class BigSellerCookieEngine
         }
         catch (Exception ex) { return $"(lỗi đọc token: {ex.Message})"; }
     }
+
+    /// <summary>
+    /// Kiểm tra nhanh xem phiên đăng nhập BigSeller của tài khoản còn sống hay không bằng cách gọi
+    /// API POST https://www.bigseller.com/api/v1/user/getUserAccount.json (nhẹ, nhanh, không cần mở browser).
+    /// Trả true nếu hợp lệ (code == 0), false nếu hết hạn / chưa có cookie / lỗi.
+    /// </summary>
+    public static async Task<bool> IsSessionAliveAsync(BigSellerAccount account, string? proxyServer = null, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(account.CookieFile) || !File.Exists(account.CookieFile))
+            return false;
+
+        var tokenInfo = GetFileAuthTokenInfo(account.CookieFile);
+        if (tokenInfo is null || string.IsNullOrWhiteSpace(tokenInfo.Value.Value))
+            return false;
+
+        var tokenStr = tokenInfo.Value.Value;
+
+        // Đọc danh sách cookie từ file để gửi kèm request
+        var cookieHeader = $"muc_token={tokenStr}";
+        try
+        {
+            var json = await File.ReadAllTextAsync(account.CookieFile, ct).ConfigureAwait(false);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var cList = root.ValueKind == JsonValueKind.Array
+                ? root
+                : root.TryGetProperty("cookies", out var cp) ? cp : default;
+
+            if (cList.ValueKind == JsonValueKind.Array)
+            {
+                var pairs = new List<string>();
+                foreach (var c in cList.EnumerateArray())
+                {
+                    var name = c.TryGetProperty("name", out var np) ? np.GetString() : null;
+                    var val = c.TryGetProperty("value", out var vp) ? vp.GetString() : null;
+                    if (!string.IsNullOrWhiteSpace(name) && val != null)
+                        pairs.Add($"{name}={val}");
+                }
+                if (pairs.Count > 0)
+                    cookieHeader = string.Join("; ", pairs);
+            }
+        }
+        catch { }
+
+        var endpoints = new[]
+        {
+            "https://www.bigseller.com/api/v1/user/getUserAccount.json",
+            "https://www.bigseller.pro/api/v1/user/getUserAccount.json"
+        };
+
+        foreach (var endpoint in endpoints)
+        {
+            try
+            {
+                HttpMessageHandler handler;
+                if (!string.IsNullOrWhiteSpace(proxyServer))
+                {
+                    var pUri = proxyServer.StartsWith("http", StringComparison.OrdinalIgnoreCase)
+                        ? proxyServer : $"http://{proxyServer}";
+                    handler = new HttpClientHandler { Proxy = new System.Net.WebProxy(pUri), UseProxy = true };
+                }
+                else
+                {
+                    handler = new HttpClientHandler();
+                }
+
+                using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(25) };
+                using var req = new HttpRequestMessage(HttpMethod.Post, endpoint);
+                req.Headers.Add("Cookie", cookieHeader);
+                req.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36");
+                req.Headers.Add("Accept", "application/json, text/plain, */*");
+                var origin = endpoint.Contains(".pro", StringComparison.OrdinalIgnoreCase) ? "https://www.bigseller.pro" : "https://www.bigseller.com";
+                req.Headers.Add("Origin", origin);
+                req.Headers.Add("Referer", $"{origin}/web/listing/shopee/index.htm?bsStatus=1");
+                req.Headers.Add("X-Requested-With", "XMLHttpRequest");
+                req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
+
+                using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
+                if (!resp.IsSuccessStatusCode) continue;
+
+                var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+                using var respDoc = JsonDocument.Parse(body);
+                if (respDoc.RootElement.TryGetProperty("code", out var codeProp) && codeProp.GetInt32() == 0)
+                    return true;
+            }
+            catch { }
+        }
+
+        return false;
+    }
+
+    public static Task<bool> IsSessionAliveAsync(BigSellerAccount account, CancellationToken ct) =>
+        IsSessionAliveAsync(account, null, ct);
 }

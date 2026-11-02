@@ -95,17 +95,27 @@ public sealed partial class ShellViewModel : ObservableObject
         // ── Tab 1: Workspace ──
         var wsWorkspace = new RibbonScreenItem("Workspace", AppIcons.Dashboard, workspace,
             toolTip: "BigSeller Workspace — Scrape · Import · Update theo từng shop");
-        var wsAutoRun = new RibbonScreenItem("Auto Run", AppIcons.PlayCircle, workspace.AutoRun,
-            toolTip: "Tự động chạy Scrape · Import · Update tuần tự các tài khoản");
-        var wsScreens = new List<object> { wsWorkspace, wsAutoRun };
+        var wsScreens = new List<object> { wsWorkspace };
+        _workspaceHomeScreen = wsWorkspace;
+
+        if (!WorkspaceAppConfig.IsScrapeOnly)
+        {
+            var wsAutoRun = new RibbonScreenItem("Auto Run", AppIcons.PlayCircle, workspace.AutoRun,
+                toolTip: "Tự động chạy Scrape · Import · Update tuần tự các tài khoản");
+            wsScreens.Add(wsAutoRun);
+            _autoRunScreen = wsAutoRun;
+        }
+
         if (WorkspaceAppConfig.ShowScrape)
         {
+            var wsScrapeMulti = new RibbonScreenItem("Scrape Multi", AppIcons.CloudDownload, workspace.ScrapeMulti,
+                toolTip: "Cào 1 link Shopee đồng thời cho nhiều tài khoản BigSeller");
+            wsScreens.Add(wsScrapeMulti);
+
             var wsAccounts = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
                 toolTip: "Kho tài khoản Shopee dùng chung · Check tài khoản");
             wsScreens.Add(wsAccounts);
         }
-        _workspaceHomeScreen = wsWorkspace;
-        _autoRunScreen = wsAutoRun;
 
         var workspaceTab = new RibbonTab("Workspace", new List<RibbonGroup>
         {
@@ -128,7 +138,7 @@ public sealed partial class ShellViewModel : ObservableObject
             {
                 new RibbonActionItem("Đăng nhập tất cả", "IconLogin", bigSeller.LoginAllCommand,
                     "Tự đăng nhập headless mỗi tài khoản để lấy cookie"),
-                new RibbonActionItem("Dừng", "IconStop", bigSeller.StopLoginCommand,
+                new RibbonActionItem("Dừng", "IconStop", bigSeller.StopLoginAllCommand,
                     "Dừng tiến trình đăng nhập tất cả"),
                 new RibbonActionItem("Workbook local", "IconSave", bigSeller.UseLocalWorkbookCommand,
                     "Đổi tài khoản BigSeller đang chọn từ kho Hub sang workbook Excel local"),
@@ -187,6 +197,7 @@ public sealed partial class ShellViewModel : ObservableObject
         _scrape.PropertyChanged += OnJobStateChanged;
         _update.PropertyChanged += OnJobStateChanged;
         _workspace.AutoRun.PropertyChanged += OnJobStateChanged;
+        _workspace.ScrapeMulti.PropertyChanged += OnJobStateChanged;
         _update.JobsChanged += () => UiThread.Post(RefreshJobStatus);
         RefreshJobStatus();
 
@@ -214,6 +225,10 @@ public sealed partial class ShellViewModel : ObservableObject
         {
             autoRun.RefreshAccounts();
         }
+        else if (item.ScreenVm is ScrapeMultiViewModel scrapeMulti)
+        {
+            scrapeMulti.RefreshAccounts();
+        }
     }
 
     private void OnJobStateChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
@@ -230,6 +245,7 @@ public sealed partial class ShellViewModel : ObservableObject
         if (_scrape.IsBusy) n++;
         if (_update.IsRunning) n++;
         if (_workspace.AutoRun.IsRunning) n++;
+        if (_workspace.ScrapeMulti.IsRunning) n++;
         foreach (var acct in Shopee.Core.BigSeller.BigSellerStore.Shared.Accounts)
             if (_update.IsUpdateRunning(acct.Id)) n++;
         JobStatusText = n > 0 ? $"Đang chạy — {n} job" : "Rảnh — không có job";
