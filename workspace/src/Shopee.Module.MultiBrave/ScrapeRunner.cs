@@ -609,7 +609,7 @@ public sealed class ScrapeRunner
                 if (_patches.Count > 0)
                 {
                     var p = _patches.Dequeue();
-                    // ĐUÔI: mảng vá còn NHIỀU dòng (>= 2×process) → cắt 1 lát, TRẢ phần dư lại hàng để
+                    // ĐUÔI: mảng vá còn >= 2 dòng và có nhiều process → cắt 1 lát, TRẢ phần dư lại hàng để
                     // worker rảnh khác cùng chạy, thay vì 1 worker ôm cả mảng (chia việc đoạn cuối).
                     // Toán cắt (kể cả luật "phần dư stall=0") nằm ở ScrapeChunkMath.SplitPatch — thuần, có test.
                     var (piece, rest) = Shopee.Core.Scrape.ScrapeChunkMath.SplitPatch(
@@ -638,18 +638,11 @@ public sealed class ScrapeRunner
         }
 
         /// <summary>Độ rộng khối kế. Bình thường = _per. Ở ĐUÔI (còn ít việc + nhiều process): thu nhỏ về
-        /// ~còn-lại/process để MỌI worker cùng chạy đoạn cuối thay vì 1 worker ôm hết. Quy tắc: còn
-        /// >= 2×process thì chia, ít hơn thì để 1 worker chạy nốt. Gọi trong [_lock] (từ TryTake).</summary>
+        /// ~còn-lại/process để MỌI worker cùng chạy đoạn cuối thay vì 1 worker ôm hết. Đuôi luôn được chia
+        /// đều, xuống tới 1 dòng/worker. Toán nằm ở ScrapeChunkMath.TailChunkWidth (thuần, có test).
+        /// Gọi trong [_lock] (từ TryTake).</summary>
         private int ChunkWidth()
-        {
-            if (_workers <= 1) return _per;
-            var remaining = RemainingRowsLocked();
-            // còn nhiều (mỗi worker vẫn đủ ≥1 khối _per) hoặc còn quá ít (< 2×process) → giữ _per như cũ.
-            if (remaining >= _per * _workers || remaining < 2 * _workers) return _per;
-            // vùng đuôi: chia phần còn lại thành ~_workers lát đều → mỗi worker 1 lát.
-            var rows = (int)Math.Ceiling((double)remaining / _workers);
-            return Math.Clamp(rows - 1, 1, _per);
-        }
+            => Shopee.Core.Scrape.ScrapeChunkMath.TailChunkWidth(RemainingRowsLocked(), _per, _workers);
 
         /// <summary>Tổng dòng CHƯA cấp (segment từ cursor + các mảng vá). Gọi trong [_lock].</summary>
         private int RemainingRowsLocked()

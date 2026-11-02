@@ -28,8 +28,9 @@ public static class ScrapeChunkMath
     public readonly record struct PatchSlice(int From, int To, int Stall);
 
     /// <summary>
-    /// Cắt mảng vá cho 1 worker: mảng còn NHIỀU dòng (≥ 2×số worker) thì lấy ~1/workers số dòng, phần DƯ trả
-    /// lại hàng để worker rảnh khác chạy song song. <c>Remainder = null</c> = không cắt (worker ôm cả mảng).
+    /// Cắt mảng vá cho 1 worker: có nhiều worker và mảng còn ≥ 2 dòng thì lấy ~1/workers số dòng (làm tròn
+    /// lên), phần DƯ trả lại hàng để worker rảnh khác chạy song song — đuôi luôn chia đều, xuống tới 1 dòng/worker.
+    /// <c>Remainder = null</c> = không cắt (1 worker, hoặc mảng chỉ 1 dòng → worker ôm cả mảng).
     /// <para>Phần DƯ nhận <c>Stall = 0</c>, KHÔNG thừa hưởng stall của mảng gốc: stall đếm "khoảng này bắt đầu
     /// tại dòng X mà không tiến được lần nào" — dòng nghi kẹt nằm ở ĐẦU mảng và đi theo lát đầu. Phần dư bắt
     /// đầu ở dòng KHÁC, chưa kẹt lần nào; cho nó thừa hưởng stall=2 (như bản cũ) thì chỉ cần trượt MỘT lần là
@@ -38,9 +39,21 @@ public static class ScrapeChunkMath
     public static (PatchSlice Piece, PatchSlice? Remainder) SplitPatch(PatchSlice patch, int workers)
     {
         var size = patch.To - patch.From + 1;
-        if (workers <= 1 || size < 2 * workers) return (patch, null);
+        if (workers <= 1 || size <= 1) return (patch, null);
         var take = (int)Math.Ceiling((double)size / workers);
         var pieceTo = patch.From + take - 1;
         return (patch with { To = pieceTo }, new PatchSlice(pieceTo + 1, patch.To, 0));
+    }
+
+    /// <summary>
+    /// Độ rộng khối kế (dùng như <c>to = from + width</c>, nên một khối có width+1 dòng). Bình thường = <paramref name="per"/>.
+    /// Ở ĐUÔI (còn &lt; per×workers dòng): chia đều ~còn-lại/workers dòng cho mỗi worker (làm tròn lên), xuống tới
+    /// 1 dòng/worker — width tối thiểu 0, không ép tối thiểu 2 dòng như bản cũ. 1 worker hoặc còn nhiều → <paramref name="per"/>.
+    /// </summary>
+    public static int TailChunkWidth(int remaining, int per, int workers)
+    {
+        if (workers <= 1 || remaining >= per * workers) return per;
+        var rows = (int)Math.Ceiling((double)Math.Max(0, remaining) / workers);
+        return Math.Clamp(rows - 1, 0, per);
     }
 }
