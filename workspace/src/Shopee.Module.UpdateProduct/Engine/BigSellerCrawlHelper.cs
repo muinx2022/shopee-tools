@@ -353,7 +353,8 @@ internal static class BigSellerCrawlHelper
         string nextSelector = DefaultNextPageSelector,
         string? nowPageSelector = null, string? readySelector = null,
         Func<int, CancellationToken, Task>? delay = null,
-        CancellationToken ct = default, Action<string>? onStaleTable = null)
+        CancellationToken ct = default, Action<string>? onStaleTable = null,
+        Action<string>? onError = null)
     {
         Task Wait(int ms) => delay is not null ? delay(ms, ct) : Task.Delay(ms, ct);
         try
@@ -455,6 +456,7 @@ internal static class BigSellerCrawlHelper
             log?.Invoke(nowPageSelector is not null
                 ? $"  (lỗi chuyển trang Listing, coi như chưa sang được: {ex.Message})"
                 : $"Chuyển trang tiếp theo lỗi: {ex.Message}");
+            onError?.Invoke(ex.Message);   // để caller phân biệt "lỗi" với "hết trang" (cả hai đều trả false)
             return false;
         }
     }

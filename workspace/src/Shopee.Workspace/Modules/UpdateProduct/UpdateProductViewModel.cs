@@ -280,9 +280,6 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
                 }
                 lock (laneRows) { ShowMultiLane(); }
             };
-            var priorDone = (kind == UpdateKind.Update || kind == UpdateKind.Import) && opProg != null
-                ? OpProgressStore.Shared.GetDone(a.Id, resolved.ProgressKey, opProg).Count
-                : -1;
             // Mỗi dòng import/update/rewrite xong → đẩy lên ledger Hub (khoảng dòng) cho Thống kê "shop này đã làm
             // những dòng nào". Fire-and-forget, no-op khi Hub tắt (chạy 1 máy).
             // [bỏ] runner.RowsCompleted -> Hub.PublishProgress
@@ -301,15 +298,16 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             }
             else
             {
+                // "Xong" = làm ĐỦ việc (xem ShouldMarkCompleted), KHÔNG phải "runner thoát không lỗi": hết lượt/hết trang mà
+                // còn thiếu thì ghi stopped → lần chạy sau làm tiếp phần còn lại (Done đã lưu giữ nguyên).
+                var markCompleted = ShouldMarkCompleted(kind, runner.ListingLimitReached, runner.LastRunComplete);
                 if (runner.ListingLimitReached)
                     LogA($"{prefix} ⛔ dừng {name}: shop '{s.DisplayName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).");
-                else
+                else if (markCompleted)
                     LogA($"{prefix} ✔ xong {name}.");
+                else
+                    LogA($"{prefix} ⚠ {name} chưa đủ — lần chạy sau làm tiếp.");
             // [bỏ] Hub.PublishCompletion Completed
-                // Lượt update không sửa được id nào, và shop này cũng chưa có id đã lưu → đừng ghi "xong".
-                // Nếu không, shop vừa chuyển sang bị đánh dấu xong dù list id của shop đó vẫn trống.
-                // Riêng khi shop chạm giới hạn đăng SP của Shopee (listing limit) → đánh dấu xong để Auto Run chuyển sang shop tiếp theo.
-                var markCompleted = runner.ListingLimitReached || !((kind == UpdateKind.Update || kind == UpdateKind.Import) && touched == 0 && priorDone == 0);
                 if (opProg != null) OpProgressStore.Shared.FinishRun(a.Id, resolved.ProgressKey, opProg, markCompleted);
             }
         }
@@ -332,6 +330,19 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             ShopLiveLine.Clear(a.Id, s.Id);
             RaiseJobsChanged();   // → UI: trả nút về trạng thái thường
         }
+    }
+
+    /// <summary>Lượt chạy kết thúc KHÔNG bị hủy thì ghi trạng thái "completed" hay "stopped"? Listing limit → true
+    /// (để Auto Run chuyển sang shop kế). Import/Update → chỉ khi runner báo xong THẬT (<paramref name="runComplete"/>:
+    /// import đủ mọi item id / update đủ SP mục tiêu). Rewrite giữ như cũ (true).</summary>
+    internal static bool ShouldMarkCompleted(UpdateKind kind, bool listingLimitReached, bool runComplete)
+    {
+        if (listingLimitReached) return true;
+        return kind switch
+        {
+            UpdateKind.Import or UpdateKind.Update => runComplete,
+            _ => true,
+        };
     }
 
     /// <summary>Dừng RIÊNG workflow update của 1 tk (các tk khác chạy tiếp). Cho nút ■ inline theo shop.</summary>

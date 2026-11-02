@@ -216,7 +216,6 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
         var clickBlockedStreak = 0;
         var clickBlockedTotal = 0;
         var emptyStreak = 0;   // số lần liên tiếp trang hiển thị 0 dòng (phân biệt "đang tải" với "rỗng thật")
-        var noShopRowPageStreak = 0;
         var emptyWaitSeconds = Math.Max(3, _settings.ListingReloadSeconds);
 
         while (!ct.IsCancellationRequested)
@@ -287,19 +286,14 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                         return;
                     case "exhausted_no_shop_rows":
                         emptyStreak = 0;
-                        noShopRowPageStreak++;
                         if (_targetTracker is { IsAllCompleted: true } or { IsAllHandled: true })
                         {
                             _log($"✔ Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP cho shop '{_settings.ShopName}' — bỏ qua các trang hộp nháp tiếp theo. Lane kết thúc.");
                             LogSummary();
                             return;
                         }
-                        if (noShopRowPageStreak >= 2 || (_targetTracker is { CompletedCount: > 0 } && noShopRowPageStreak >= 1))
-                        {
-                            _log($"✔ Trang hộp nháp hiện tại không còn SP nào của shop '{_settings.ShopName}' (đã update {_targetTracker?.CompletedCount ?? 0}/{_targetTracker?.TargetCount ?? 0} SP) — dừng ngay, bỏ qua các trang hộp nháp tiếp theo.");
-                            LogSummary();
-                            return;
-                        }
+                        // KHÔNG dừng sớm khi gặp trang không có dòng của shop: danh sách nháp là của CẢ TÀI KHOẢN, dòng của
+                        // shop khác có thể chen giữa → sang trang kế, hết trang thì kết thúc như thường (bên dưới).
                         if (await ClickNextListingPageAsync(page, ct).ConfigureAwait(false)) break;
                         _log("✔ Hết trang cuối — không còn item id cần update trên mọi trang. Lane kết thúc.");
                         LogSummary();
@@ -326,12 +320,10 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                         return;
                     case "media_full":   // Toast/popup báo kho đầy → dừng-toàn-cục + dọn; vòng sau quét lại Listing
                         emptyStreak = 0;   // GIỮ vị trí trang (KHÔNG reload về trang 1 — bug kẹt trang 1 cũ).
-                        noShopRowPageStreak = 0;
                         await HandleMediaEmergencyAsync(page, "toast/popup báo đầy", ct).ConfigureAwait(false);
                         break;
                     case "exhausted":   // Có dòng nhưng trang này hết dòng lane này xử lý được (đã xong/đã skip/lane khác giữ).
                         emptyStreak = 0;
-                        noShopRowPageStreak = 0;
                         if (_targetTracker is { IsAllCompleted: true } or { IsAllHandled: true })
                         {
                             _log($"✔ Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP cho shop '{_settings.ShopName}' — bỏ qua các trang hộp nháp tiếp theo. Lane kết thúc.");
@@ -344,14 +336,12 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                         return;
                     case "retry":
                         emptyStreak = 0;
-                        noShopRowPageStreak = 0;
                         // SP có thể ĐÃ bắt đầu sửa rồi mới fail tạm → vẫn check ngưỡng dọn media (đếm đã diễn ra lúc bắt đầu sửa).
                         await MaybeClearMediaAfterEditsAsync(page, ct).ConfigureAwait(false);
                         await DelayAsync(1200, ct);
                         break;
                     default:   // ok / deleted / skipped → đã tiến 1 dòng, quét tiếp trang hiện tại.
                         emptyStreak = 0;
-                        noShopRowPageStreak = 0;
                         if (_targetTracker is { IsAllCompleted: true })
                         {
                             _log($"✔ Đã update đủ {_targetTracker.CompletedCount}/{_targetTracker.TargetCount} SP cho shop '{_settings.ShopName}' — dừng ngay, bỏ qua các trang hộp nháp còn lại.");

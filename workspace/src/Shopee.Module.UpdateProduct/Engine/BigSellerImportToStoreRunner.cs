@@ -31,6 +31,10 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     /// caller đẩy lên ledger Hub để Thống kê biết "shop này đã import những dòng nào".</summary>
     public event Action<int, int>? RowsDone;
 
+    /// <summary>True khi MỌI item id trong khoảng dòng của sheet đã import (đã lưu từ trước + vừa gửi lượt này).
+    /// Sheet không có id nào → false (không có gì để coi là "xong").</summary>
+    public bool AllImported => _importIds.Count > 0 && _importedIds.Count >= _importIds.Count;
+
     // ── Bắc cầu DOM ↔ item id qua API (BigSeller KHÔNG render source id ra HTML) ──
     // Crawl list nạp rows từ API /product/crawl/pageList.json; mỗi row có mainImage + crawlUrl. Ta bắt response
     // đó, trích shopee id từ crawlUrl (i.<shop>.<id> / product/<shop>/<id>), map theo KHOÁ ẢNH (đuôi mainImage)
@@ -38,6 +42,24 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     private readonly object _apiLock = new();
     private readonly Dictionary<string, string> _apiImageKeyToShopeeId = new(StringComparer.Ordinal);
     private IPage? _capturePage;
+
+    // ── "Trang đã xác nhận" (chống kết luận "0 khớp" khi DOM còn dòng cũ / đang tải) ──
+    // Mọi biến dưới ĐỀU đọc/ghi trong _apiLock. Số thứ tự tính theo thứ tự response ĐẾN (không phải lúc đọc xong):
+    //  • _respArrivalSeq: tăng mỗi khi 1 response pageList.json đến.
+    //  • _latestSeq/_latestKeys: response MỚI NHẤT (theo thứ tự đến) đã đọc xong + tập khoá ảnh của nó (null = không đọc
+    //    được response → không bao giờ xác nhận được trang).
+    //  • _pageMark: _respArrivalSeq chụp NGAY TRƯỚC thao tác đổi trang (đổi tab / Next / tải lại); trang chỉ được xác nhận
+    //    khi _latestSeq > _pageMark, tức đã có response SINH RA SAU thao tác đó.
+    private int _respArrivalSeq;
+    private int _latestSeq;
+    private HashSet<string>? _latestKeys;
+    private int _pageMark;
+
+    // Gọi NGAY TRƯỚC mỗi thao tác làm đổi nội dung bảng crawl (đổi tab, bấm Next, tải lại Crawl List).
+    private void MarkPageAction()
+    {
+        lock (_apiLock) _pageMark = _respArrivalSeq;
+    }
 
     protected override string StartUrl => BigSellerCrawlHelper.ResolveCrawlUrl(_settings.CrawlUrl);
 
@@ -123,7 +145,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         if (_importIds.Count == 0)
         {
             _log("Sheet không có item id nào trong khoảng dòng đã đặt — không có gì để import. Kết thúc.");
-            return;   // → tầng trên báo Hub "completed" (không có việc để làm)
+            return;   // AllImported = false (cần _importIds.Count > 0) → LastRunComplete = false → shop ghi "stopped", KHÔNG phải completed
         }
 
         // RESUME: seed _importedIds từ tiến độ ĐÃ LƯU (kill/dừng giữa chừng rồi chạy lại → KHÔNG import trùng —
@@ -164,6 +186,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         await page.BringToFrontAsync();
         await EnsureFreshLoginAsync(page, cancellationToken).ConfigureAwait(false);   // Phase 4: đầu phiên tự mint token tươi
         _log($"Crawl URL: {crawlUrl}");
+        MarkPageAction();   // tải lại Crawl List → trang đầu của tab đầu cũng phải qua cơ chế xác nhận response mới
         if (!await BigSellerCrawlHelper.GoToCrawlPageAsync(page, forceReload: true, targetUrl: crawlUrl, log: _log))
             throw new InvalidOperationException("Không mở được Crawl List.");
         _log(new string('=', 50));
@@ -183,186 +206,268 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         var consecutiveErrors = 0;
         const int maxConsecutiveErrors = 8;
 
-        foreach (var (currentTab, tabName) in crawlTabs)
+        // Tối đa ImportScanPolicy.MaxPasses vòng quét 2 tab. Sang vòng mới (tải lại Crawl List, về trang 1, xoá tick) khi còn
+        // thiếu VÀ vòng vừa rồi có lô đã gửi (danh sách đổi, SP dồn trang) HOẶC có tab/trang CHƯA XÁC NHẬN (có thể sót).
+        // _importedIds chặn gửi lại SP đã gửi; ca "chưa chắc đã gửi" vẫn thoát RunAsync ngay (không quét lại).
+        var pass = 1;
+        var hasUnconfirmed = false;
+        while (true)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            if (_importedIds.Count >= _importIds.Count)
+            var sentThisPass = false;
+            hasUnconfirmed = false;
+            if (pass > 1)
             {
-                _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, không cần quét tiếp.");
-                LogLedgerSummary();
-                return;
-            }
-
-            _log("");
-            _log(new string('=', 50));
-            _log($"BẮT ĐẦU QUÉT TAB '{tabName.ToUpper()}'");
-            _log(new string('=', 50));
-
-            var switched = await SwitchToTabAsync(page, currentTab, cancellationToken).ConfigureAwait(false);
-            if (!switched)
-            {
-                _log($"⚠ Không thể chuyển sang tab '{tabName}', bỏ qua tab này.");
-                continue;
-            }
-
-            var pageNum = 1;
-            var tabSkips = 0;
-
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                try
+                _log("");
+                _log($"▶ VÒNG QUÉT {pass}/{ImportScanPolicy.MaxPasses}: mới import {_importedIds.Count}/{_importIds.Count} SP → tải lại Crawl List, quét lại từ trang 1.");
+                MarkPageAction();
+                if (!await BigSellerCrawlHelper.GoToCrawlPageAsync(page, forceReload: true, targetUrl: crawlUrl, log: _log))
                 {
-                    await WaitIfNotPausedAsync(cancellationToken).ConfigureAwait(false);
-                    if (_importedIds.Count >= _importIds.Count)
-                    {
-                        _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, không cần quét tiếp.");
-                        LogLedgerSummary();
-                        return;
-                    }
+                    _log("⚠ Không tải lại được Crawl List cho vòng quét mới — kết thúc.");
+                    hasUnconfirmed = true;
+                    break;
+                }
+            }
 
-                    await MaybeWriteBackBigSellerTokenAsync(cancellationToken).ConfigureAwait(false);
+            foreach (var (currentTab, tabName) in crawlTabs)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
 
-                    if (!await BigSellerCrawlHelper.GoToCrawlPageAsync(page, targetUrl: crawlUrl, log: _log))
-                    {
-                        await DelayAsync(5000, cancellationToken);
-                        continue;
-                    }
+                if (_importedIds.Count >= _importIds.Count)
+                {
+                    _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, không cần quét tiếp.");
+                    LogLedgerSummary();
+                    return;
+                }
 
-                    await BigSellerCrawlHelper.WaitForCrawlListContentAsync(page);
+                _log("");
+                _log(new string('=', 50));
+                _log($"BẮT ĐẦU QUÉT TAB '{tabName.ToUpper()}'");
+                _log(new string('=', 50));
 
-                    var isActive = await BigSellerCrawlHelper.IsCrawlTabActiveAsync(page, currentTab);
-                    if (!isActive)
-                    {
-                        if (++tabSkips >= 12)
-                        {
-                            _log($"⚠ Tab '{tabName}' liên tục không giữ được trạng thái active (quá 12 lần) — chuyển tab tiếp theo.");
-                            break;
-                        }
-                        _log($"Chưa ở tab '{tabName}' (reload đổi ngôn ngữ?) — chọn lại ({tabSkips}/12), thử lại...");
-                        await SwitchToTabAsync(page, currentTab, cancellationToken).ConfigureAwait(false);
-                        await DelayAsync(2000, cancellationToken);
-                        continue;
-                    }
-                    tabSkips = 0;
+                var switched = await SwitchToTabAsync(page, currentTab, cancellationToken).ConfigureAwait(false);
+                if (!switched)
+                {
+                    _log($"⚠ Không thể chuyển sang tab '{tabName}', bỏ qua tab này (tab CHƯA XÁC NHẬN).");
+                    hasUnconfirmed = true;
+                    continue;
+                }
 
-                    await WaitForApiCoverageAsync(page, cancellationToken);
+                var pageNum = 1;
+                var tabSkips = 0;
+                var unconfirmedNoMatchStreak = 0;   // số trang liên tiếp vừa chưa xác nhận vừa không có SP khớp (phanh)
 
-                    int rowCount;
-                    string[] checkedIds;
+                while (!cancellationToken.IsCancellationRequested)
+                {
                     try
                     {
-                        rowCount = await GetBodyRowCountAsync(page);
-                        checkedIds = await CheckMatchingRowsOnPageAsync(page);
-                    }
-                    catch (Exception ex) when (CdpErrors.IsTransientNavigationError(ex))
-                    {
-                        _log($"Trang đang reload, thử lại: {ex.Message}");
-                        await DelayAsync(3000, cancellationToken);
-                        continue;
-                    }
-                    consecutiveErrors = 0;
+                        await WaitIfNotPausedAsync(cancellationToken).ConfigureAwait(false);
+                        if (_importedIds.Count >= _importIds.Count)
+                        {
+                            _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, không cần quét tiếp.");
+                            LogLedgerSummary();
+                            return;
+                        }
 
-                    if (checkedIds.Length == 0)
-                    {
-                        _log($"Trang {pageNum} (tab {tabName}): {rowCount} SP — không có SP nào cần import (0 SP khớp).");
+                        await MaybeWriteBackBigSellerTokenAsync(cancellationToken).ConfigureAwait(false);
 
-                        if (await BigSellerCrawlHelper.ClickNextCrawlPageAsync(page, _log))
+                        // Không còn ở Crawl List → GoToCrawlPageAsync sẽ điều hướng lại: đó là thao tác đổi trang, cần mốc mới.
+                        if (!BigSellerCrawlHelper.IsCrawlPage(page, crawlUrl)) MarkPageAction();
+                        if (!await BigSellerCrawlHelper.GoToCrawlPageAsync(page, targetUrl: crawlUrl, log: _log))
+                        {
+                            await DelayAsync(5000, cancellationToken);
+                            continue;
+                        }
+
+                        await BigSellerCrawlHelper.WaitForCrawlListContentAsync(page);
+
+                        var isActive = await BigSellerCrawlHelper.IsCrawlTabActiveAsync(page, currentTab);
+                        if (!isActive)
+                        {
+                            if (++tabSkips >= 12)
+                            {
+                                _log($"⚠ Tab '{tabName}' liên tục không giữ được trạng thái active (quá 12 lần) — chuyển tab tiếp theo (tab CHƯA XÁC NHẬN).");
+                                hasUnconfirmed = true;
+                                break;
+                            }
+                            _log($"Chưa ở tab '{tabName}' (reload đổi ngôn ngữ?) — chọn lại ({tabSkips}/12), thử lại...");
+                            await SwitchToTabAsync(page, currentTab, cancellationToken).ConfigureAwait(false);
+                            await DelayAsync(2000, cancellationToken);
+                            continue;
+                        }
+                        tabSkips = 0;
+
+                        // XÁC NHẬN (response pageList.json mới + DOM thuộc response đó) CHỈ quyết định việc được kết luận "0 khớp /
+                        // đã quét sạch". Nó KHÔNG chặn tick: tick theo map ảnh→id vốn đúng SP, nên trang chưa xác nhận mà có
+                        // SP khớp vẫn gửi lô như thường (và vẫn đánh dấu chưa xác nhận để vòng sau quét lại).
+                        int rowCount;
+                        string[] checkedIds;
+                        bool confirmed, noNewPageData;
+                        try
+                        {
+                            (confirmed, noNewPageData) = await WaitForConfirmedPageAsync(page, cancellationToken);
+                            rowCount = await GetBodyRowCountAsync(page);
+                            checkedIds = await CheckMatchingRowsOnPageAsync(page);
+                        }
+                        catch (Exception ex) when (CdpErrors.IsTransientNavigationError(ex))
+                        {
+                            _log($"Trang đang reload, thử lại: {ex.Message}");
+                            await DelayAsync(3000, cancellationToken);
+                            continue;
+                        }
+                        consecutiveErrors = 0;
+                        if (!confirmed) hasUnconfirmed = true;
+                        // Phanh chỉ đếm trang THẬT SỰ không có dữ liệu mới (không response mới / response null / DOM không giao với
+                        // response); trang chỉ lạ vài ảnh vẫn là chưa xác nhận (hasUnconfirmed) nhưng không tăng streak.
+                        unconfirmedNoMatchStreak = ImportScanPolicy.NextUnconfirmedNoMatchStreak(unconfirmedNoMatchStreak, confirmed, checkedIds.Length > 0, noNewPageData);
+
+                        if (checkedIds.Length == 0)
+                        {
+                            if (confirmed)
+                                _log($"Trang {pageNum} (tab {tabName}): {rowCount} SP — không có SP nào cần import (0 SP khớp).");
+                            else
+                                _log($"⚠ Trang {pageNum} (tab {tabName}): {rowCount} SP, 0 SP khớp nhưng trang CHƯA XÁC NHẬN — KHÔNG kết luận đã quét sạch; vòng sau quét lại nếu còn thiếu ({unconfirmedNoMatchStreak}/{ImportScanPolicy.MaxUnconfirmedNoMatchPages} trang liên tiếp).");
+
+                            // Phanh: nhiều trang liên tiếp vừa chưa xác nhận vừa không khớp → bỏ phần còn lại của tab.
+                            if (ImportScanPolicy.ShouldAbandonTab(unconfirmedNoMatchStreak))
+                            {
+                                _log($"⚠ {unconfirmedNoMatchStreak} trang liên tiếp chưa xác nhận và không có SP khớp — BỎ phần còn lại của tab '{tabName}' (tab CHƯA XÁC NHẬN, vòng sau thử lại).");
+                                hasUnconfirmed = true;
+                                break;
+                            }
+
+                            var (advanced, nextError) = await ClickNextPageAsync(page);
+                            if (advanced)
+                            {
+                                pageNum++;
+                                continue;
+                            }
+                            if (nextError is not null)
+                            {
+                                // Lỗi khi sang trang kế KHÔNG phải "hết trang": phần sau của tab chưa được quét.
+                                hasUnconfirmed = true;
+                                _log($"⚠ Lỗi khi sang trang kế của tab '{tabName}' (đã quét {pageNum} trang) — tab CHƯA XÁC NHẬN, không coi là hết trang: {nextError}");
+                                break;
+                            }
+
+                            _log($"{(hasUnconfirmed ? "⚠ Hết trang (có trang chưa xác nhận)" : "✔ Hết trang")} tab '{tabName}' (đã quét {pageNum} trang) — {_importedIds.Count}/{_importIds.Count} SP đã import.");
+                            break;
+                        }
+
+                        if (!confirmed)
+                            _log($"⚠ Trang {pageNum} (tab {tabName}) CHƯA XÁC NHẬN nhưng có {checkedIds.Length} SP khớp — vẫn gửi lô (tick theo ảnh→id), vòng sau quét lại nếu còn thiếu.");
+                        _log($"Trang {pageNum} (tab {tabName}) có {rowCount} SP — {checkedIds.Length} SP khớp item id → Import to Stores…");
+
+                        // committed chỉ bật khi SelectImportShopAndConfirmAsync trả về bình thường = lô ĐÃ GỬI (click trả về + modal đóng
+                        // và theo dõi sau click không thấy gì bất thường; điều hướng sau click chỉ tính là đã gửi nếu có hộp "Hộp nháp") — KHÔNG bật
+                        // trước khi click như bản cũ (click timeout mà vẫn MarkDone cả lô). Ca CHƯA CHẮC: xem bên dưới.
+                        var committed = false;
+                        ImportOutcomeUncertainException? uncertain = null;
+                        try
+                        {
+                            await ClickToolbarImportAsync(page);
+
+                            var modal = page.Locator(".ant-modal-content:visible").Last;
+                            await modal.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 20000 });
+                            await SelectImportShopAndConfirmAsync(page, modal, _settings.ShopName, cancellationToken);
+                            committed = true;
+
+                            importCount++;
+                            _log($"Đã Import {checkedIds.Length} SP theo item id (#{importCount}).");
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (ImportOutcomeUncertainException ex)
+                        {
+                            uncertain = ex;
+                        }
+                        catch (Exception ex)
+                        {
+                            // Lỗi TRƯỚC khi bấm hoặc click timeout → chưa gửi, chạy tiếp như cũ. Lô này bị bỏ qua trong vòng
+                            // này nên đánh dấu để vòng sau (nếu còn) thử lại.
+                            hasUnconfirmed = true;
+                            _log($"Import lô lỗi — CHƯA gửi, không MarkDone (giữ phiên, thử lại vòng/lượt sau): {ex.Message}");
+                        }
+
+                        if (uncertain is not null)
+                        {
+                            // CHƯA CHẮC lô đã gửi hay chưa: không MarkDone và DỪNG import shop này ngay — không sang trang/tab kế,
+                            // không tick lại, để cùng lượt không gửi trùng. AllImported = false → shop ghi stopped; người dùng
+                            // kiểm tra BigSeller rồi chạy lại (hoặc "Mark as done" nếu lô đã vào).
+                            _log($"⚠ Import lô CHƯA CHẮC đã gửi — KHÔNG MarkDone, DỪNG import shop '{_settings.ShopName}' (CÓ THỂ BigSeller đã nhận lô): {uncertain.Message}");
+                            _log($"  Lô gồm {checkedIds.Length} SP (item id): {string.Join(", ", checkedIds)}");
+                            LogLedgerSummary();
+                            return;
+                        }
+
+                        if (committed)
+                        {
+                            sentThisPass = true;
+                            foreach (var id in checkedIds)
+                            {
+                                _importedIds.Add(id);
+                                if (_rowByImportId.TryGetValue(id, out var row))
+                                {
+                                    RowsDone?.Invoke(row, row);
+                                    _ledgerHitCount++;
+                                }
+                                else
+                                {
+                                    _ledgerMissCount++;
+                                    if (_ledgerMissCount == 1 || _ledgerMissCount % 10 == 0)
+                                        _log($"⚠ SP import xong nhưng không khớp được dòng sheet (import-id={id}) → Thống kê Hub sẽ thiếu dòng ({_ledgerMissCount} SP như vậy).");
+                                }
+                            }
+
+                            OpProgressStore.Shared.MarkDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import,
+                                checkedIds.Select(id => new KeyValuePair<string, string?>(id, null)));
+                            if (_settings.UseHubData) _ = MarkImportedHubAsync(checkedIds);
+                        }
+
+                        if (_importedIds.Count >= _importIds.Count)
+                        {
+                            _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, không cần quét tiếp.");
+                            LogLedgerSummary();
+                            return;
+                        }
+
+                        await DelayAsync(2000, cancellationToken);
+                        await BigSellerCrawlHelper.DismissPostImportDialogsAsync(page, _log);
+
+                        var (advancedAfterImport, nextErrorAfterImport) = await ClickNextPageAsync(page);
+                        if (advancedAfterImport)
                         {
                             pageNum++;
                             continue;
+                        }
+                        if (nextErrorAfterImport is not null)
+                        {
+                            hasUnconfirmed = true;
+                            _log($"⚠ Lỗi khi sang trang kế của tab '{tabName}' (đã quét {pageNum} trang) — tab CHƯA XÁC NHẬN, không coi là hết trang: {nextErrorAfterImport}");
+                            break;
                         }
 
                         _log($"✔ Hết trang tab '{tabName}' (đã quét {pageNum} trang) — {_importedIds.Count}/{_importIds.Count} SP đã import.");
                         break;
                     }
-
-                    _log($"Trang {pageNum} (tab {tabName}) có {rowCount} SP — {checkedIds.Length} SP khớp item id → Import to Stores…");
-
-                    var committed = false;
-                    try
-                    {
-                        await ClickToolbarImportAsync(page);
-
-                        var modal = page.Locator(".ant-modal-content:visible").Last;
-                        await modal.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 20000 });
-                        await SelectImportShopAndConfirmAsync(modal, _settings.ShopName, () => committed = true);
-
-                        importCount++;
-                        _log($"Đã Import {checkedIds.Length} SP theo item id (#{importCount}).");
-                    }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex)
                     {
-                        if (committed && CdpErrors.IsTransientNavigationError(ex))
+                        consecutiveErrors++;
+                        _log($"⚠ Lỗi vòng lặp ({consecutiveErrors}/{maxConsecutiveErrors}) — giữ phiên, thử hồi phục rồi chạy tiếp: {ex.Message}");
+                        if (consecutiveErrors >= maxConsecutiveErrors)
                         {
-                            importCount++;
-                            _log($"Import lô đã gửi (#{importCount}) — trang điều hướng làm mất context.");
+                            _log($"✖ Quá {maxConsecutiveErrors} lỗi liên tiếp không đọc nổi danh sách — dừng phiên. Lỗi cuối: {ex.Message}");
+                            throw;
                         }
-                        else
-                        {
-                            _log($"Import lô lỗi (giữ phiên, thử lại lượt sau): {ex.Message}");
-                        }
+                        try { page = await RecoverPageAsync(page, crawlUrl, currentTab, cancellationToken).ConfigureAwait(false); }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception rex) { _log($"  (chưa hồi phục được tab/CDP lần này: {rex.Message})"); }
+                        await DelayAsync(3000, cancellationToken);
                     }
-
-                    if (committed)
-                    {
-                        foreach (var id in checkedIds)
-                        {
-                            _importedIds.Add(id);
-                            if (_rowByImportId.TryGetValue(id, out var row))
-                            {
-                                RowsDone?.Invoke(row, row);
-                                _ledgerHitCount++;
-                            }
-                            else
-                            {
-                                _ledgerMissCount++;
-                                if (_ledgerMissCount == 1 || _ledgerMissCount % 10 == 0)
-                                    _log($"⚠ SP import xong nhưng không khớp được dòng sheet (import-id={id}) → Thống kê Hub sẽ thiếu dòng ({_ledgerMissCount} SP như vậy).");
-                            }
-                        }
-
-                        OpProgressStore.Shared.MarkDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import,
-                            checkedIds.Select(id => new KeyValuePair<string, string?>(id, null)));
-                        if (_settings.UseHubData) _ = MarkImportedHubAsync(checkedIds);
-                    }
-
-                    if (_importedIds.Count >= _importIds.Count)
-                    {
-                        _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — dừng ngay, không cần quét tiếp.");
-                        LogLedgerSummary();
-                        return;
-                    }
-
-                    await DelayAsync(2000, cancellationToken);
-                    await BigSellerCrawlHelper.DismissPostImportDialogsAsync(page, _log);
-
-                    if (await BigSellerCrawlHelper.ClickNextCrawlPageAsync(page, _log))
-                    {
-                        pageNum++;
-                        continue;
-                    }
-
-                    _log($"✔ Hết trang tab '{tabName}' (đã quét {pageNum} trang) — {_importedIds.Count}/{_importIds.Count} SP đã import.");
-                    break;
-                }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
-                {
-                    consecutiveErrors++;
-                    _log($"⚠ Lỗi vòng lặp ({consecutiveErrors}/{maxConsecutiveErrors}) — giữ phiên, thử hồi phục rồi chạy tiếp: {ex.Message}");
-                    if (consecutiveErrors >= maxConsecutiveErrors)
-                    {
-                        _log($"✖ Quá {maxConsecutiveErrors} lỗi liên tiếp không đọc nổi danh sách — dừng phiên. Lỗi cuối: {ex.Message}");
-                        throw;
-                    }
-                    try { page = await RecoverPageAsync(page, crawlUrl, currentTab, cancellationToken).ConfigureAwait(false); }
-                    catch (OperationCanceledException) { throw; }
-                    catch (Exception rex) { _log($"  (chưa hồi phục được tab/CDP lần này: {rex.Message})"); }
-                    await DelayAsync(3000, cancellationToken);
                 }
             }
+
+            if (!ImportScanPolicy.ShouldRescan(pass, ImportScanPolicy.MaxPasses, AllImported, sentThisPass, hasUnconfirmed)) break;
+            pass++;
         }
 
         int finalCacheCount; lock (_apiLock) finalCacheCount = _apiImageKeyToShopeeId.Count;
@@ -372,7 +477,10 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         if (_importedIds.Count < _importIds.Count)
             LogFoundVsWorkbook();
 
-        _log($"✔ Đã quét xong cả 2 tab (Chưa nhận & Đã nhận) — tổng cộng {_importedIds.Count}/{_importIds.Count} SP đã import. Kết thúc.");
+        if (hasUnconfirmed)
+            _log($"⚠ Kết thúc sau {pass}/{ImportScanPolicy.MaxPasses} vòng nhưng còn tab/trang CHƯA XÁC NHẬN — KHÔNG phải đã quét sạch; tổng cộng {_importedIds.Count}/{_importIds.Count} SP đã import.");
+        else
+            _log($"✔ Đã quét xong cả 2 tab (Chưa nhận & Đã nhận) sau {pass}/{ImportScanPolicy.MaxPasses} vòng — tổng cộng {_importedIds.Count}/{_importIds.Count} SP đã import. Kết thúc.");
         LogLedgerSummary();
     }
 
@@ -423,6 +531,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         AttachApiCapture(page);   // tab mới sau hồi phục → gắn lại listener pageList.json
 
         await page.BringToFrontAsync().ConfigureAwait(false);
+        MarkPageAction();   // tải lại Crawl List → trang đầu phải qua cơ chế xác nhận response mới
         await BigSellerCrawlHelper.GoToCrawlPageAsync(page, forceReload: true, targetUrl: crawlUrl, log: _log).ConfigureAwait(false);
         await SwitchToTabAsync(page, currentTab, ct).ConfigureAwait(false);
         _log("  ✓ Đã hồi phục tab BigSeller — chạy tiếp.");
@@ -434,6 +543,11 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     {
         var tabName = tab == BigSellerCrawlTab.Unclaimed ? "Chưa nhận" : "Đã nhận";
         _log($"--- Chọn tab '{tabName}' ---");
+        // Mốc cho "trang đã xác nhận": CHỈ khi thật sự đổi tab. Tab đã active thì bấm lại có thể không tải lại bảng →
+        // giữ mốc cũ (response của lần tải/tải lại trước đó vẫn là dữ liệu hiện hành), kẻo chờ response không bao giờ đến.
+        var alreadyActive = false;
+        try { alreadyActive = await BigSellerCrawlHelper.IsCrawlTabActiveAsync(page, tab); } catch { }
+        if (!alreadyActive) MarkPageAction();
         for (var attempt = 1; attempt <= 3; attempt++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -465,60 +579,80 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     }
 
     // ── HỢP ĐỒNG DOM: modal "chọn shop import" ──────────────
-    // Khối khai báo JS DÙNG CHUNG cho 2 hàm eval bên dưới (trước đây chép nguyên xi 2 lần): chuẩn hoá tên
-    // shop (bỏ dấu → gộp khoảng trắng → hạ chữ; bản compact bỏ luôn mọi ký tự ngoài a-z0-9) để so khớp bền
-    // với nhãn trên modal. ĐỪNG "tiện tay" sửa — hợp đồng với DOM BigSeller, lệch 1 ký tự là hỏng chọn shop.
-    private const string ShopLabelJsPrelude = @"
-                const normalize = value => (value || '')
-                    .normalize('NFD')
-                    .replace(/[\u0300-\u036f]/g, '')
-                    .replace(/\u0111/g, 'd')
-                    .replace(/\u0110/g, 'd')
-                    .replace(/\s+/g, ' ')
-                    .trim()
-                    .toLowerCase();
-                const compact = value => normalize(value).replace(/[^a-z0-9]/g, '');
-                const target = normalize(targetShop);
-                const targetCompact = compact(targetShop);
-                const labelText = label => (label.textContent || '').replace(/\s+/g, ' ').trim();";
-
-    // Selector các label shop trong modal (3 mức hẹp → rộng) — dùng chung 2 hàm eval.
+    // Selector các label shop trong modal (3 mức hẹp → rộng) — dùng chung các hàm eval.
     private const string ShopLabelSelector =
         ".cont_btm.btmOut label.ant-checkbox-wrapper, .btmOut label.ant-checkbox-wrapper, label.ant-checkbox-wrapper";
 
-    // onCommitting: bắn NGAY TRƯỚC khi bấm nút "Import to Stores" (mốc commit) — caller dùng để biết
-    // lỗi xảy ra TRƯỚC hay SAU khi click (sau = đã gửi lên server → không import lại tránh trùng).
-    private async Task SelectImportShopAndConfirmAsync(ILocator modal, string shopName, Action? onCommitting = null)
-    {
-        _log($"Chon shop import: {shopName}");
-        var selectedLabel = await modal.EvaluateAsync<string>(
-            "(root, targetShop) => {" + ShopLabelJsPrelude + @"
+    // Khối khai báo JS DÙNG CHUNG cho các hàm eval bên dưới: dựng danh sách `stores` = label shop HIỂN THỊ (bỏ
+    // "select all") theo thứ tự DOM + 2 helper đọc nhãn/trạng thái tick. KHÔNG so tên shop ở JS: C# đọc nhãn,
+    // ImportShopMatcher.Pick chọn CHỈ SỐ, JS chỉ tick theo chỉ số → mọi hàm eval PHẢI dựng `stores`
+    // bằng đúng khối này (lệch thứ tự/bộ lọc = tick nhầm shop). Hợp đồng với DOM BigSeller — ĐỪNG "tiện tay" sửa.
+    private const string StoreListJs = @"
+                const normalize = value => (value || '')
+                    .normalize('NFD')
+                    .replace(/[̀-ͯ]/g, '')
+                    .replace(/đ/g, 'd')
+                    .replace(/Đ/g, 'd')
+                    .replace(/\s+/g, ' ')
+                    .trim()
+                    .toLowerCase();
+                const labelText = label => (label.textContent || '').replace(/\s+/g, ' ').trim();
                 const isVisible = el => {
                     const rect = el.getBoundingClientRect();
                     return rect.width > 0 && rect.height > 0;
                 };
-                const labels = Array.from(root.querySelectorAll(
-                    '" + ShopLabelSelector + @"'))
-                    .filter(label => isVisible(label) && label.querySelector('input[type=checkbox]'));
-                const stores = labels.filter(label => !normalize(labelText(label)).includes('select all'));
-                const targetLabel = stores.find(label => {
-                    const text = labelText(label);
-                    const normalized = normalize(text);
-                    const compacted = compact(text);
-                    return normalized === target ||
-                        normalized.includes(target) ||
-                        compacted === targetCompact ||
-                        compacted.includes(targetCompact);
-                });
-                if (!targetLabel) {
-                    const available = stores.map(labelText).filter(Boolean).join(' | ');
-                    throw new Error(`Khong tim thay shop import: ${targetShop}. Available: ${available}`);
-                }
+                const stores = Array.from(root.querySelectorAll('" + ShopLabelSelector + @"'))
+                    .filter(label => isVisible(label) && label.querySelector('input[type=checkbox]'))
+                    .filter(label => !normalize(labelText(label)).includes('select all'));
                 const isChecked = label => {
                     const input = label.querySelector('input[type=checkbox]');
                     const box = label.querySelector('.ant-checkbox');
                     return !!(input?.checked || box?.classList.contains('ant-checkbox-checked') || label.classList.contains('ant-checkbox-wrapper-checked'));
-                };
+                };";
+
+    // Nhãn các shop đang hiển thị trong modal, đúng thứ tự `stores` của StoreListJs.
+    private static Task<string[]> ReadImportShopLabelsAsync(ILocator modal) =>
+        modal.EvaluateAsync<string[]>(
+            "root => {" + StoreListJs + @"
+                return stores.map(labelText);
+            }");
+
+    // Đã bắt đầu bấm "Import to Stores" nhưng KHÔNG biết lô đã gửi hay chưa (lỗi lạ ngay trong ClickAsync, modal không
+    // đóng sau 15s, lỗi khác sau click). Caller KHÔNG MarkDone và DỪNG import shop này ngay (không gửi lại trong lượt).
+    private sealed class ImportOutcomeUncertainException : Exception
+    {
+        public ImportOutcomeUncertainException(string message) : base(message) { }
+    }
+
+    // Phân loại kết quả (ném = không MarkDone; trả về bình thường = lô đã gửi):
+    //  • lỗi TRƯỚC khi bấm, hoặc ClickAsync timeout → exception thường: CHƯA gửi, caller chạy tiếp, lượt sau thử lại.
+    //  • Click trả về + modal import đóng → theo dõi ≤5s (MonitorPostClickAsync, ImportPostClickClassifier): hết 5s không thấy
+    //    gì bất thường, hoặc gặp hộp "Hộp nháp" không kèm lỗi → trả về bình thường (đã gửi).
+    //  • Click trả về rồi lỗi ĐIỀU HƯỚNG THẬT (CdpErrors.IsRealNavigationError) khi chờ → cũng đi qua bước theo dõi ở trên.
+    //  • MỌI ca còn lại sau khi bắt đầu bấm (lỗi lạ trong ClickAsync, modal không đóng 15s, "Target closed"/"WebSocket"/
+    //    Brave chết, URL lệch, toast lỗi, hộp lạ, hộp "Hộp nháp" kèm lỗi, trang điều hướng mà không thấy hộp "Hộp nháp",
+    //    không đọc được URL) → ImportOutcomeUncertainException (CHƯA CHẮC).
+    // Giới hạn: chưa biết endpoint/thông báo thành công của BigSeller nên "modal đóng" chỉ là tín hiệu gián tiếp.
+    private async Task SelectImportShopAndConfirmAsync(IPage page, ILocator modal, string shopName, CancellationToken ct)
+    {
+        _log($"Chon shop import: {shopName}");
+        var labels = await ReadImportShopLabelsAsync(modal);
+        var index = ImportShopMatcher.Pick(labels, shopName);
+        // Không chắc chắn đúng 1 shop thì KHÔNG import (ném TRƯỚC mọi click Import → lô không bị đánh dấu gửi).
+        if (index < 0)
+        {
+            var available = string.Join(" | ", labels.Where(l => !string.IsNullOrWhiteSpace(l)));
+            throw new InvalidOperationException(index == ImportShopMatcher.Ambiguous
+                ? $"Nhieu shop import cung khop '{shopName}', khong chac chon shop nao nen KHONG import. Available: {available}"
+                : $"Khong tim thay shop import: {shopName}. Available: {available}");
+        }
+        var pickedLabel = labels[index];
+
+        var selectedLabel = await modal.EvaluateAsync<string>(
+            "(root, pick) => {" + StoreListJs + @"
+                const targetLabel = stores[pick.index];
+                if (!targetLabel || labelText(targetLabel) !== pick.label)
+                    throw new Error('Danh sach shop trong modal da doi giua luc doc va luc chon, thu lai lan sau.');
                 const clickLabel = label => {
                     const target = label.querySelector('.ant-checkbox-inner') ||
                         label.querySelector('.ant-checkbox') ||
@@ -531,39 +665,197 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                     if (isChecked(label)) clickLabel(label);
                 }
                 if (!isChecked(targetLabel)) clickLabel(targetLabel);
-                return labelText(targetLabel) || targetShop;
+                return labelText(targetLabel) || pick.label;
             }",
-            shopName);
+            new { index, label = pickedLabel });
 
         await DelayAsync(500, CancellationToken.None);
-        var isChecked = await IsImportShopCheckedAsync(modal, shopName);
+        var isChecked = await IsImportShopCheckedAsync(modal, index, pickedLabel);
         if (!isChecked)
             throw new InvalidOperationException($"Khong chon duoc shop import: {shopName}");
 
         _log($"Da chon shop import: {selectedLabel}");
         var importButton = modal.Locator("button.ant-btn-primary:has-text('Import to Stores'), button:has-text('Import to Stores')").First;
-        onCommitting?.Invoke();   // sắp click Import → từ đây mọi lỗi coi như "đã gửi" (tránh import lại)
-        await importButton.ClickAsync(new() { Force = true, Timeout = 10000 });
+
+        // Chụp các toast tính-lỗi ĐANG có TRƯỚC click (toast cũ chưa tắt) để loại khỏi kết quả sau click. Đọc lỗi ở đây = lỗi
+        // TRƯỚC khi bấm (chưa gửi), không phải ca chưa chắc.
+        var toastsBeforeClick = new HashSet<string>((await ReadToastsAsync(page)).Counted, StringComparer.Ordinal);
+
+        // Đếm điều hướng của MAIN FRAME từ TRƯỚC click đến hết cửa sổ theo dõi (gỡ handler ở finally). Driver Playwright hay
+        // nuốt lỗi "context destroyed" nên không thể chỉ dựa vào exception để biết trang vừa reload/điều hướng.
+        var navCount = 0;
+        EventHandler<IFrame> onNavigated = (_, frame) => { if (frame.ParentFrame is null) Interlocked.Increment(ref navCount); };
+        page.FrameNavigated += onNavigated;
+        try
+        {
+            // TỪ ĐÂY là vùng "đang bấm": mọi lỗi không phải click-timeout đều là CHƯA CHẮC (xem ImportOutcomeUncertainException).
+            try
+            {
+                await importButton.ClickAsync(new() { Force = true, Timeout = 10000 });
+            }
+            catch (Exception ex) when (IsPlaywrightTimeout(ex))
+            {
+                throw;   // click timeout = chưa bấm được → chưa gửi (lỗi thường, caller thử lại vòng/lượt sau)
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Lỗi khác ném NGAY TRONG ClickAsync (kể cả điều hướng): không biết chuột đã nhả chưa → chưa chắc.
+                throw new ImportOutcomeUncertainException($"lỗi trong lúc bấm 'Import to Stores' (shop '{selectedLabel}'): {ex.Message}");
+            }
+
+            // Click đã TRẢ VỀ. Chờ modal đóng bằng locator CẤP PAGE theo nội dung (không qua `modal` = `.Last`: locator
+            // tính lại mỗi lần poll, hộp confirm/lỗi đè lên thì `.Last` đổi sang hộp đó, không còn nút → "đã đóng" giả).
+            // Dùng CountAsync thay WaitFor(Hidden) để khỏi dính strict-mode khi có >1 phần tử khớp.
+            var openModal = page.Locator(".ant-modal-content:visible:has(button:has-text('Import to Stores'))");
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            try
+            {
+                while (await openModal.CountAsync() > 0)
+                {
+                    if (DateTime.UtcNow >= deadline)
+                        throw new ImportOutcomeUncertainException($"đã bấm 'Import to Stores' nhưng modal không đóng sau 15s (shop '{selectedLabel}').");
+                    await DelayAsync(300, ct);
+                }
+            }
+            catch (ImportOutcomeUncertainException) { throw; }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (CdpErrors.IsRealNavigationError(ex))
+            {
+                // Trang điều hướng sau click (context bị huỷ): chưa đủ để coi là đã gửi → đi tiếp sang bước theo dõi bên dưới.
+                _log($"Trang điều hướng sau khi bấm Import ({ex.Message}) — theo dõi URL/hộp thoại trước khi coi lô đã gửi.");
+            }
+            catch (Exception ex)
+            {
+                // Mọi lỗi khác (kể cả "Target closed"/"WebSocket"/Brave chết) KHÔNG chứng minh lô đã gửi → chưa chắc.
+                throw new ImportOutcomeUncertainException($"lỗi sau khi bấm 'Import to Stores' (shop '{selectedLabel}'): {ex.Message}");
+            }
+
+            await MonitorPostClickAsync(page, () => Volatile.Read(ref navCount) > 0, selectedLabel, toastsBeforeClick, ct);
+        }
+        finally
+        {
+            page.FrameNavigated -= onNavigated;
+        }
     }
-    private static Task<bool> IsImportShopCheckedAsync(ILocator modal, string shopName) =>
+
+    // Theo dõi tối đa 5s (poll ~300ms) sau khi modal import đóng, TRƯỚC DismissPostImportDialogsAsync (hàm đó đóng sạch mọi
+    // hộp, kể cả hộp lỗi → mất dấu vết). Mỗi lần đọc: URL, các modal hiển thị, toast lỗi/thông báo. Toast lỗi, URL lệch,
+    // hộp lạ, hộp "Hộp nháp" kèm lỗi → chưa chắc NGAY. Gặp hộp "Hộp nháp" (đã xét lỗi) → thoát sớm = đã gửi. Hết 5s không
+    // thấy gì: có điều hướng của main frame mà không có hộp "Hộp nháp" → chưa chắc; không thì đã gửi.
+    private async Task MonitorPostClickAsync(
+        IPage page, Func<bool> navigated, string selectedLabel, HashSet<string> toastsBeforeClick, CancellationToken ct)
+    {
+        var end = DateTime.UtcNow.AddSeconds(5);
+        string? lastBoxLogged = null;
+        var loggedInfoToasts = new HashSet<string>(StringComparer.Ordinal);
+        ImportPostClickVerdict verdict;
+        bool urlOnCrawl; List<OpenModalInfo> modals; List<string> toasts;
+        while (true)
+        {
+            List<string> infoToasts;
+            (urlOnCrawl, modals, toasts, infoToasts) = await ReadPostClickStateAsync(page, toastsBeforeClick, ct);
+
+            // Thông báo KHÔNG phải lỗi/cảnh báo: chỉ log nội dung (một lần mỗi nội dung), không làm chưa chắc.
+            foreach (var info in infoToasts)
+                if (loggedInfoToasts.Add(info))
+                    _log($"Thông báo sau Import (không tính lỗi): \"{ImportPostClickClassifier.Trim(info)}\"");
+
+            // LUÔN log nội dung hộp kết quả (cắt 300 ký tự) — kể cả khi coi là đã gửi — để soi hộp thật khi chạy thật.
+            foreach (var box in modals.Where(m => m.HasDraftBoxLink))
+            {
+                var text = ImportPostClickClassifier.Trim(box.Text);
+                if (text == lastBoxLogged) continue;
+                lastBoxLogged = text;
+                _log($"Hộp kết quả sau Import: \"{text}\"");
+            }
+
+            // Chưa tính điều hướng ở đây: hộp "Hộp nháp" có thể hiện muộn hơn một nhịp so với lúc điều hướng.
+            verdict = ImportPostClickClassifier.Classify(urlOnCrawl, modals, toasts, navigated: false);
+            if (!verdict.Sent) break;
+            if (modals.Any(m => m.HasDraftBoxLink)) return;   // hộp kết quả đã biết, không lỗi → đã gửi
+            if (DateTime.UtcNow >= end)
+            {
+                verdict = ImportPostClickClassifier.Classify(urlOnCrawl, modals, toasts, navigated());
+                break;
+            }
+            await DelayAsync(300, ct);
+        }
+        if (!verdict.Sent)
+            throw new ImportOutcomeUncertainException($"{verdict.Reason} (shop '{selectedLabel}', URL={page.Url})");
+    }
+
+    // Toast đang hiển thị, chia 2: Counted = tính lỗi (ant-message lỗi — selector theo BigSellerMaterialCenterCleaner.ErrorToast;
+    // ant-notification có icon lỗi/cảnh báo); InfoOnly = ant-notification loại khác (success/info/không icon), chỉ để log.
+    // Tên lớp icon `.ant-notification-notice-icon-error|warning` là lớp chuẩn của ant-design, KHÔNG có bằng chứng trong repo.
+    private static async Task<(List<string> Counted, List<string> InfoOnly)> ReadToastsAsync(IPage page)
+    {
+        var raw = await page.EvaluateAsync<string[][]>(
+            @"() => {
+                const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+                const text = el => (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim() || '(trống)';
+                const out = [];
+                for (const el of document.querySelectorAll('div.ant-message .ant-message-custom-content.ant-message-error'))
+                    if (vis(el)) out.push([text(el), '1']);
+                for (const el of document.querySelectorAll('.ant-notification-notice'))
+                    if (vis(el)) out.push([text(el), el.querySelector('.ant-notification-notice-icon-error, .ant-notification-notice-icon-warning') ? '1' : '0']);
+                return out;
+            }");
+        var counted = new List<string>();
+        var info = new List<string>();
+        foreach (var t in raw ?? [])
+        {
+            var text = t.Length > 0 ? t[0] : "";
+            if (t.Length > 1 && t[1] == "1") counted.Add(text); else info.Add(text);
+        }
+        return (counted, info);
+    }
+
+    // URL có còn là Crawl List không + các modal đang hiển thị (nội dung, có link "Hộp nháp" không) + toast lỗi/thông báo.
+    // Điều hướng đang dở (lỗi context bị huỷ) thì thử lại tối đa 3 lần; lỗi khác hoặc hết lần → chưa chắc.
+    // Toasts = toast tính-lỗi MỚI (đã loại những cái có sẵn trước click); InfoToasts = thông báo loại khác (chỉ để log).
+    private async Task<(bool UrlOnCrawl, List<OpenModalInfo> Modals, List<string> Toasts, List<string> InfoToasts)> ReadPostClickStateAsync(
+        IPage page, HashSet<string> toastsBeforeClick, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                var urlOnCrawl = BigSellerCrawlHelper.IsCrawlPage(page, _settings.CrawlUrl);
+                // Link "Hộp nháp" so không phân biệt hoa thường (giống :has-text ở DismissPostImportDialogsAsync).
+                var raw = await page.Locator(".ant-modal-content:visible").EvaluateAllAsync<string[][]>(
+                    @"els => els.map(el => [
+                        (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
+                        Array.from(el.querySelectorAll('a.has_underline')).some(a => (a.textContent || '').toLowerCase().includes('hộp nháp')) ? '1' : '0'
+                    ])");
+                var modals = (raw ?? [])
+                    .Select(m => new OpenModalInfo(m.Length > 0 ? m[0] : "", m.Length > 1 && m[1] == "1"))
+                    .ToList();
+                var (counted, infoOnly) = await ReadToastsAsync(page);
+                return (urlOnCrawl, modals, counted.Where(t => !toastsBeforeClick.Contains(t)).ToList(), infoOnly);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (CdpErrors.IsRealNavigationError(ex) && attempt < 3)
+            {
+                await DelayAsync(1000, ct);
+            }
+            catch (Exception ex)
+            {
+                throw new ImportOutcomeUncertainException($"không đọc được URL/hộp thoại sau khi bấm Import: {ex.Message}");
+            }
+        }
+    }
+
+    private static bool IsPlaywrightTimeout(Exception ex) =>
+        ex is TimeoutException || (ex is PlaywrightException && ex.Message.Contains("Timeout", StringComparison.OrdinalIgnoreCase));
+
+    private static Task<bool> IsImportShopCheckedAsync(ILocator modal, int index, string label) =>
         modal.EvaluateAsync<bool>(
-            "(root, targetShop) => {" + ShopLabelJsPrelude + @"
-                const labels = Array.from(root.querySelectorAll(
-                    '" + ShopLabelSelector + @"'))
-                    .filter(label => label.querySelector('input[type=checkbox]'));
-                const label = labels.find(label => {
-                    const text = labelText(label);
-                    const normalized = normalize(text);
-                    const compacted = compact(text);
-                    return !normalized.includes('select all') &&
-                        (normalized === target || normalized.includes(target) || compacted === targetCompact || compacted.includes(targetCompact));
-                });
-                if (!label) return false;
-                const input = label.querySelector('input[type=checkbox]');
-                const box = label.querySelector('.ant-checkbox');
-                return !!(input?.checked || box?.classList.contains('ant-checkbox-checked') || label.classList.contains('ant-checkbox-wrapper-checked'));
+            "(root, pick) => {" + StoreListJs + @"
+                const targetLabel = stores[pick.index];
+                if (!targetLabel || labelText(targetLabel) !== pick.label) return false;
+                return isChecked(targetLabel);
             }",
-            shopName);
+            new { index, label });
 
     // ── Helper cho IMPORT CẢ LÔ ─────────────────────────────────────────────────
     // Số dòng dữ liệu đang hiển thị trong bảng (có dữ liệu mới chọn-tất-cả + import).
@@ -585,14 +877,18 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
     private void OnCrawlResponse(object? sender, IResponse response)
     {
-        if (response.Url.Contains("/product/crawl/pageList.json", StringComparison.OrdinalIgnoreCase))
-            _ = CaptureCrawlRowsAsync(response);
+        if (!response.Url.Contains("/product/crawl/pageList.json", StringComparison.OrdinalIgnoreCase)) return;
+        int seq;
+        lock (_apiLock) seq = ++_respArrivalSeq;   // số thứ tự theo lúc ĐẾN, gán trước khi đọc body
+        _ = CaptureCrawlRowsAsync(response, seq);
     }
 
     // Đọc rows từ 1 response pageList.json → map ẢNH(đuôi mainImage) ↔ shopee id(từ crawlUrl). Gộp dồn (ảnh là
     // duy nhất theo SP nên gộp nhiều trang vẫn đúng); best-effort, nuốt lỗi để không đụng vòng lặp import.
-    private async Task CaptureCrawlRowsAsync(IResponse response)
+    // Đồng thời ghi lại "response mới nhất" (seq + MỌI khoá ảnh của nó, kể cả dòng không rút được id) để xác nhận trang.
+    private async Task CaptureCrawlRowsAsync(IResponse response, int seq)
     {
+        HashSet<string>? responseKeys = null;   // null = không đọc được → trang không bao giờ được xác nhận bằng response này
         try
         {
             var text = await response.TextAsync().ConfigureAwait(false);
@@ -603,6 +899,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                   || (data.TryGetProperty("rows", out rows) && rows.ValueKind == JsonValueKind.Array)))
                 return;
             var added = 0;
+            var allKeys = new HashSet<string>(StringComparer.Ordinal);
             lock (_apiLock)
             {
                 foreach (var r in rows.EnumerateArray())
@@ -611,12 +908,22 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                     var url = r.TryGetProperty("crawlUrl", out var cu) ? cu.GetString() : null;
                     var id = BigSellerCrawlHelper.ExtractShopeeId(url);
                     var key = ImgKey(img);
+                    if (!string.IsNullOrEmpty(key)) allKeys.Add(key);
                     if (!string.IsNullOrEmpty(key) && !string.IsNullOrEmpty(id)) { _apiImageKeyToShopeeId[key] = id!; added++; }
                 }
             }
+            responseKeys = allKeys;
             if (added > 0) _log($"Đọc {added} item id từ API crawl (cache {_apiImageKeyToShopeeId.Count}).");
         }
-        catch { /* best-effort */ }
+        catch { responseKeys = null; /* best-effort */ }
+        finally
+        {
+            // Response đến SAU thắng dù đọc xong TRƯỚC (seq theo lúc đến) → không bị response cũ đọc chậm đè.
+            lock (_apiLock)
+            {
+                if (seq > _latestSeq) { _latestSeq = seq; _latestKeys = responseKeys; }
+            }
+        }
     }
 
     // Bản JS của ImgKey (chạy TRONG trang) — dùng chung 2 hàm eval quét ảnh dòng. Phải cho CÙNG kết quả
@@ -660,28 +967,71 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         return idx >= 0 && idx < noQuery.Length - 1 ? noQuery[(idx + 1)..] : noQuery;
     }
 
-    // Chờ tới khi cache API đã có ít nhất 1 ảnh của trang đang hiển thị (response pageList.json xử lý xong), để
-    // không kết luận nhầm "0 khớp" chỉ vì listener chạy sau. Trang rỗng thật → thoát ngay.
-    private async Task WaitForApiCoverageAsync(IPage page, CancellationToken ct)
+    // XÁC NHẬN TRANG trước khi kết luận khớp/không khớp: phải có response pageList.json MỚI hơn mốc _pageMark (sinh ra sau
+    // thao tác đổi trang) VÀ ảnh trên DOM thuộc response đó (response rỗng → DOM không còn dòng). Chờ tối đa ~15s; hết giờ
+    // thì đọc lại MỘT lần (sau 2s) rồi mới coi là CHƯA XÁC NHẬN → caller KHÔNG được kết luận "0 khớp / đã quét sạch"
+    // (vẫn tick và gửi nếu có SP khớp) và đặt cờ chưa xác nhận. NoNewPageData = thật sự không có dữ liệu trang mới (xem
+    // ImportScanPolicy.HasNoNewPageData) — dùng cho phanh.
+    // (Thay WaitForApiCoverageAsync cũ: nó thoả ngay khi cache tích luỹ đã có BẤT KỲ khoá ảnh nào của DOM — dòng trang
+    // cũ còn trên DOM, hay DOM rỗng khi đang tải, đều qua được → "0 khớp" giả → bấm Next bỏ sót trang.)
+    private async Task<(bool Confirmed, bool NoNewPageData)> WaitForConfirmedPageAsync(IPage page, CancellationToken ct)
     {
-        for (var i = 0; i < 20; i++)   // ~6s
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (true)
         {
             ct.ThrowIfCancellationRequested();
-            string[] keys;
-            try { keys = await GetVisibleImageKeysAsync(page); } catch { return; }
-            if (keys.Length == 0) return;
-            bool covered;
-            lock (_apiLock) covered = keys.Any(k => _apiImageKeyToShopeeId.ContainsKey(k));
-            if (covered) return;
+            if (await IsPageConfirmedAsync(page)) return (true, false);
+            if (DateTime.UtcNow >= deadline) break;
             await DelayAsync(300, ct);
         }
+        await DelayAsync(2000, ct);
+        if (await IsPageConfirmedAsync(page)) return (true, false);
+        var (text, noNewData) = await DescribeUnconfirmedAsync(page);
+        _log($"  Trang chưa xác nhận: {text}");
+        return (false, noNewData);
     }
 
-private static Task<string[]> GetVisibleImageKeysAsync(IPage page) =>
+    // Chẩn đoán cho log "chưa xác nhận": cùng dữ liệu IsPageConfirmedAsync dùng, in đủ để biết sai ở response hay DOM;
+    // kèm cờ "không có dữ liệu trang mới" cho phanh.
+    private async Task<(string Text, bool NoNewPageData)> DescribeUnconfirmedAsync(IPage page)
+    {
+        bool newer; HashSet<string>? responseKeys;
+        lock (_apiLock) { newer = _latestSeq > _pageMark; responseKeys = _latestKeys; }
+        var rowCount = await GetBodyRowCountAsync(page);
+        var domKeys = await GetVisibleImageKeysAsync(page);
+        return (ImportScanPolicy.DescribeUnconfirmed(newer, responseKeys, rowCount, domKeys),
+                ImportScanPolicy.HasNoNewPageData(newer, responseKeys, domKeys));
+    }
+
+    // Bấm Next trên Crawl List (chụp mốc trang TRƯỚC khi bấm). Trả (đã sang trang, lỗi): false + lỗi null = hết trang thật;
+    // false + lỗi ≠ null = lỗi khi bấm/chờ (phần sau của tab chưa được quét, KHÔNG phải hết trang).
+    private async Task<(bool Advanced, string? Error)> ClickNextPageAsync(IPage page)
+    {
+        string? error = null;
+        MarkPageAction();
+        var advanced = await BigSellerCrawlHelper.ClickNextCrawlPageAsync(page, _log, onError: m => error = m);
+        return (advanced, advanced ? null : error);
+    }
+
+    private async Task<bool> IsPageConfirmedAsync(IPage page)
+    {
+        bool newer; HashSet<string>? responseKeys;
+        lock (_apiLock) { newer = _latestSeq > _pageMark; responseKeys = _latestKeys; }
+        if (!newer || responseKeys is null) return false;
+        var rowCount = await GetBodyRowCountAsync(page);
+        var domKeys = await GetVisibleImageKeysAsync(page);
+        return ImportScanPolicy.IsPageConfirmed(newer, responseKeys, rowCount, domKeys);
+    }
+
+    // Chỉ lấy dòng HIỂN THỊ (cùng cách lọc với GetBodyRowCountAsync): vxe fixed-column/ẩn có thể render dòng ngoài
+    // tầm nhìn với ảnh khác → khoá "lạ" làm trang không bao giờ xác nhận được.
+    private static Task<string[]> GetVisibleImageKeysAsync(IPage page) =>
         page.EvaluateAsync<string[]>(
             "() => {" + ImgKeyJs + @"
                 const set = new Set();
                 for (const tr of Array.from(document.querySelectorAll('tr.vxe-body--row'))) {
+                    const r = tr.getBoundingClientRect();
+                    if (!(r.width > 0 && r.height > 0)) continue;
                     const img = tr.querySelector('img');
                     if (img) { const k = key(img.getAttribute('src')); if (k) set.add(k); }
                 }

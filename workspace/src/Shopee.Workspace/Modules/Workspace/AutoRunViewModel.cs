@@ -469,7 +469,7 @@ public sealed partial class AutoRunViewModel : ObservableObject
 
                         var initialBefore = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
 
-                        // Lần 1: Gọi import thẳng (tab Chưa nhận)
+                        // Gọi import thẳng (runner tự quét cả 2 tab Chưa nhận & Đã nhận)
                         try
                         {
                             await _workspace.Update.RunImportSingleAsync(acc.UpdateTarget, silent: true, importFromClaimedTab: false);
@@ -482,49 +482,25 @@ public sealed partial class AutoRunViewModel : ObservableObject
                         var after = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
                         var imported = after - initialBefore;
 
-                        int expectedRows = 0;
-                        try
+                        // Runner đã LUÔN quét cả 2 tab (Chưa nhận → Đã nhận) trong 1 lượt nên không import lượt hai nữa:
+                        // lượt hai chỉ lặp lại và mở đường gửi trùng sau ca "chưa chắc đã gửi" của runner.
+                        if (imported == 0 && after == 0 && !shop.ImportDone)
                         {
-                            var (_, dEnd) = await Task.Run(() => ScrapeWorkbook.ExcelRowsToDenseRange(
-                                resolved.DataPath, resolved.DataSheet,
-                                Math.Max(2, acc.ScrapeTarget.StartRow), Math.Max(0, acc.ScrapeTarget.EndRow)), ct);
-                            expectedRows = dEnd;
-                        }
-                        catch { }
-
-                        if (imported == 0 || (shopIdx > 0 && expectedRows > 0 && after < expectedRows))
-                        {
-                            // Lần 2: Chuyển sang import tab Đã nhận (khi tab Chưa nhận 0 SP hoặc shop 2+ chưa đủ số SP của sheet)
-                            if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); continue; }
-                            CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đang Import (tab Đã nhận)...";
-                            Log($"[{acc.DisplayName}] Đang import bổ sung từ tab Đã nhận (hiện có {after}/{(expectedRows > 0 ? expectedRows.ToString() : "?")} SP)...");
-
-                            try
-                            {
-                                await _workspace.Update.RunImportSingleAsync(acc.UpdateTarget, silent: true, importFromClaimedTab: true);
-                            }
-                            catch (OperationCanceledException) when (_skipCurrentShop) { }
-
-                            if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); continue; }
-                            if (ct.IsCancellationRequested) break;
-
-                            after = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
-                            imported = after - initialBefore;
-
-                            if (imported == 0 && after == 0 && !shop.ImportDone)
-                            {
-                                // Bỏ qua shop đó và tiếp tục với shop khác
-                                CurrentStatus = $"[{acc.DisplayName}] ({shop.Name}) 0 SP import - Bỏ qua";
-                                Log($"[{acc.DisplayName}] Tab Đã nhận cũng 0 SP → Bỏ qua shop '{shop.Name}'.");
-                                continue;
-                            }
+                            // Bỏ qua shop đó và tiếp tục với shop khác
+                            CurrentStatus = $"[{acc.DisplayName}] ({shop.Name}) 0 SP import - Bỏ qua";
+                            Log($"[{acc.DisplayName}] Import không được SP nào (0 SP) → Bỏ qua shop '{shop.Name}'.");
+                            continue;
                         }
 
-                        // Nếu có import (> 0) hoặc đã có sẵn SP từ trước
+                        // Trạng thái xong/chưa do RunOneWorkflowAsync ghi (completed chỉ khi import đủ mọi item id; lỗi/hủy/thiếu
+                        // thì stopped) — KHÔNG ghi đè ở đây, nếu không import lỗi giữa chừng vẫn thành "xong" và lần sau bị bỏ qua.
+                        // Chưa đủ thì vẫn Update phần đã có rồi sang shop kế; shop giữ trạng thái chưa xong, lần chạy sau import tiếp.
                         if (imported > 0 || after > 0)
                         {
-                            Log($"[{acc.DisplayName}] Import hoàn tất ({imported} SP mới, tổng {after} SP) cho shop '{shop.Name}'.");
-                            OpProgressStore.Shared.FinishRun(acc.Account.Id, progressKey, AssignmentOps.Import, completed: true);
+                            if (shop.ImportDone)
+                                Log($"[{acc.DisplayName}] Import hoàn tất ({imported} SP mới, tổng {after} SP) cho shop '{shop.Name}'.");
+                            else
+                                Log($"[{acc.DisplayName}] ⚠ Import chưa đủ ({after} SP) — vẫn Update phần đã có, lần chạy sau import tiếp.");
                         }
                         await UiThread.InvokeAsync(() => shop.RefreshFleet());
                     }

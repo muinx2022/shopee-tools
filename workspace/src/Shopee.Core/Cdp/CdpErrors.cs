@@ -40,4 +40,33 @@ public static class CdpErrors
     /// <inheritdoc cref="IsTransientNavigationError(string?)"/>
     public static bool IsTransientNavigationError(Exception? ex) =>
         IsTransientNavigationError(ex?.Message);
+
+    // Tập HẸP của NavigationMarkers: chỉ những marker nói thẳng "trang vừa điều hướng nên context chết". Các marker còn lại
+    // KHÔNG chứng minh điều hướng: "Target closed" / "Inspected target navigated or closed" (tab/Brave chết), "WebSocket"
+    // (CDP đứt), "Cannot find context" (context biến mất, không rõ vì sao).
+    private static readonly string[] RealNavigationMarkers =
+    [
+        "Execution context was destroyed",
+        "most likely because of a navigation",
+    ];
+
+    /// <summary>true nếu <paramref name="message"/> nói rõ lỗi do TRANG ĐIỀU HƯỚNG (context bị huỷ). Chặt hơn
+    /// <see cref="IsTransientNavigationError(string?)"/> — dùng khi cần phân biệt điều hướng thật với Brave chết/CDP đứt.</summary>
+    public static bool IsRealNavigationError(string? message)
+    {
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        foreach (var marker in RealNavigationMarkers)
+        {
+            if (message.Contains(marker, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <inheritdoc cref="IsRealNavigationError(string?)"/>
+    public static bool IsRealNavigationError(Exception? ex) =>
+        IsRealNavigationError(ex?.Message);
 }

@@ -45,6 +45,11 @@ public sealed class UpdateProductRunner
     /// <summary>True nếu trong lượt chạy Update vừa rồi, shop đã chạm giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).</summary>
     public bool ListingLimitReached { get; private set; }
 
+    /// <summary>True nếu lượt Import/Update vừa rồi XONG THẬT: Import = mọi item id trong khoảng dòng đã import;
+    /// Update = mọi SP mục tiêu đã update. Hết lượt/hết trang mà còn thiếu thì false → caller KHÔNG được ghi "xong".
+    /// Đặt về false đầu mỗi lượt; hủy giữa chừng/lỗi thì giữ false (caller đã xét hủy trước khi đọc).</summary>
+    public bool LastRunComplete { get; private set; }
+
     private ProductNameRewriteRunner? _nameRunner;
     private readonly WorkflowPauseToken _pause = new();
 
@@ -134,6 +139,7 @@ public sealed class UpdateProductRunner
     // ── Import to store (Playwright) — N lane song song nếu ImportMaxProcess > 1 ──
     public async Task RunImportAsync(UpdateProductContext ctx, CancellationToken ct)
     {
+        LastRunComplete = false;
         var wf = BuildWorkflow(ctx);
         var n = Math.Clamp(ctx.ImportMaxProcess, 1, 10);
         if (n == 1)
@@ -144,8 +150,11 @@ public sealed class UpdateProductRunner
             await using var runner = new BigSellerImportToStoreRunner(wf, m => Log?.Invoke(m), _pause, 0, 1);
             runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
             await runner.RunAsync(ct);
+            LastRunComplete = runner.AllImported;
             return;
         }
+        // Nhánh nhiều lane KHÔNG báo LastRunComplete (giữ false): đường Workspace luôn dùng OpLanes.Import = 1 lane
+        // nên chưa cần gộp kết quả nhiều lane.
         Log?.Invoke($"▶ Import SONG SONG {n} lane (mỗi lane 1 Brave/profile/port riêng).");
         await RunLanesAsync(wf, n, ct, async (laneWf, lane, count, claim, export, c) =>
         {
@@ -159,6 +168,7 @@ public sealed class UpdateProductRunner
     public async Task RunUpdateAsync(UpdateProductContext ctx, CancellationToken ct)
     {
         ListingLimitReached = false;
+        LastRunComplete = false;
         var wf = BuildWorkflow(ctx);
         var n = Math.Clamp(ctx.UpdateMaxProcess, 1, 10);
         // CACHE CHUNG dữ liệu shop (dòng → record, khớp theo item id): nạp MỘT LẦN trước mọi lane rồi chia sẻ
@@ -205,6 +215,7 @@ public sealed class UpdateProductRunner
         if (targetTracker.IsAllCompleted)
         {
             Log?.Invoke($"✔ Shop \"{wf.ShopName}\": Đã update đủ {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP theo tiến độ đã lưu — bỏ qua, không mở Brave.");
+            LastRunComplete = true;
             return;
         }
         // Điều phối dọn Material Center DÙNG CHUNG mọi lane (1 account): đếm bắt-đầu-sửa TOÀN account (quota kho
@@ -235,6 +246,9 @@ public sealed class UpdateProductRunner
         }
         finally
         {
+            // Xong thật = đủ SP mục tiêu. SP fail vĩnh viễn (MarkFailedPermanent) KHÔNG tính; chạm listing limit
+            // thì caller xét riêng qua ListingLimitReached.
+            LastRunComplete = targetTracker.IsAllCompleted;
             if (targetTracker.IsListingLimitReached)
             {
                 ListingLimitReached = true;
