@@ -39,8 +39,8 @@ internal sealed partial class BigSellerProductUpdateRunner
             {
                 await r.ScrollIntoViewIfNeededAsync();
                 await r.ClickAsync();
-                // chờ khối upload (spc_box) hiện sau khi sizeChartContent bỏ display:none
-                try { await page.Locator(ImageGalleryBox).First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 4000 }); } catch { /* chờ best-effort */ }
+                // chờ khối upload (spc_box) hiện sau khi sizeChartContent bỏ display:none; đã có ảnh cũ thì không có spc_box → đợi item ảnh
+                try { await page.Locator(ImageGalleryBox).Or(page.Locator(ImageUploadedItem)).First.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 4000 }); } catch { /* chờ best-effort */ }
             }
         }
         catch (Exception ex) { _log($"  ↳ Tick radio 'Tải lên hình ảnh' lỗi: {ex.Message}"); }
@@ -52,6 +52,14 @@ internal sealed partial class BigSellerProductUpdateRunner
         if (hasImage)
         {
             await StepAsync("Import ảnh");
+            // Ô size chart đã có ảnh cũ → xóa trước, nếu không Upload thấy "có ảnh" là return true và giữ ảnh cũ.
+            // Xóa không được = KHÔNG gọi upload (gọi sẽ coi ảnh cũ là thành công); cũng KHÔNG phải dấu hiệu kho đầy
+            // → không đụng streak/_mediaFullDetected, chỉ thoát để SP thử lại.
+            if (!await RemoveExistingImageAsync(page, ct))
+            {
+                _log("⚠ Ảnh cũ trong ô size chart chưa xóa được — bỏ bước AI/Lưu, SP sẽ thử lại.");
+                return false;
+            }
             var imgOk = false;
             try { imgOk = await UploadImageWithRetryAsync(page, imagePath!, 3, ct); }
             catch (OperationCanceledException) { throw; }

@@ -75,6 +75,9 @@ internal sealed partial class BigSellerProductUpdateRunner
     private static readonly Regex NoBrandRegex = new(@"^\s*No\s*brand\s*$", RegexOptions.IgnoreCase);
 
     private const string ImageUploadedImg = "div.supp_size_chat div.page_edit_img_item.comm_img_module img[src]";
+    // Khung ảnh ĐÃ CÓ (ảnh cũ) + nút xóa bên trong (chỉ hiện khi hover item). Nút nhận diện theo icon, không theo title → độc lập ngôn ngữ.
+    private const string ImageUploadedItem = "div.supp_size_chat div.page_edit_img_item.comm_img_module";
+    private const string ImageDeleteBtn = "span.action_btn:has(span.bsicon_delete)";
     private const string ImageGalleryBox = "div.spc_box";
     private const string ImageUploadMenuItem = "div.spc_box ul.spc_cho li";
 

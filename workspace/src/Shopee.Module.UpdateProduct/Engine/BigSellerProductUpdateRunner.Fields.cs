@@ -261,6 +261,53 @@ internal sealed partial class BigSellerProductUpdateRunner
         catch { return false; }
     }
 
+    // Ô size chart có thể ĐÃ có ảnh cũ → xóa trước khi upload (UploadImageWithRetryAsync thấy có ảnh là return true ngay,
+    // nên không xóa thì ảnh của user không bao giờ được chọn). Trả true khi ô không còn ảnh. KHÔNG gọi ở bước Lưu:
+    // Lưu gọi lại Upload để kiểm ảnh, xóa ở đó sẽ mất ảnh vừa upload.
+    private async Task<bool> RemoveExistingImageAsync(IPage page, CancellationToken ct)
+    {
+        const int maxRounds = 3;
+        for (var round = 1; round <= maxRounds; round++)
+        {
+            if (!await IsImageUploadedAsync(page)) return true;   // không có ảnh (hoặc đã xóa xong) → không log gì thêm
+            try
+            {
+                var item = page.Locator(ImageUploadedItem).First;
+                await item.ScrollIntoViewIfNeededAsync();
+                await item.HoverAsync();   // nút Edit/Delete chỉ hiện khi hover vào item
+                var del = item.Locator(ImageDeleteBtn).First;
+                await del.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 3000 });
+                await del.ClickAsync();
+
+                // Chưa biết BigSeller có hỏi xác nhận khi xóa không → nếu hiện confirm thì bấm, không thì thôi (best-effort).
+                try
+                {
+                    var confirm = page.Locator(ConfirmPrimaryBtn).First;
+                    await confirm.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 1000 });
+                    await confirm.ClickAsync();
+                }
+                catch (OperationCanceledException) { throw; }
+                catch { /* không có popup xác nhận */ }
+
+                // chờ ảnh biến mất (tối đa ~3s)
+                for (var waited = 0; waited < 3000; waited += 250)
+                {
+                    if (!await IsImageUploadedAsync(page))
+                    {
+                        _log("  ↳ Đã xóa ảnh cũ.");
+                        return true;
+                    }
+                    await DelayAsync(250, ct);
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) { _log($"  ↳ Xóa ảnh cũ lượt {round}/{maxRounds} lỗi: {ex.Message}"); }
+        }
+        if (!await IsImageUploadedAsync(page)) { _log("  ↳ Đã xóa ảnh cũ."); return true; }
+        _log($"⚠ Không xóa được ảnh cũ sau {maxRounds} lượt — ảnh cũ vẫn còn.");
+        return false;
+    }
+
     // ── AI description ──
     private async Task<string> GenerateDescriptionAsync(string productName, CancellationToken ct)
     {
