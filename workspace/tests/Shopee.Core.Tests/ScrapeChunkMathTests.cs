@@ -50,14 +50,54 @@ public sealed class ScrapeChunkMathTests
     }
 
     [Theory]
-    [InlineData(1)]    // 1 worker → không có ai để chia việc
-    [InlineData(4)]    // mảng ngắn (5 dòng < 2×4) → để 1 worker chạy nốt
-    public void SplitPatch_KhongCat_ThiGiuNguyenCaKhoangLanStall(int workers)
+    [InlineData(1, 10, 14)]   // 1 worker → không có ai để chia việc
+    [InlineData(8, 10, 10)]   // mảng 1 dòng → không cắt được nữa
+    [InlineData(1, 10, 10)]
+    public void SplitPatch_KhongCat_ThiGiuNguyenCaKhoangLanStall(int workers, int from, int to)
     {
-        var patch = new ScrapeChunkMath.PatchSlice(10, 14, 2);
+        var patch = new ScrapeChunkMath.PatchSlice(from, to, 2);
         var (piece, rest) = ScrapeChunkMath.SplitPatch(patch, workers);
         Assert.Equal(patch, piece);
         Assert.Null(rest);
+    }
+
+    [Fact]
+    public void SplitPatch_Mang2Dong_8Worker_CatThanh1Cong1_KhongMatKhongChong()
+    {
+        var patch = new ScrapeChunkMath.PatchSlice(100, 101, 2);
+        var (piece, rest) = ScrapeChunkMath.SplitPatch(patch, workers: 8);
+        Assert.Equal(new ScrapeChunkMath.PatchSlice(100, 100, 2), piece);
+        Assert.Equal(new ScrapeChunkMath.PatchSlice(101, 101, 0), rest);
+    }
+
+    // ── TailChunkWidth: đuôi luôn chia đều, xuống tới 1 dòng/worker ───────────────────────────────────
+
+    [Fact]
+    public void TailChunkWidth_8Worker_Con15Dong_ChiaDeuKhongMatDong()
+    {
+        const int per = 25, workers = 8;
+        var remaining = 15;
+        var sizes = new List<int>();
+        while (remaining > 0)
+        {
+            var rows = Math.Min(remaining, ScrapeChunkMath.TailChunkWidth(remaining, per, workers) + 1);
+            sizes.Add(rows);
+            remaining -= rows;
+        }
+        Assert.Equal(15, sizes.Sum());
+        Assert.Equal(new[] { 2, 2, 2, 2, 1, 1, 1, 1, 1, 1, 1 }, sizes);
+    }
+
+    [Theory]
+    [InlineData(7, 25, 8, 0)]     // còn < workers → 1 dòng/khối
+    [InlineData(1, 25, 8, 0)]
+    [InlineData(0, 25, 8, 0)]     // hết việc → không âm, không văng
+    [InlineData(200, 25, 8, 25)]  // còn >= per×workers → giữ per
+    [InlineData(500, 25, 8, 25)]
+    [InlineData(15, 25, 1, 25)]   // 1 worker → giữ per
+    public void TailChunkWidth_CacBien(int remaining, int per, int workers, int mong)
+    {
+        Assert.Equal(mong, ScrapeChunkMath.TailChunkWidth(remaining, per, workers));
     }
 
     [Fact]
