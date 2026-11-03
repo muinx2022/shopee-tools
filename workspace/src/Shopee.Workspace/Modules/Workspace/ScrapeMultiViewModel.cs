@@ -505,6 +505,11 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
         }
     }
 
+    /// <summary>Một dòng log mỗi lần probe phiên dẫn tới quyết định — để chẩn đoán sau này khi mất phiên thật
+    /// (chưa biết getUserAccount.json trả gì cho phiên chết).</summary>
+    private void LogProbe(ScrapeMultiAccountItem target, int row, string phase, BigSellerSessionProbe probe, ScrapeMultiSyncAction action) =>
+        Log($"[{target.DisplayName}] Probe phiên ({phase}) dòng {row}: {probe} → {action}");
+
     private static void RecordFailedSync(ScrapeMultiAccountItem target, int row, string url, string jsonData, string error)
     {
         ScrapeMultiFailedSyncStore.Shared.AddOrUpdate(new FailedSyncItem
@@ -565,13 +570,17 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
                 catch { }
             }
 
-            var isAlive = false;
+            // Lỗi phiên đã rõ (2001/401006…) → bỏ probe trước khoá; probe TRONG khoá lo phần còn lại.
+            var needLock = true;
             if (!isSessionIssue)
             {
-                isAlive = await BigSellerCookieEngine.IsSessionAliveAsync(target.Account.Account, proxy, ct).ConfigureAwait(false);
+                var probe0 = await BigSellerCookieEngine.ProbeSessionAsync(target.Account.Account, proxy, ct).ConfigureAwait(false);
+                var action0 = ScrapeMultiSessionDecision.AfterProbe(false, probe0, inLock: false);
+                needLock = action0 == ScrapeMultiSyncAction.Login;
+                LogProbe(target, row, "trước khoá", probe0, action0);
             }
 
-            if (!isAlive)
+            if (needLock)
             {
                 var sem = _loginLocks.GetOrAdd(target.Account.Account.Id, _ => new SemaphoreSlim(1, 1));
                 await sem.WaitAsync(ct).ConfigureAwait(false);
@@ -582,13 +591,21 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
                         return FailFastLoginFailed(target, row, url, jsonData);
 
                     // Kiểm tra lại sau khi vào lock phòng khi luồng khác vừa hoàn thành đăng nhập
-                    var aliveNow = await BigSellerCookieEngine.IsSessionAliveAsync(target.Account.Account, proxy, ct).ConfigureAwait(false);
-                    if (aliveNow)
+                    var probeNow = await BigSellerCookieEngine.ProbeSessionAsync(target.Account.Account, proxy, ct).ConfigureAwait(false);
+                    var actionNow = ScrapeMultiSessionDecision.AfterProbe(isSessionIssue, probeNow, inLock: true);
+                    LogProbe(target, row, "trong khoá", probeNow, actionNow);
+                    if (actionNow == ScrapeMultiSyncAction.Repost)
                     {
                         Log($"[{target.DisplayName}] ✓ Đã có phiên mới hợp lệ (từ luồng trước). Thử sync lại dòng {row}…");
                         target.Status = $"Sync lại dòng {row}…";
                         res = await BigSellerFanOutClient.PostCrawlAsync(
                             target.Account.Account, url, jsonData, msg => Log(msg), ct).ConfigureAwait(false);
+                    }
+                    else if (actionNow == ScrapeMultiSyncAction.Book)
+                    {
+                        // Không hỏi được BigSeller (mạng) và server chưa báo lỗi phiên → KHÔNG đăng nhập, KHÔNG MarkFailed.
+                        // Dòng rơi xuống nhánh ghi sổ lỗi bên dưới (lỗi thật), các dòng sau vẫn chạy bình thường.
+                        Log($"[{target.DisplayName}] ⚠ Không kết nối được BigSeller để kiểm tra phiên (mạng) → KHÔNG đăng nhập lại; dòng {row} vào sổ lỗi.");
                     }
                     else
                     {
@@ -604,22 +621,31 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
                             Log,
                             ct).ConfigureAwait(false);
 
-                        if (outcome == OpenMultiBraveLauncherV3.AutoLoginOutcome.Success)
+                        // Success: probe xác minh cookie mới; không Success: probe lại 1 lần để phân biệt mạng với phiên.
+                        var loginOk = outcome == OpenMultiBraveLauncherV3.AutoLoginOutcome.Success;
+                        var probeLogin = await BigSellerCookieEngine.ProbeSessionAsync(target.Account.Account, proxy, ct).ConfigureAwait(false);
+                        var afterLogin = ScrapeMultiSessionDecision.AfterLogin(loginOk, probeLogin);
+                        LogProbe(target, row, "sau đăng nhập", probeLogin, afterLogin);
+
+                        if (afterLogin == ScrapeMultiSyncAction.Repost)
                         {
-                            var verified = await BigSellerCookieEngine.IsSessionAliveAsync(target.Account.Account, proxy, ct).ConfigureAwait(false);
-                            if (verified)
-                            {
-                                target.Account.NotifyCookieChanged();
-                                Log($"[{target.DisplayName}] ✓ Đã tự đăng nhập lại thành công! Thử sync lại dòng {row}…");
-                                target.Status = $"Sync lại dòng {row}…";
-                                res = await BigSellerFanOutClient.PostCrawlAsync(
-                                    target.Account.Account, url, jsonData, msg => Log(msg), ct).ConfigureAwait(false);
-                            }
-                            else
-                            {
-                                Log($"[{target.DisplayName}] ✘ Đăng nhập thành công nhưng cookie chưa được BigSeller chấp nhận.");
-                                _loginFailures.MarkFailed(target.Account.Account.Id);
-                            }
+                            target.Account.NotifyCookieChanged();
+                            Log(loginOk
+                                ? $"[{target.DisplayName}] ✓ Đã tự đăng nhập lại thành công! Thử sync lại dòng {row}…"
+                                : $"[{target.DisplayName}] ⚠ Đăng nhập tự động không thành công ({outcome}) nhưng phiên BigSeller vẫn dùng được → thử sync lại dòng {row}…");
+                            target.Status = $"Sync lại dòng {row}…";
+                            res = await BigSellerFanOutClient.PostCrawlAsync(
+                                target.Account.Account, url, jsonData, msg => Log(msg), ct).ConfigureAwait(false);
+                        }
+                        else if (afterLogin == ScrapeMultiSyncAction.Book)
+                        {
+                            // Không hỏi được BigSeller (mạng) → không kết luận phiên chết: KHÔNG MarkFailed, dòng vào sổ lỗi (nhánh dưới).
+                            Log($"[{target.DisplayName}] ⚠ Không kết nối được BigSeller (mạng) sau bước đăng nhập ({outcome}) → KHÔNG đánh dấu tk lỗi; dòng {row} vào sổ lỗi, các dòng sau thử lại bình thường.");
+                        }
+                        else if (loginOk)
+                        {
+                            Log($"[{target.DisplayName}] ✘ Đăng nhập thành công nhưng cookie chưa được BigSeller chấp nhận.");
+                            _loginFailures.MarkFailed(target.Account.Account.Id);
                         }
                         else
                         {
@@ -727,7 +753,14 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
             Log($"=== [1/2] KIỂM TRA TÀI KHOẢN CHÍNH (LEAD): {leadAcc.DisplayName} ===");
 
             var leadReady = await EnsureSingleSessionAsync(leadItem, ct);
-            if (!leadReady)
+            if (leadReady == SessionEnsureResult.NetworkUnreachable)
+            {
+                CurrentStatus = "Không kết nối được BigSeller (mạng)";
+                Log($"✘ DỪNG SCRAPE: Không kết nối được BigSeller để kiểm tra phiên tài khoản chính [{leadAcc.DisplayName}] (lỗi mạng/timeout) — KHÔNG phải thiếu cookie.");
+                Log("👉 Kiểm tra kết nối mạng/proxy rồi bấm chạy lại.");
+                return;
+            }
+            if (leadReady != SessionEnsureResult.Ready)
             {
                 CurrentStatus = "Tài khoản Lead chưa có cookie hợp lệ";
                 Log($"✘ DỪNG SCRAPE: Tài khoản chính [{leadAcc.DisplayName}] chưa có cookie BigSeller hợp lệ và không thể tự đăng nhập.");
@@ -745,7 +778,11 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
                 {
                     ct.ThrowIfCancellationRequested();
                     var ok = await EnsureSingleSessionAsync(item, ct);
-                    if (!ok)
+                    if (ok == SessionEnsureResult.NetworkUnreachable)
+                    {
+                        Log($"⚠ [{item.DisplayName}] Không kết nối được BigSeller để kiểm tra phiên (mạng) — vẫn chạy bình thường; SP nào sync lỗi sẽ vào sổ lỗi để đồng bộ bù sau.");
+                    }
+                    else if (ok != SessionEnsureResult.Ready)
                     {
                         Log($"⚠ [{item.DisplayName}] Chưa có phiên hợp lệ và tự đăng nhập thất bại — trong lượt này sẽ KHÔNG đăng nhập lại; các SP sync tới tài khoản này được ghi thẳng vào sổ lỗi để đồng bộ bù sau khi đăng nhập thủ công.");
                     }
@@ -890,7 +927,7 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
         }
     }
 
-    private async Task<bool> EnsureSingleSessionAsync(ScrapeMultiAccountItem item, CancellationToken ct)
+    private async Task<SessionEnsureResult> EnsureSingleSessionAsync(ScrapeMultiAccountItem item, CancellationToken ct)
     {
         var acc = item.Account.Account;
 
@@ -919,13 +956,21 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
         }
 
         item.Status = "Kiểm tra phiên…";
-        var isAlive = await BigSellerCookieEngine.IsSessionAliveAsync(acc, proxy, ct).ConfigureAwait(false);
-        if (isAlive)
+        var probe = await BigSellerCookieEngine.ProbeSessionAsync(acc, proxy, ct).ConfigureAwait(false);
+        if (probe == BigSellerSessionProbe.Alive)
         {
             item.Status = item.IsLead ? "Lead (Đã có cookie ✓)" : "Đã có cookie ✓";
             Log($"[{item.DisplayName}] ✓ Phiên BigSeller đang sống (đã xác thực{(proxy is null ? " qua IP máy" : " qua proxy")}).");
-            return true;
+            return SessionEnsureResult.Ready;
         }
+        if (probe == BigSellerSessionProbe.Unreachable)
+        {
+            // Rớt mạng KHÔNG phải mất phiên: không đăng nhập (sẽ hỏng theo), không MarkFailed.
+            item.Status = "Không kết nối được BigSeller (mạng)";
+            Log($"[{item.DisplayName}] ⚠ Không kết nối được BigSeller để kiểm tra phiên (lỗi mạng/timeout{(proxy is null ? ", IP máy" : ", qua proxy")}) — KHÔNG đăng nhập lại. Probe phiên: {probe}.");
+            return SessionEnsureResult.NetworkUnreachable;
+        }
+        Log($"[{item.DisplayName}] Probe phiên (khởi động): {probe} → đăng nhập lại.");
 
         Log($"[{item.DisplayName}] ⚠ Chưa có cookie hoặc phiên không khớp IP{(proxy is null ? " máy" : " proxy")} → Đang thử tự đăng nhập…");
         item.Status = "Đang tự đăng nhập…";
@@ -935,20 +980,26 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
 
         if (outcome == OpenMultiBraveLauncherV3.AutoLoginOutcome.Success)
         {
-            var verified = await BigSellerCookieEngine.IsSessionAliveAsync(acc, proxy, ct).ConfigureAwait(false);
-            if (verified)
+            var verified = await BigSellerCookieEngine.ProbeSessionAsync(acc, proxy, ct).ConfigureAwait(false);
+            if (verified == BigSellerSessionProbe.Alive)
             {
                 item.Account.NotifyCookieChanged();
                 item.Status = item.IsLead ? "Lead (Đã đăng nhập ✓)" : "Đã đăng nhập ✓";
                 Log($"[{item.DisplayName}] ✓ Tự đăng nhập và xác thực thành công, đã lưu cookie mới!");
-                return true;
+                return SessionEnsureResult.Ready;
+            }
+            else if (verified == BigSellerSessionProbe.Unreachable)
+            {
+                item.Status = "Không kết nối được BigSeller (mạng)";
+                Log($"[{item.DisplayName}] ⚠ Đăng nhập xong nhưng không kết nối được BigSeller để xác thực (lỗi mạng/timeout) — KHÔNG đánh dấu tk lỗi. Probe phiên: {verified}.");
+                return SessionEnsureResult.NetworkUnreachable;
             }
             else
             {
                 item.Status = "Phiên chưa hợp lệ";
                 Log($"[{item.DisplayName}] ⚠ Tự đăng nhập xong nhưng cookie chưa được BigSeller chấp nhận (vui lòng vào Cấu hình Bigseller → 'Mở Profile' để đăng nhập bằng tay).");
                 _loginFailures.MarkFailed(acc.Id);
-                return false;
+                return SessionEnsureResult.Failed;
             }
         }
         else if (outcome == OpenMultiBraveLauncherV3.AutoLoginOutcome.NeedsOtp)
@@ -956,14 +1007,14 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
             item.Status = "Cần OTP email";
             Log($"[{item.DisplayName}] ⚠ BigSeller đòi mã xác thực email (thiết bị mới). Vui lòng vào Cấu hình Bigseller → 'Mở Profile' để đăng nhập.");
             _loginFailures.MarkFailed(acc.Id);
-            return false;
+            return SessionEnsureResult.Failed;
         }
         else
         {
             item.Status = "Chưa có cookie";
             Log($"[{item.DisplayName}] ✘ Chưa có cookie hợp lệ trên IP máy. Vui lòng vào tab 'Cấu hình Bigseller' → click 'Mở Profile' của tài khoản này để đăng nhập 1 lần.");
             _loginFailures.MarkFailed(acc.Id);
-            return false;
+            return SessionEnsureResult.Failed;
         }
     }
 

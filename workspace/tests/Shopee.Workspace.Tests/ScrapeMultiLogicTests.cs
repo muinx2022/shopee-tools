@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Shopee.Core.BigSeller;
 using Shopee.Workspace.Modules.Scrape;
 using Shopee.Workspace.Modules.Workspace;
 using Xunit;
@@ -55,4 +56,31 @@ public sealed class ScrapeMultiLogicTests
         Assert.Equal("x", f.Reason);
         Assert.Equal(ScrapeJobStatus.NotStarted, ScrapeJobOutcome.NotStarted("y").Status);
     }
+
+    // ── Quyết định phiên khi sync lỗi: rớt mạng KHÔNG được coi là mất phiên ──
+
+    [Theory]
+    // (isSessionIssue, probe, inLock) → action
+    [InlineData(false, BigSellerSessionProbe.Alive, false, ScrapeMultiSyncAction.Book)]        // phiên ổn, lỗi khác → không đăng nhập
+    [InlineData(true, BigSellerSessionProbe.Alive, true, ScrapeMultiSyncAction.Repost)]        // trong khoá: đã có phiên mới → post lại
+    [InlineData(false, BigSellerSessionProbe.Alive, true, ScrapeMultiSyncAction.Repost)]
+    [InlineData(false, BigSellerSessionProbe.Rejected, false, ScrapeMultiSyncAction.Login)]
+    [InlineData(true, BigSellerSessionProbe.Rejected, true, ScrapeMultiSyncAction.Login)]
+    [InlineData(true, BigSellerSessionProbe.Unreachable, true, ScrapeMultiSyncAction.Login)]   // server đã báo 2001 + mạng chập → vẫn đăng nhập
+    [InlineData(true, BigSellerSessionProbe.Unreachable, false, ScrapeMultiSyncAction.Login)]
+    [InlineData(false, BigSellerSessionProbe.Unreachable, false, ScrapeMultiSyncAction.Book)]  // chỉ ghi sổ, không đăng nhập, không MarkFailed
+    [InlineData(false, BigSellerSessionProbe.Unreachable, true, ScrapeMultiSyncAction.Book)]
+    public void SessionDecision_AfterProbe(bool isSessionIssue, BigSellerSessionProbe probe, bool inLock, ScrapeMultiSyncAction expected) =>
+        Assert.Equal(expected, ScrapeMultiSessionDecision.AfterProbe(isSessionIssue, probe, inLock));
+
+    [Theory]
+    // (loginSuccess, probe) → action
+    [InlineData(true, BigSellerSessionProbe.Alive, ScrapeMultiSyncAction.Repost)]
+    [InlineData(true, BigSellerSessionProbe.Rejected, ScrapeMultiSyncAction.MarkFailed)]
+    [InlineData(true, BigSellerSessionProbe.Unreachable, ScrapeMultiSyncAction.Book)]
+    [InlineData(false, BigSellerSessionProbe.Unreachable, ScrapeMultiSyncAction.Book)]         // đăng nhập hỏng vì mạng → không MarkFailed
+    [InlineData(false, BigSellerSessionProbe.Rejected, ScrapeMultiSyncAction.MarkFailed)]
+    [InlineData(false, BigSellerSessionProbe.Alive, ScrapeMultiSyncAction.Repost)]             // đăng nhập hỏng nhưng phiên dùng được → post lại
+    public void SessionDecision_AfterLogin(bool loginSuccess, BigSellerSessionProbe probe, ScrapeMultiSyncAction expected) =>
+        Assert.Equal(expected, ScrapeMultiSessionDecision.AfterLogin(loginSuccess, probe));
 }

@@ -151,16 +151,19 @@ public static partial class BigSellerCookieEngine
     /// <summary>
     /// Kiểm tra nhanh xem phiên đăng nhập BigSeller của tài khoản còn sống hay không bằng cách gọi
     /// API POST https://www.bigseller.com/api/v1/user/getUserAccount.json (nhẹ, nhanh, không cần mở browser).
-    /// Trả true nếu hợp lệ (code == 0), false nếu hết hạn / chưa có cookie / lỗi.
+    /// Phân biệt 3 kết quả (<see cref="BigSellerSessionProbe"/>): server TRẢ LỜI "sống" / "từ chối", hay KHÔNG HỎI
+    /// ĐƯỢC (rớt mạng, timeout…) — rớt mạng KHÔNG được coi là mất phiên (đăng nhập lúc đó cũng hỏng theo).
+    /// Không có file cookie / không có token → Rejected, không chạm mạng.
+    /// Huỷ qua <paramref name="ct"/> → ném <see cref="OperationCanceledException"/> (không nuốt).
     /// </summary>
-    public static async Task<bool> IsSessionAliveAsync(BigSellerAccount account, string? proxyServer = null, CancellationToken ct = default)
+    public static async Task<BigSellerSessionProbe> ProbeSessionAsync(BigSellerAccount account, string? proxyServer = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(account.CookieFile) || !File.Exists(account.CookieFile))
-            return false;
+            return BigSellerSessionProbe.Rejected;
 
         var tokenInfo = GetFileAuthTokenInfo(account.CookieFile);
         if (tokenInfo is null || string.IsNullOrWhiteSpace(tokenInfo.Value.Value))
-            return false;
+            return BigSellerSessionProbe.Rejected;
 
         var tokenStr = tokenInfo.Value.Value;
 
@@ -189,6 +192,7 @@ public static partial class BigSellerCookieEngine
                     cookieHeader = string.Join("; ", pairs);
             }
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch { }
 
         var endpoints = new[]
@@ -197,6 +201,7 @@ public static partial class BigSellerCookieEngine
             "https://www.bigseller.pro/api/v1/user/getUserAccount.json"
         };
 
+        var results = new List<BigSellerSessionProbe>(endpoints.Length);
         foreach (var endpoint in endpoints)
         {
             try
@@ -225,19 +230,66 @@ public static partial class BigSellerCookieEngine
                 req.Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json");
 
                 using var resp = await client.SendAsync(req, ct).ConfigureAwait(false);
-                if (!resp.IsSuccessStatusCode) continue;
-
                 var body = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
-                using var respDoc = JsonDocument.Parse(body);
-                if (respDoc.RootElement.TryGetProperty("code", out var codeProp) && codeProp.GetInt32() == 0)
-                    return true;
+                results.Add(ClassifyProbeResponse((int)resp.StatusCode, body));
             }
-            catch { }
+            // Caller huỷ → ném ra; còn timeout của HttpClient (ct chưa huỷ) hay lỗi kết nối → Unreachable.
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch { results.Add(BigSellerSessionProbe.Unreachable); }
         }
 
-        return false;
+        return CombineProbes(results);
     }
+
+    /// <summary>Phân loại phản hồi của MỘT endpoint (thuần, test được không cần mạng). JSON có <c>code</c> ≠ 0
+    /// hoặc HTTP 401/403 → Rejected; 2xx + JSON <c>code == 0</c> → Alive; còn lại (HTTP status khác, body không
+    /// phải JSON / không có <c>code</c> số) → Unreachable (không kết luận được gì về phiên).</summary>
+    public static BigSellerSessionProbe ClassifyProbeResponse(int statusCode, string? body)
+    {
+        if (statusCode is 401 or 403) return BigSellerSessionProbe.Rejected;
+        try
+        {
+            using var doc = JsonDocument.Parse(body ?? "");
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("code", out var codeProp)
+                && codeProp.ValueKind == JsonValueKind.Number && codeProp.TryGetInt32(out var code))
+            {
+                if (code != 0) return BigSellerSessionProbe.Rejected;
+                return statusCode is >= 200 and < 300 ? BigSellerSessionProbe.Alive : BigSellerSessionProbe.Unreachable;
+            }
+        }
+        catch (JsonException) { }
+        return BigSellerSessionProbe.Unreachable;
+    }
+
+    /// <summary>Gộp kết quả nhiều endpoint: có Alive → Alive; không thì có Unreachable → Unreachable; còn lại
+    /// (toàn Rejected) → Rejected; danh sách rỗng → Unreachable. Unreachable thắng Rejected vì tk chỉ sống trên 1
+    /// cụm (.com HOẶC .pro): endpoint kia có thể luôn từ chối token, nên "chập mạng ở endpoint thật + endpoint
+    /// kia từ chối" KHÔNG được đọc là Rejected (sẽ kéo đăng nhập rồi MarkFailed oan). Phiên chết thật vẫn đăng
+    /// nhập qua isSessionIssue (2001/401006 từ endpoint sync).</summary>
+    public static BigSellerSessionProbe CombineProbes(IEnumerable<BigSellerSessionProbe> results)
+    {
+        var any = false;
+        var unreachable = false;
+        foreach (var r in results)
+        {
+            if (r == BigSellerSessionProbe.Alive) return BigSellerSessionProbe.Alive;
+            if (r == BigSellerSessionProbe.Unreachable) unreachable = true;
+            any = true;
+        }
+        return !any || unreachable ? BigSellerSessionProbe.Unreachable : BigSellerSessionProbe.Rejected;
+    }
+
+    /// <summary>true nếu phiên còn sống (server xác nhận). Rejected và Unreachable đều là false — caller cần
+    /// phân biệt hai trường hợp đó thì dùng <see cref="ProbeSessionAsync"/>.</summary>
+    public static async Task<bool> IsSessionAliveAsync(BigSellerAccount account, string? proxyServer = null, CancellationToken ct = default) =>
+        await ProbeSessionAsync(account, proxyServer, ct).ConfigureAwait(false) == BigSellerSessionProbe.Alive;
 
     public static Task<bool> IsSessionAliveAsync(BigSellerAccount account, CancellationToken ct) =>
         IsSessionAliveAsync(account, null, ct);
 }
+
+/// <summary>Kết quả hỏi server BigSeller về phiên: <see cref="Alive"/> = server xác nhận còn sống;
+/// <see cref="Rejected"/> = server từ chối (hoặc không có cookie/token để hỏi); <see cref="Unreachable"/> = không
+/// hỏi được (rớt mạng/timeout/trả lời lạ) → KHÔNG kết luận được phiên chết.</summary>
+public enum BigSellerSessionProbe { Alive, Rejected, Unreachable }
