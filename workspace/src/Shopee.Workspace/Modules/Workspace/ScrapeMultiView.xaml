@@ -34,6 +34,18 @@
                         </TextBlock>
                     </StackPanel>
                 </Button>
+                <Button MinWidth="160" Margin="0,0,10,0"
+                        Visibility="{Binding IsNotRunning, Converter={StaticResource BoolToVis}}"
+                        Command="{Binding RescrapeEmptyFailedSyncCommand}"
+                        IsEnabled="{Binding HasEmptyFailedSyncs}"
+                        ToolTip="Mục lỗi có JSON rỗng thì đồng bộ lại không bao giờ thành công: Lead mở Brave, vào lại từng URL để lấy JSON (không bấm scrape, không đổi tiến độ) rồi đồng bộ tới đúng các tài khoản có mục đó. Không lấy được JSON thì giữ nguyên mục để thêm tay.">
+                    <StackPanel Orientation="Horizontal">
+                        <c:PathIcon Data="{StaticResource IconRefresh}" />
+                        <TextBlock Style="{StaticResource btnLabel}">
+                            <Run Text="Cào lại SP lỗi (" /><Run Text="{Binding EmptyFailedSyncCount, Mode=OneWay}" /><Run Text=")" />
+                        </TextBlock>
+                    </StackPanel>
+                </Button>
                 <Button Style="{StaticResource primary}" MinWidth="160"
                         Visibility="{Binding IsNotRunning, Converter={StaticResource BoolToVis}}"
                         Command="{Binding StartScrapeMultiCommand}">

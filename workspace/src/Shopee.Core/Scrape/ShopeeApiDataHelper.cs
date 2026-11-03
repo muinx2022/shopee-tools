@@ -37,6 +37,28 @@ public static class ShopeeApiDataHelper
         }
     }
 
+    /// <summary>URL sạch dạng i.{shop}.{item} → https://host/product/{shop}/{item}. URL lưu trong sổ có thể dính đuôi lạ
+    /// (vd "...i.1.2%7DD"). null nếu không nhận ra dạng này hoặc trùng URL gốc (không có gì "sạch hơn" để thử).</summary>
+    public static string? CanonicalProductUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return null;
+        var m = Regex.Match(url, @"i\.(\d+)\.(\d+)", RegexOptions.IgnoreCase);
+        if (!m.Success) return null;
+        if (!Uri.TryCreate(url.Trim(), UriKind.Absolute, out var uri)) return null;
+        var canonical = $"{uri.Scheme}://{uri.Host}/product/{m.Groups[1].Value}/{m.Groups[2].Value}";
+        return string.Equals(canonical, url.Trim(), StringComparison.OrdinalIgnoreCase) ? null : canonical;
+    }
+
+    /// <summary>Trang đang ở đăng nhập/captcha/traffic-error → không lấy được JSON, các URL sau cũng vậy.</summary>
+    public static bool IsBlockedPageUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return false;
+        return url.Contains("/verify/", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("captcha", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("/buyer/login", StringComparison.OrdinalIgnoreCase)
+            || url.Contains("traffic/error", StringComparison.OrdinalIgnoreCase);
+    }
+
     /// <summary>
     /// Trích xuất Shopee Item ID (ID sản phẩm) từ URL của Shopee (hỗ trợ nhiều format: i.{shopId}.{itemId}, /product/..., query params, v.v.).
     /// </summary>

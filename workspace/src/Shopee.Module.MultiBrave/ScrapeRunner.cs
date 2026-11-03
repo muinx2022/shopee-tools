@@ -531,6 +531,105 @@ public sealed class ScrapeRunner
         return cfg;
     }
 
+    /// <summary>
+    /// "Cào lại SP lỗi" của Scrape Multi: mở 1 Brave (tk Shopee <paramref name="spec"/>, profile bền như scrape thường),
+    /// lần lượt mở từng URL và lấy JSON <c>shopee-api-data-*</c> do extension "Product Copy" của BigSeller tự ghi khi
+    /// trang tải. KHÔNG bấm nút scrape (không tạo thêm bản trùng trên Lead), KHÔNG chạy runner/tiến độ/video/workbook.
+    /// <paramref name="onResult"/>(url, json) gọi sau MỖI URL: json = null nếu không lấy được (KHÔNG được gửi "{}").
+    /// Trả false nếu dừng giữa chừng vì không dùng tiếp được (chưa đăng nhập Shopee / captcha / mất tab).
+    /// </summary>
+    public async Task<bool> FetchShopeeApiJsonAsync(
+        ScrapeAccountSpec spec, IReadOnlyList<string> urls, Action<string> log,
+        Func<string, string?, Task> onResult, CancellationToken ct)
+    {
+        if (urls.Count == 0) return true;
+        BraveInstanceSession? session = null;
+        var cfg = BuildConfig(spec, 1, 1);
+        var port = ScrapePorts.Shared.Allocate();
+        var windowSlotHeld = false;
+        try
+        {
+            await BraveFleet.AcquireWindowSlotAsync(log, ct).ConfigureAwait(false);
+            windowSlotHeld = true;
+
+            session = new BraveInstanceSession(port, log);
+            session.SetShopeeSessionProfileDir(spec.ShopeeProfileDir);
+            session.ApplyConfig(cfg);
+
+            log($"Mở Brave (tk Shopee {spec.Label}) để lấy lại JSON {urls.Count} URL…");
+            await session.StartForApiFetchAsync(_braveExe, _sourceUserData, ct).ConfigureAwait(false);
+            if (!await session.EnsureShopeeLoggedInAsync(ct).ConfigureAwait(false))
+            {
+                log("✘ Không đăng nhập được Shopee (captcha/OTP hoặc sai tài khoản) — dừng, các mục vẫn nằm trong sổ lỗi.");
+                return false;
+            }
+
+            var rnd = new Random();
+            for (var i = 0; i < urls.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var url = urls[i];
+                // Thử URL gốc trong sổ trước; không ra JSON thì thử thêm URL sạch (bỏ đuôi lạ như "%7DD") nếu khác.
+                var candidates = new List<string> { url };
+                if (Shopee.Core.Scrape.ShopeeApiDataHelper.CanonicalProductUrl(url) is { } canonical)
+                    candidates.Add(canonical);
+
+                string? json = null;
+                var targetId = Shopee.Core.Scrape.ShopeeApiDataHelper.TryExtractShopeeItemId(url);
+                if (string.IsNullOrWhiteSpace(targetId))
+                {
+                    log($"[{i + 1}/{urls.Count}] Không nhận ra item id trong URL → không kiểm tra khớp được, bỏ qua (thêm tay).");
+                }
+                else
+                {
+                    foreach (var tryUrl in candidates)
+                    {
+                        // Xoá dữ liệu cũ TRƯỚC khi mở để không dính JSON của sản phẩm khác còn trong localStorage.
+                        await PageCdpHelper.ClearShopeeApiDataAsync(port, tryUrl, ct).ConfigureAwait(false);
+                        var landed = await PageCdpHelper.NavigateAsync(port, tryUrl, ct).ConfigureAwait(false);
+                        if (landed is null)
+                        {
+                            log("✘ Brave không còn tab nào để mở trang — dừng.");
+                            return false;
+                        }
+                        if (Shopee.Core.Scrape.ShopeeApiDataHelper.IsBlockedPageUrl(landed))
+                        {
+                            log($"✘ Shopee chuyển sang trang đăng nhập/captcha/traffic ({landed}) — dừng, giải tay hoặc đổi tk rồi bấm lại.");
+                            return false;
+                        }
+
+                        // CHỈ chờ extension tự ghi khi trang tải (không bấm scrape). Không có thì tải lại 1 lần rồi chờ tiếp.
+                        var raw = await PageCdpHelper.ExtractShopeeApiDataAsync(port, tryUrl, ct, maxAttempts: 20).ConfigureAwait(false);
+                        if (raw is null)
+                        {
+                            await PageCdpHelper.ReloadAsync(port, ct).ConfigureAwait(false);
+                            raw = await PageCdpHelper.ExtractShopeeApiDataAsync(port, tryUrl, ct, maxAttempts: 15).ConfigureAwait(false);
+                        }
+                        var decompressed = Shopee.Core.Scrape.ShopeeApiDataHelper.TryDecompress(raw);
+                        if (!string.IsNullOrWhiteSpace(decompressed) && decompressed.Trim() != "{}")
+                        {
+                            json = decompressed;
+                            break;
+                        }
+                    }
+                }
+
+                await onResult(url, json).ConfigureAwait(false);
+
+                if (i < urls.Count - 1)
+                    await Task.Delay(TimeSpan.FromSeconds(rnd.Next(6, 13)), ct).ConfigureAwait(false);
+            }
+            return true;
+        }
+        finally
+        {
+            try { if (session is not null) await session.StopAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            try { session?.Dispose(); } catch { }
+            if (windowSlotHeld) BraveFleet.ReleaseWindowSlot();
+            ScrapePorts.Shared.Free(port);
+        }
+    }
+
     /// <summary>Dừng mọi phiên đang chạy (đóng Brave + lưu tiến độ).</summary>
     public async Task StopAllAsync()
     {

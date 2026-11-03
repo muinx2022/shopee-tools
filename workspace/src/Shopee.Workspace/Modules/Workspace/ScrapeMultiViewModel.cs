@@ -7,7 +7,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
+using Shopee.Core.Accounts;
 using Shopee.Core.BigSeller;
+using Shopee.Core.Browser;
 using Shopee.Core.Coordination;
 using Shopee.Core.Infrastructure;
 using Shopee.Core.Progress;
@@ -156,6 +158,13 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
 
     public bool HasFailedSyncs => FailedSyncCount > 0;
 
+    // Số mục sổ lỗi có JsonData rỗng ("{}") — loại này "Đồng bộ SP lỗi" không cứu được, phải "Cào lại SP lỗi".
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasEmptyFailedSyncs))]
+    private int _emptyFailedSyncCount;
+
+    public bool HasEmptyFailedSyncs => EmptyFailedSyncCount > 0;
+
     [ObservableProperty] private string _leadProgressSummary = "Chưa có tiến độ";
     [ObservableProperty] private int _leadLastRow;
     [ObservableProperty] private int _leadCompletedCount;
@@ -184,11 +193,13 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
         UpdateLeadProgress();
 
         FailedSyncCount = ScrapeMultiFailedSyncStore.Shared.Count;
+        EmptyFailedSyncCount = ScrapeMultiRescrape.FilterEmpty(ScrapeMultiFailedSyncStore.Shared.GetAll()).Count;
         ScrapeMultiFailedSyncStore.Shared.Changed += () =>
         {
             UiThread.Post(() =>
             {
                 FailedSyncCount = ScrapeMultiFailedSyncStore.Shared.Count;
+                EmptyFailedSyncCount = ScrapeMultiRescrape.FilterEmpty(ScrapeMultiFailedSyncStore.Shared.GetAll()).Count;
                 OnPropertyChanged(nameof(HasFailedSyncs));
             });
         };
@@ -469,6 +480,143 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
         }
         finally
         {
+            IsRunning = false;
+            _cts?.Dispose();
+            _cts = null;
+            UiThread.Post(() => UpdateLeadProgress());
+        }
+    }
+
+    /// <summary>
+    /// Cào lại JSON cho các mục sổ lỗi có JsonData rỗng ("{}"): Lead mở Brave, tới từng URL, lấy JSON
+    /// <c>shopee-api-data-*</c> do extension BigSeller tự ghi khi trang tải (KHÔNG bấm scrape → không tạo bản trùng
+    /// trên Lead, KHÔNG đụng tiến độ scrape/video/workbook), rồi sync tới ĐÚNG các tk có mục đó trong sổ.
+    /// Không lấy được JSON thì KHÔNG gửi "{}" — giữ nguyên mục để người dùng thêm tay.
+    /// </summary>
+    [RelayCommand]
+    public async Task RescrapeEmptyFailedSyncAsync()
+    {
+        if (IsRunning) return;
+        var groups = ScrapeMultiRescrape.GroupByUrl(ScrapeMultiFailedSyncStore.Shared.GetAll());
+        if (groups.Count == 0)
+        {
+            Log("Không có mục lỗi nào có JSON rỗng để cào lại.");
+            return;
+        }
+        if (_workspace.Scrape.IsBusy)
+        {
+            Log("⚠ Đang có job Shopee Scrape chạy — dừng nó trước rồi hãy cào lại SP lỗi (tránh tranh profile/tài khoản Shopee).");
+            return;
+        }
+
+        var selected = Accounts.Where(a => a.IsSelected).ToList();
+        if (selected.Count == 0)
+        {
+            CurrentStatus = "Chưa chọn tài khoản nào";
+            Log("⚠ Vui lòng tick chọn ít nhất 1 tài khoản (tài khoản tick đầu tiên là Lead).");
+            return;
+        }
+        var leadItem = selected.First();
+        var leadAcc = leadItem.Account;
+        var emptyItemCount = groups.Sum(g => g.Items.Count);
+
+        _cts = new CancellationTokenSource();
+        var ct = _cts.Token;
+        IsRunning = true;
+        _loginFailures.Clear();
+        CurrentStatus = $"Đang cào lại {groups.Count} URL lỗi...";
+        Log("════════════════════════════════════════════════════════════════════════");
+        Log($"=== BẮT ĐẦU CÀO LẠI SP LỖI: {groups.Count} URL / {emptyItemCount} mục (JSON rỗng) — Lead: {leadAcc.DisplayName} ===");
+
+        var urlsFetched = 0;
+        var urlsMissed = new List<string>();
+        var syncOk = 0;
+        var syncFail = 0;
+        try
+        {
+            var leadReady = await EnsureSingleSessionAsync(leadItem, ct);
+            if (leadReady != SessionEnsureResult.Ready)
+            {
+                CurrentStatus = leadReady == SessionEnsureResult.NetworkUnreachable
+                    ? "Không kết nối được BigSeller (mạng)"
+                    : "Tài khoản Lead chưa có cookie hợp lệ";
+                Log($"✘ DỪNG: tài khoản Lead [{leadAcc.DisplayName}] chưa có phiên BigSeller dùng được ({leadReady}) — các mục vẫn nằm trong sổ lỗi.");
+                return;
+            }
+
+            var shopeePool = AccountStore.Shared.Accounts.Where(a => !a.Disabled).ToList();
+            if (shopeePool.Count == 0)
+            {
+                Log("✘ DỪNG: kho chưa có tài khoản Shopee đang bật (thêm ở mục Tài khoản & Proxy).");
+                return;
+            }
+            var sourceUserData = BrowserLauncher.DetectUserData(BrowserKind.Brave);
+            if (sourceUserData is null)
+            {
+                Log("✘ DỪNG: không tìm thấy User Data của Brave (profile Default). Hãy mở Brave ít nhất 1 lần.");
+                return;
+            }
+            // Tk Shopee nghỉ lâu nhất (cùng luật xoay vòng của kho scrape) — profile bền nên đã đăng nhập sẵn.
+            var shopee = shopeePool.OrderBy(a => a.LastUsedTick).First();
+            var spec = ShopeeAccountSpecFactory.ToScrapeSpec(shopee, "");
+
+            var runner = new ScrapeRunner("", "", braveExe: null, sourceUserData,
+                bigSellerAccountName: leadAcc.DisplayName, bigSellerAccountId: leadAcc.Account.Id);
+            var byUrl = groups.ToDictionary(g => g.Url, StringComparer.OrdinalIgnoreCase);
+            var urls = groups.Select(g => g.Url).ToList();
+
+            Log("ℹ Brave chỉ MỞ TRANG sản phẩm và chờ extension BigSeller tự ghi JSON (không bấm scrape) → Lead không bị thêm bản trùng; tiến độ scrape giữ nguyên.");
+
+            var completed = await runner.FetchShopeeApiJsonAsync(spec, urls, Log, async (url, json) =>
+            {
+                var group = byUrl[url];
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    urlsMissed.Add(url);
+                    Log($"✘ Không lấy được JSON cho {url} → GIỮ NGUYÊN {group.Items.Count} mục trong sổ lỗi (không gửi \"{{}}\"). Hãy thêm sản phẩm này bằng tay.");
+                    return;
+                }
+
+                urlsFetched++;
+                Log($"✓ Đã lấy JSON cho {url} → sync tới {group.AccountIds.Count} tài khoản có mục này trong sổ.");
+                foreach (var item in group.Items)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    // Chỉ tk có mục này trong sổ (không Lead, không tk khác). Tk không còn trong danh sách → bỏ qua.
+                    var target = Accounts.FirstOrDefault(a => a.Account.Account.Id == item.AccountId);
+                    if (target is null)
+                    {
+                        Log($"⚠ Bỏ qua dòng {item.Row}: không tìm thấy tài khoản {item.AccountName} ({item.AccountId}).");
+                        continue;
+                    }
+                    Log($"[{target.DisplayName}] Đang đồng bộ dòng {item.Row} bằng JSON vừa cào lại…");
+                    // Thành công → SyncAccountCoreAsync tự xoá mục; thất bại → mục được ghi đè kèm JSON THẬT.
+                    if (await SyncAccountWithRetryAsync(target, item.Row, item.Url, json, ct)) syncOk++;
+                    else syncFail++;
+                    await Task.Delay(300, ct);
+                }
+            }, ct);
+
+            if (!completed)
+                Log("⚠ Cào lại dừng sớm (đăng nhập Shopee/captcha) — các URL chưa xử lý vẫn nằm trong sổ lỗi.");
+        }
+        catch (OperationCanceledException)
+        {
+            CurrentStatus = "Đã dừng cào lại SP lỗi";
+            Log("Cào lại SP lỗi đã dừng.");
+        }
+        catch (Exception ex)
+        {
+            CurrentStatus = "Lỗi cào lại: " + ex.Message;
+            Log($"✘ Lỗi cào lại SP lỗi: {ex.Message}");
+        }
+        finally
+        {
+            Log($"=== KẾT THÚC CÀO LẠI SP LỖI: URL lấy được {urlsFetched}, không lấy được {urlsMissed.Count}, chưa xử lý {groups.Count - urlsFetched - urlsMissed.Count}; sync thành công {syncOk} tài khoản-dòng, thất bại {syncFail} ===");
+            if (urlsMissed.Count > 0)
+                Log($"👉 {urlsMissed.Count} URL không lấy được JSON vẫn nằm trong sổ lỗi — thêm tay các sản phẩm này.");
+            if (CurrentStatus.StartsWith("Đang cào lại", StringComparison.Ordinal))
+                CurrentStatus = $"Cào lại xong: {urlsFetched}/{groups.Count} URL, sync {syncOk} thành công";
             IsRunning = false;
             _cts?.Dispose();
             _cts = null;

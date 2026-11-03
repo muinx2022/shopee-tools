@@ -1,5 +1,7 @@
 using System.Collections.Generic;
+using System.Linq;
 using Shopee.Core.BigSeller;
+using Shopee.Core.Scrape;
 using Shopee.Workspace.Modules.Scrape;
 using Shopee.Workspace.Modules.Workspace;
 using Xunit;
@@ -83,4 +85,60 @@ public sealed class ScrapeMultiLogicTests
     [InlineData(false, BigSellerSessionProbe.Alive, ScrapeMultiSyncAction.Repost)]             // đăng nhập hỏng nhưng phiên dùng được → post lại
     public void SessionDecision_AfterLogin(bool loginSuccess, BigSellerSessionProbe probe, ScrapeMultiSyncAction expected) =>
         Assert.Equal(expected, ScrapeMultiSessionDecision.AfterLogin(loginSuccess, probe));
+
+    // ── Cào lại SP lỗi: lọc mục JSON rỗng + gom theo URL ──
+
+    private static FailedSyncItem Fs(string acc, int row, string url, string json) =>
+        new() { AccountId = acc, AccountName = acc, Row = row, Url = url, JsonData = json };
+
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("", true)]
+    [InlineData("   ", true)]
+    [InlineData("{}", true)]
+    [InlineData(" { } ", true)]
+    [InlineData("{\"a\":1}", false)]
+    [InlineData("[]", false)]
+    public void Rescrape_IsEmptyJson(string? json, bool expected) =>
+        Assert.Equal(expected, ScrapeMultiRescrape.IsEmptyJson(json));
+
+    [Fact]
+    public void Rescrape_FilterEmpty_KeepsOnlyEmptyJsonItems()
+    {
+        var items = new[] { Fs("a", 1, "u1", "{}"), Fs("a", 2, "u2", "{\"x\":1}"), Fs("b", 3, "u3", "") };
+        var rows = ScrapeMultiRescrape.FilterEmpty(items).Select(i => i.Row).ToList();
+        Assert.Equal(new[] { 1, 3 }, rows);
+    }
+
+    [Fact]
+    public void Rescrape_GroupByUrl_OneGroupPerUrl_AccountsOnlyThoseInLedger()
+    {
+        var items = new[]
+        {
+            Fs("a", 1, "https://shopee.vn/x-i.1.2", "{}"),
+            Fs("b", 1, "https://SHOPEE.vn/x-i.1.2 ", "{}"),   // cùng URL (khác hoa/thường + khoảng trắng) → gộp
+            Fs("c", 1, "https://shopee.vn/x-i.1.2", "{\"real\":true}"),   // đã có JSON thật → KHÔNG nằm trong nhóm
+            Fs("a", 2, "https://shopee.vn/y-i.3.4", "{}"),
+            Fs("a", 9, "  ", "{}"),   // không URL → bỏ
+        };
+        var groups = ScrapeMultiRescrape.GroupByUrl(items);
+        Assert.Equal(2, groups.Count);
+        Assert.Equal("https://shopee.vn/x-i.1.2", groups[0].Url);
+        Assert.Equal(new[] { "a", "b" }, groups[0].AccountIds);   // không có "c"
+        Assert.Equal(new[] { "a" }, groups[1].AccountIds);
+        Assert.Equal(2, groups[0].Items.Count);
+    }
+
+    [Fact]
+    public void Rescrape_GroupByUrl_NoEmptyItems_ReturnsEmpty() =>
+        Assert.Empty(ScrapeMultiRescrape.GroupByUrl(new[] { Fs("a", 1, "u", "{\"x\":1}") }));
+
+    [Fact]
+    public void Rescrape_GroupByUrl_SameAccountTwoRows_AccountListedOnce()
+    {
+        var groups = ScrapeMultiRescrape.GroupByUrl(new[] { Fs("a", 1, "u", "{}"), Fs("a", 2, "u", "{}") });
+        Assert.Single(groups);
+        Assert.Equal(new[] { "a" }, groups[0].AccountIds);
+        Assert.Equal(2, groups[0].Items.Count);
+    }
 }

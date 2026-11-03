@@ -322,13 +322,13 @@ internal static class LauncherRunnerLoop
                             }
                             else
                             {
-                                log($"[Dữ liệu SP] Không tìm thấy JSON Shopee API khớp cho dòng {rowNumber} → BigSeller fan-out sẽ crawl trực tiếp URL.");
+                                log($"[Dữ liệu SP] Không tìm thấy JSON Shopee API khớp cho dòng {rowNumber} → dòng này sẽ vào sổ lỗi (JSON rỗng, BigSeller từ chối). Dùng nút \"Cào lại SP lỗi\" để lấy lại JSON rồi đồng bộ.");
                             }
                         }
                         catch (Exception ex)
                         {
                             jsonData = "{}";
-                            log($"[Dữ liệu SP] Lỗi trích xuất JSON Shopee API dòng {rowNumber}: {ex.Message} → BigSeller fan-out sẽ crawl trực tiếp URL.");
+                            log($"[Dữ liệu SP] Lỗi trích xuất JSON Shopee API dòng {rowNumber}: {ex.Message} → dòng này sẽ vào sổ lỗi (JSON rỗng). Dùng nút \"Cào lại SP lỗi\" để lấy lại JSON rồi đồng bộ.");
                         }
                         try
                         {

@@ -265,7 +265,8 @@ internal static class PageCdpHelper
     public static async Task<string?> ExtractShopeeApiDataAsync(
         int cdpPort,
         string pageUrlHint,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        int maxAttempts = 5)
     {
         const string collectJs = """
             (() => {
@@ -303,8 +304,9 @@ internal static class PageCdpHelper
         var targetItemId = ShopeeApiDataHelper.TryExtractShopeeItemId(pageUrlHint);
         string? matchedGzip = null;
 
-        // Poll tối đa 5 lần (mỗi lần cách nhau 1s) để chờ BigSeller extension ghi dữ liệu API Shopee vào localStorage
-        for (var attempt = 1; attempt <= 5; attempt++)
+        // Poll tối đa maxAttempts lần (mỗi lần cách nhau 1s; mặc định 5) để chờ BigSeller extension ghi dữ liệu API Shopee vào localStorage
+        maxAttempts = Math.Max(1, maxAttempts);
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
         {
             var result = await EvaluateOnPageAsync(cdpPort, pageUrlHint, collectJs, cancellationToken).ConfigureAwait(false);
             if (result is not null && result.Value.ValueKind == JsonValueKind.Array && result.Value.GetArrayLength() > 0)
@@ -337,7 +339,7 @@ internal static class PageCdpHelper
                     break;
             }
 
-            if (attempt < 5)
+            if (attempt < maxAttempts)
             {
                 await Task.Delay(1000, cancellationToken).ConfigureAwait(false);
             }
@@ -354,6 +356,76 @@ internal static class PageCdpHelper
         }
 
         return matchedGzip;
+    }
+
+    /// <summary>Chọn tab trang để điều khiển: ưu tiên tab Shopee, rồi tab bất kỳ không phải extension/devtools.
+    /// Trả (id, url) hoặc null nếu Brave chưa có tab trang nào.</summary>
+    private static async Task<(string Id, string Url)?> PickPageTargetAsync(int cdpPort, CancellationToken ct)
+    {
+        (string Id, string Url)? any = null;
+        foreach (var t in await CdpClient.ListTargetsAsync(cdpPort, ct).ConfigureAwait(false))
+        {
+            if (!t.IsPage || string.IsNullOrWhiteSpace(t.Id)) continue;
+            var url = t.Url ?? "";
+            if (url.StartsWith("chrome-extension://", StringComparison.OrdinalIgnoreCase) ||
+                url.StartsWith("devtools://", StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (url.Contains("shopee", StringComparison.OrdinalIgnoreCase)) return (t.Id, url);
+            any ??= (t.Id, url);
+        }
+        return any;
+    }
+
+    /// <summary>Điều hướng tab hiện có sang <paramref name="url"/> (KHÔNG bấm gì trên trang). Trả URL của tab sau khi
+    /// điều hướng (có thể đã bị redirect sang login/verify) hoặc null nếu không có tab để điều hướng.</summary>
+    public static async Task<string?> NavigateAsync(int cdpPort, string url, CancellationToken ct)
+    {
+        var target = await PickPageTargetAsync(cdpPort, ct).ConfigureAwait(false);
+        if (target is null) return null;
+        var hub = PortCdpHub.For(cdpPort);
+        string? sess = null;
+        try
+        {
+            sess = await hub.AttachAsync(target.Value.Id, ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(sess)) return null;
+            await hub.SendAsync("Page.navigate", new { url }, sess, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(sess))
+                try { await hub.SendAsync("Target.detachFromTarget", new { sessionId = sess }, null, CancellationToken.None).ConfigureAwait(false); } catch { }
+        }
+        return await GetPageUrlAsync(cdpPort, target.Value.Id, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Tải lại tab hiện tại (không bấm gì) — dùng khi trang đã mở mà extension chưa kịp ghi dữ liệu.</summary>
+    public static async Task ReloadAsync(int cdpPort, CancellationToken ct)
+    {
+        var target = await PickPageTargetAsync(cdpPort, ct).ConfigureAwait(false);
+        if (target is null) return;
+        var hub = PortCdpHub.For(cdpPort);
+        string? sess = null;
+        try
+        {
+            sess = await hub.AttachAsync(target.Value.Id, ct).ConfigureAwait(false);
+            if (string.IsNullOrWhiteSpace(sess)) return;
+            await hub.SendAsync("Page.reload", new { }, sess, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            if (!string.IsNullOrWhiteSpace(sess))
+                try { await hub.SendAsync("Target.detachFromTarget", new { sessionId = sess }, null, CancellationToken.None).ConfigureAwait(false); } catch { }
+        }
+    }
+
+    /// <summary>URL hiện tại của 1 tab (theo danh sách target CDP), "" nếu không thấy.</summary>
+    public static async Task<string> GetPageUrlAsync(int cdpPort, string targetId, CancellationToken ct)
+    {
+        // Cho navigation kịp commit (URL redirect login/verify chỉ hiện sau vài trăm ms).
+        await Task.Delay(1500, ct).ConfigureAwait(false);
+        foreach (var t in await CdpClient.ListTargetsAsync(cdpPort, ct).ConfigureAwait(false))
+            if (string.Equals(t.Id, targetId, StringComparison.Ordinal)) return t.Url ?? "";
+        return "";
     }
 
     private static async Task<JsonElement?> EvaluateOnPageAsync(

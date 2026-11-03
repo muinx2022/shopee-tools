@@ -71,4 +71,22 @@ public sealed class ShopeeApiDataHelperTests
 
         Assert.Equal(originalJson, decompressed);
     }
+
+    [Theory]
+    [InlineData("https://shopee.vn/Ten-SP-i.123.456", "https://shopee.vn/product/123/456")]
+    [InlineData("https://shopee.vn/Ten-SP-i.123.456%7DD", "https://shopee.vn/product/123/456")]
+    [InlineData("https://shopee.vn/product/123/456", null)]
+    [InlineData("https://shopee.vn/search?q=abc", null)]
+    [InlineData("", null)]
+    public void CanonicalProductUrl_StripsJunkTail(string url, string? expected) =>
+        Assert.Equal(expected, ShopeeApiDataHelper.CanonicalProductUrl(url));
+
+    [Theory]
+    [InlineData("https://shopee.vn/verify/captcha?x=1", true)]
+    [InlineData("https://shopee.vn/buyer/login?next=a", true)]
+    [InlineData("https://shopee.vn/verify/traffic/error", true)]
+    [InlineData("https://shopee.vn/product/123/456", false)]
+    [InlineData("", false)]
+    public void IsBlockedPageUrl_DetectsLoginCaptcha(string url, bool expected) =>
+        Assert.Equal(expected, ShopeeApiDataHelper.IsBlockedPageUrl(url));
 }
