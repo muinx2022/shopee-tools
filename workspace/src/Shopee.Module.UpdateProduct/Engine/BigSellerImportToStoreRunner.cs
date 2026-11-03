@@ -31,9 +31,30 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     /// caller đẩy lên ledger Hub để Thống kê biết "shop này đã import những dòng nào".</summary>
     public event Action<int, int>? RowsDone;
 
-    /// <summary>True khi MỌI item id trong khoảng dòng của sheet đã import (đã lưu từ trước + vừa gửi lượt này).
+    // Bước Clear nháp đã chốt: Cleared / không có gì để xoá và bảng import reset trọn vẹn, HOẶC không cần Clear (mọi SP đã import đều đã Update
+    // → Clear không bỏ gì khỏi bảng import). Clear kết thúc kiểu khác (Aborted, hết giờ chờ, reset lỗi) thì AllImported KHÔNG được true.
+    private bool _clearSettled;
+
+    // Mục tiêu Update theo khoá tiến độ, đọc bằng LoadUpdateTargetsAsync cho MỌI khoá còn SP chờ Update của tài khoản: reset bảng import sau Clear chỉ
+    // bỏ id thuộc tập này. Khoá không có ở đây (shared:... của shop khác, sheet không đọc được, file lỗi) là khoá KHÔNG BIẾT mục tiêu → không được
+    // Clear (ImportScanPolicy.DecideClearGate) vì Clear sẽ xoá nháp của khoá đó mà bảng import không biết SP nào phải import lại.
+    private IReadOnlyDictionary<string, IReadOnlySet<string>> _updateTargetsByKey = new Dictionary<string, IReadOnlySet<string>>();
+    // Các khoá đã đọc mục tiêu THÀNH CÔNG ở lần đọc gần nhất (đọc lỗi thì rỗng, lần sau đọc lại) — để không đọc file lớn hai lần trong một lượt chạy.
+    private HashSet<string> _targetKeysRead = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True khi MỌI item id trong khoảng dòng của sheet đã import (đã lưu từ trước + vừa gửi lượt này) VÀ bước Clear nháp đã chốt.
     /// Sheet không có id nào → false (không có gì để coi là "xong").</summary>
-    public bool AllImported => _importIds.Count > 0 && _importedIds.Count >= _importIds.Count;
+    public bool AllImported => ImportScanPolicy.IsAllImported(_importIds.Count, _importedIds.Count, _clearSettled);
+
+    /// <summary>Khác null khi import shop dừng vì cổng Clear chặn (có khoá còn SP chờ Update mà không biết mục tiêu Update, nên Clear sẽ làm mất SP): lý do ngắn
+    /// để caller (Auto Run) báo "Import bị chặn" thay vì "0 SP". Null = không bị chặn (kể cả khi dừng vì lý do khác).</summary>
+    public string? ClearBlockedReason { get; private set; }
+
+    // Workbook chung đang dùng? Khoá tiến độ shared:... chỉ sinh ra khi workbook chung BẬT (SharedWorkbookCatalog.ResolveForUpdate theo SharedWorkbookState.Enabled).
+    // Khi TẮT, khoá shared:... trong op-progress là dữ liệu cũ: không luồng nào Update chúng nên không tính là "chờ Update" cho cổng Clear và không bị reset.
+    // Khoá của chính shop đang chạy mà là shared:... thì workbook chung chắc chắn đang dùng (cờ có thể đã đổi sau khi settings dựng).
+    private bool SharedKeysInUse => SharedWorkbookStore.Snapshot().Enabled || SharedWorkbookCatalog.IsSharedKey(_settings.ProgressKey);
+    private bool _ignoredSharedKeysLogged;
 
     // ── Bắc cầu DOM ↔ item id qua API (BigSeller KHÔNG render source id ra HTML) ──
     // Crawl list nạp rows từ API /product/crawl/pageList.json; mỗi row có mainImage + crawlUrl. Ta bắt response
@@ -142,7 +163,13 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
         // Cache item id của sheet (dòng StartRow→EndRow) TRƯỚC khi mở Brave — import CHỈ tick đúng các id này.
         await LoadImportItemIdSetAsync(cancellationToken).ConfigureAwait(false);
-        if (_importIds.Count == 0)
+
+        // Mỗi lượt import đều Clear nháp (xem ClearDraftsBeforeImportAsync) và Clear bỏ khỏi Import Done mọi SP chưa Update xong. Vì vậy
+        // "đủ hết theo tiến độ → khỏi mở Brave" CHỈ còn đúng khi Clear không đổi được gì cho shop này. Hub-mode: Hub đã lọc SP đã import nên tập id
+        // rỗng chưa chắc là "hết việc" — còn SP chờ Update thì vẫn phải đi qua Clear để Hub/local được reset.
+        var pendingKeys = GetPendingUpdateKeys();
+        var hubPending = _settings.UseHubData && CountImportedWithoutUpdate() > 0;
+        if (ImportScanPolicy.NothingToImport(_importIds.Count, hubPending))
         {
             _log("Sheet không có item id nào trong khoảng dòng đã đặt — không có gì để import. Kết thúc.");
             return;   // AllImported = false (cần _importIds.Count > 0) → LastRunComplete = false → shop ghi "stopped", KHÔNG phải completed
@@ -150,17 +177,13 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
         // RESUME: seed _importedIds từ tiến độ ĐÃ LƯU (kill/dừng giữa chừng rồi chạy lại → KHÔNG import trùng —
         // chốt chặn cũ chỉ là HashSet trong RAM, mất khi thoát). Chỉ lấy id CÒN trong _importIds (khoảng dòng /
-        // tập id có thể đã đổi giữa 2 lần chạy). Đủ hết ngay từ tiến độ → khỏi mở Brave.
-        var doneImport = OpProgressStore.Shared.GetDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import);
-        var seeded = 0;
-        foreach (var id in doneImport.Keys)
-            if (_importIds.Contains(id)) { _importedIds.Add(id); seeded++; }
-        if (seeded > 0) _log($"Bỏ qua {seeded} SP đã import trước đó (tiến độ đã lưu).");
-        if (_importedIds.Count >= _importIds.Count)
-        {
-            _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP theo tiến độ đã lưu — không mở Brave. Kết thúc.");
-            return;
-        }
+        // tập id có thể đã đổi giữa 2 lần chạy).
+        SeedImportedFromProgress();
+
+        // Đọc mục tiêu Update của MỌI khoá còn SP chờ Update (không chỉ khoá của shop này) rồi mới quyết: thoát sớm (khỏi mở Brave) / bị cổng Clear chặn /
+        // đi tiếp. Lần đọc này được dùng lại trước Clear (ClearDraftsBeforeImportAsync quyết lại bằng cùng hàm vì tiến độ có thể đổi trong lúc mở Brave).
+        await LoadUpdateTargetsAsync(pendingKeys, cancellationToken).ConfigureAwait(false);
+        if (!ApplyStartDecision(DecideStart(pendingKeys, hubPending), braveOpen: false)) return;
 
         StartBrave();
         _log($"Da goi Brave PID={_braveProcess?.Id.ToString() ?? "unknown"}, cho CDP port {_settings.DebugPort}...");
@@ -185,6 +208,11 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
         await page.BringToFrontAsync();
         await EnsureFreshLoginAsync(page, cancellationToken).ConfigureAwait(false);   // Phase 4: đầu phiên tự mint token tươi
+
+        // Xoá sạch nháp của tài khoản TRƯỚC khi import (cả thủ công lẫn Auto Run) — sau đăng nhập, trước Crawl List.
+        if (!await ClearDraftsBeforeImportAsync(page, cancellationToken).ConfigureAwait(false))
+            return;
+
         _log($"Crawl URL: {crawlUrl}");
         MarkPageAction();   // tải lại Crawl List → trang đầu của tab đầu cũng phải qua cơ chế xác nhận response mới
         if (!await BigSellerCrawlHelper.GoToCrawlPageAsync(page, forceReload: true, targetUrl: crawlUrl, log: _log))
@@ -255,6 +283,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                 var pageNum = 1;
                 var tabSkips = 0;
                 var unconfirmedNoMatchStreak = 0;   // số trang liên tiếp vừa chưa xác nhận vừa không có SP khớp (phanh)
+                string[]? reloadedAfterBatch = null;   // lô vừa import trên tab 'Chưa nhận' mà trang được tải lại thay vì bấm Next (để log đúng vòng sau)
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
@@ -320,8 +349,16 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                         // response); trang chỉ lạ vài ảnh vẫn là chưa xác nhận (hasUnconfirmed) nhưng không tăng streak.
                         unconfirmedNoMatchStreak = ImportScanPolicy.NextUnconfirmedNoMatchStreak(unconfirmedNoMatchStreak, confirmed, checkedIds.Length > 0, noNewPageData);
 
+                        var batchBeforeReload = reloadedAfterBatch;
+                        reloadedAfterBatch = null;
+
                         if (checkedIds.Length == 0)
                         {
+                            if (batchBeforeReload is not null)
+                                _log(await PageShowsOnlyImportedAsync(page, batchBeforeReload)
+                                    ? $"Tải lại trang {pageNum} sau lô: vẫn đúng tập SP vừa import (SP không rời tab) → coi như trang không còn SP khớp, bấm Next."
+                                    : $"Tải lại trang {pageNum} sau lô: không còn SP khớp → bấm Next.");
+
                             if (confirmed)
                                 _log($"Trang {pageNum} (tab {tabName}): {rowCount} SP — không có SP nào cần import (0 SP khớp).");
                             else
@@ -368,7 +405,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
                             var modal = page.Locator(".ant-modal-content:visible").Last;
                             await modal.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 20000 });
-                            await SelectImportShopAndConfirmAsync(page, modal, _settings.ShopName, cancellationToken);
+                            await SelectImportShopAndConfirmAsync(page, modal, _settings.ShopName, checkedIds.Length, cancellationToken);
                             committed = true;
 
                             importCount++;
@@ -392,7 +429,11 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                             // CHƯA CHẮC lô đã gửi hay chưa: không MarkDone và DỪNG import shop này ngay — không sang trang/tab kế,
                             // không tick lại, để cùng lượt không gửi trùng. AllImported = false → shop ghi stopped; người dùng
                             // kiểm tra BigSeller rồi chạy lại (hoặc "Mark as done" nếu lô đã vào).
-                            _log($"⚠ Import lô CHƯA CHẮC đã gửi — KHÔNG MarkDone, DỪNG import shop '{_settings.ShopName}' (CÓ THỂ BigSeller đã nhận lô): {uncertain.Message}");
+                            // BigSeller báo thất bại (hộp tiến trình có Failed > 0) cũng đi đường dừng này nhưng log riêng, khỏi lẫn với "chưa chắc".
+                            if (uncertain.ReportedFailure)
+                                _log($"✖ BigSeller BÁO THẤT BẠI lô import — KHÔNG MarkDone, DỪNG import shop '{_settings.ShopName}' (lô có thể chưa vào hoặc vào một phần, kiểm tra BigSeller trước khi chạy lại): {uncertain.Message}");
+                            else
+                                _log($"⚠ Import lô CHƯA CHẮC đã gửi — KHÔNG MarkDone, DỪNG import shop '{_settings.ShopName}' (CÓ THỂ BigSeller đã nhận lô): {uncertain.Message}");
                             _log($"  Lô gồm {checkedIds.Length} SP (item id): {string.Join(", ", checkedIds)}");
                             LogLedgerSummary();
                             return;
@@ -431,6 +472,35 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
                         await DelayAsync(2000, cancellationToken);
                         await BigSellerCrawlHelper.DismissPostImportDialogsAsync(page, _log);
+
+                        // Còn modal hiển thị sau khi đã đóng hộp tiến trình (Finish/Escape/X không đóng nổi): không chạy lô sau kẻo
+                        // hộp cũ lẫn vào kết quả của lô mới hoặc chặn thao tác. Lô vừa rồi đã MarkDone nên dừng ở đây không mất gì.
+                        var leftoverWraps = await page.Locator(".ant-modal-wrap:visible").CountAsync();
+                        if (leftoverWraps > 0)
+                        {
+                            var leftoverTexts = string.Join(" | ", (await ReadVisibleModalsAsync(page)).Select(m => m.Text));
+                            _log($"✖ Còn {leftoverWraps} hộp thoại sau khi đóng hộp tiến trình import — DỪNG import shop '{_settings.ShopName}', không chạy lô sau: \"{ImportPostClickClassifier.Trim(leftoverTexts)}\"");
+                            LogLedgerSummary();
+                            return;
+                        }
+
+                        // Tab 'Chưa nhận' + lô ĐÃ GỬI (committed): SP vừa import rời tab nên danh sách dồn lên — bấm Next sẽ BỎ SÓT SP vừa dồn
+                        // vào trang này. Tải lại Crawl List (qua cơ chế xác nhận trang; GoToCrawlPageAsync(forceReload) mở lại URL Crawl List nên
+                        // về TRANG 1, không phải trang hiện tại → pageNum đặt lại 1), quay lại đầu vòng: còn SP khớp thì gửi lô tiếp, hết SP khớp
+                        // mới bấm Next như luồng cũ (nhánh 0 SP khớp ở trên). Không lặp vô hạn: SP đã gửi nằm trong _importedIds nên không được
+                        // tick lại, mỗi lô mới thêm ≥ 1 id. Lô lỗi thường (chưa gửi, không SP nào rời tab) tải lại sẽ quay về đúng lô đó và lặp
+                        // mãi → bấm Next như trước. Tab 'Đã nhận': SP ở lại tab → giữ Next.
+                        if (ImportScanPolicy.NextStepAfterBatch(committed, currentTab == BigSellerCrawlTab.Unclaimed) == AfterBatchStep.ReloadFirstPage)
+                        {
+                            _log($"Tab '{tabName}': SP đã import rời tab nên tải lại Crawl List (về trang 1; đang ở trang {pageNum}, không bấm Next) để xét tiếp các SP vừa dồn lên.");
+                            reloadedAfterBatch = checkedIds;
+                            MarkPageAction();
+                            if (await BigSellerCrawlHelper.GoToCrawlPageAsync(page, forceReload: true, targetUrl: crawlUrl, log: _log))
+                                pageNum = 1;
+                            else
+                                _log("⚠ Chưa tải lại được Crawl List sau lô — đầu vòng sẽ thử lại.");
+                            continue;
+                        }
 
                         var (advancedAfterImport, nextErrorAfterImport) = await ClickNextPageAsync(page);
                         if (advancedAfterImport)
@@ -482,6 +552,262 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         else
             _log($"✔ Đã quét xong cả 2 tab (Chưa nhận & Đã nhận) sau {pass}/{ImportScanPolicy.MaxPasses} vòng — tổng cộng {_importedIds.Count}/{_importIds.Count} SP đã import. Kết thúc.");
         LogLedgerSummary();
+    }
+
+    // Seed _importedIds từ tiến độ Import ĐÃ LƯU của shop (xoá seed cũ trước: gọi lại được sau khi Clear đã bỏ id khỏi tiến độ).
+    private void SeedImportedFromProgress()
+    {
+        _importedIds.Clear();
+        var doneImport = OpProgressStore.Shared.GetDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import);
+        var seeded = 0;
+        foreach (var id in doneImport.Keys)
+            if (_importIds.Contains(id)) { _importedIds.Add(id); seeded++; }
+        if (seeded > 0) _log($"Bỏ qua {seeded} SP đã import trước đó (tiến độ đã lưu).");
+    }
+
+    // Số SP ở Import Done của shop mà CHƯA có trong Update Done = đúng những SP mà lần Clear nháp sắp tới sẽ bỏ khỏi bảng import.
+    private int CountImportedWithoutUpdate()
+    {
+        var imported = OpProgressStore.Shared.GetDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import);
+        var updated = OpProgressStore.Shared.GetDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Update);
+        return imported.Keys.Count(id => !updated.ContainsKey(id));
+    }
+
+    // Khoá Import của tài khoản còn SP chờ Update (Update chưa completed), đã lọc: workbook chung TẮT thì khoá shared:... cũ không tính (và log MỘT dòng
+    // liệt kê chúng, kèm tên shop nếu tìm được shop theo id trong account.Shops).
+    private IReadOnlyList<string> GetPendingUpdateKeys()
+    {
+        var all = OpProgressStore.Shared.ImportKeysPendingUpdate(_settings.AccountId);
+        if (SharedKeysInUse) return all;
+        var kept = OpProgressStore.Shared.ImportKeysPendingUpdate(_settings.AccountId, ignoreSharedKeys: true);
+        var ignored = all.Where(k => !kept.Contains(k, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (ignored.Count > 0 && !_ignoredSharedKeysLogged)
+        {
+            _ignoredSharedKeysLogged = true;
+            _log($"↷ Workbook chung đang TẮT — bỏ qua {ignored.Count} khoá tiến độ cũ dạng shared:... (dữ liệu cũ, không tính là chờ Update, không reset): " +
+                 string.Join(", ", ignored.Select(DescribeKey)) + ".");
+        }
+        return kept;
+    }
+
+    // Tên khoá tiến độ để log: khoá shared:{shopId} kèm tên shop nếu tìm được shop theo id trong account.Shops, không thì giữ nguyên (đã chứa id).
+    private string DescribeKey(string key)
+    {
+        IEnumerable<BigSellerShop>? shops = null;
+        try { shops = BigSellerStore.Shared.Find(_settings.AccountId)?.Shops; } catch { }
+        return ImportScanPolicy.DescribeProgressKey(key, shops);
+    }
+
+    // Gom đầu vào cho ImportScanPolicy.DecideImportStart từ trạng thái runner (phải gọi SAU LoadUpdateTargetsAsync cho đúng pendingKeys).
+    private ImportStartDecision DecideStart(IReadOnlyList<string> pendingKeys, bool hubPending) =>
+        ImportScanPolicy.DecideImportStart(_importIds.Count, _importedIds.Count, hubPending, _settings.ProgressKey,
+            CountImportRemovableOfShop(), pendingKeys, _updateTargetsByKey.Keys.ToList());
+
+    // Thi hành quyết định điều phối. true = đi tiếp (Clear rồi import); false = kết thúc import shop (đã log lý do).
+    private bool ApplyStartDecision(ImportStartDecision d, bool braveOpen)
+    {
+        switch (d.Kind)
+        {
+            case ImportStartKind.ExitEarly when d.ExitReason == ImportExitReason.NoItemIds:
+                _log("Sheet không có item id nào trong khoảng dòng đã đặt — không có gì để import. Kết thúc.");
+                return false;   // AllImported = false → shop ghi "stopped"
+            case ImportStartKind.ExitEarly:
+                _clearSettled = true;   // Clear sẽ không bỏ id nào của shop khỏi bảng import → không cần Clear, "đủ" là đủ thật
+                _log(braveOpen
+                    ? $"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP và Clear không làm mất SP nào của shop (mọi SP đã Update) — không Clear, không import thêm. Kết thúc."
+                    : $"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP theo tiến độ đã lưu và mọi SP đã Update — không mở Brave. Kết thúc.");
+                return false;
+            case ImportStartKind.Blocked:
+                var keys = string.Join(", ", d.BlockedKeys.Select(DescribeKey));
+                ClearBlockedReason = $"không biết mục tiêu Update của {d.BlockedKeys.Count} khoá còn SP đã import mà chưa Update xong ({keys}), Clear sẽ làm mất SP của các khoá đó";
+                _log($"✖ KHÔNG Clear nháp — DỪNG import shop '{_settings.ShopName}' ({(braveOpen ? "chưa mở menu Bulk Actions" : "chưa mở Brave")}, chưa xoá gì, không reset bảng import, không ghi completed). " +
+                     $"Không biết mục tiêu Update của {d.BlockedKeys.Count} khoá còn SP đã import mà chưa Update xong: {keys}. " +
+                     "Clear sẽ xoá nháp của các khoá này mà bảng import không biết SP nào phải import lại (mất SP vĩnh viễn). " +
+                     "Nguyên nhân thường gặp: khoá shared:... của shop khác trong workbook chung, sheet không có trong file nguồn, file nguồn đang bị khoá/lỗi (xem dòng log phía trên). " +
+                     "Xử lý: chạy Update cho các khoá đó đến khi xong, hoặc sửa file nguồn rồi chạy lại.");
+                return false;
+            default:
+                return true;
+        }
+    }
+
+    // Số SP của shop mà Clear sẽ làm mất khỏi bảng import: ở Import Done, thuộc mục tiêu Update, chưa có Update Done, Update của khoá chưa completed.
+    // Khoá của shop không có trong _updateTargetsByKey (sheet không đọc được) → 0: Clear sẽ không bỏ id nào của khoá đó (và lúc đó Clear bị chặn bởi DecideClearGate).
+    private int CountImportRemovableOfShop() =>
+        _updateTargetsByKey.TryGetValue(_settings.ProgressKey, out var targets)
+            ? OpProgressStore.Shared.CountImportRemovable(_settings.AccountId, _settings.ProgressKey, targets)
+            : 0;
+
+    // Đọc mục tiêu Update (dòng workbook có tên đã sửa — cùng định nghĩa và ánh xạ cột của luồng Update) của các khoá Import có id thiếu Update Done
+    // (OpProgressStore.ImportKeysPendingUpdate). Khoá của chính shop đang chạy đọc theo DataSheet (workbook chung: khoá là shared:..., không phải tên sheet).
+    // Lỗi đọc → từ điển rỗng, tức mọi khoá chờ Update là "không biết mục tiêu" và Clear bị chặn (DecideClearGate); lần gọi sau đọc lại.
+    private async Task LoadUpdateTargetsAsync(IReadOnlyList<string> keys, CancellationToken ct)
+    {
+        if (keys.Count == 0) return;
+        if (keys.All(_targetKeysRead.Contains)) return;   // lượt chạy này đã đọc thành công cho đúng các khoá này
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        _log($"Đọc mục tiêu Update của {keys.Count} khoá ({string.Join(", ", keys)}) trong file nguồn — để biết SP nào mất khi Clear phải import lại (file lớn, có thể chậm)...");
+        try
+        {
+            var targets = await WorkbookRecordCache.LoadUpdateTargetsByKeyAsync(_settings, _settings.ProgressKey, keys, _log, ct).ConfigureAwait(false);
+            _updateTargetsByKey = targets;
+            _targetKeysRead = new HashSet<string>(keys, StringComparer.OrdinalIgnoreCase);
+            _log($"Đã đọc mục tiêu Update của {targets.Count}/{keys.Count} khoá trong {sw.Elapsed.TotalSeconds:0.0}s.");
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _updateTargetsByKey = new Dictionary<string, IReadOnlySet<string>>();
+            _targetKeysRead = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            _log($"⚠ Không đọc được mục tiêu Update sau {sw.Elapsed.TotalSeconds:0.0}s ({ex.Message}) — các khoá còn SP chờ Update coi như KHÔNG biết mục tiêu.");
+        }
+    }
+
+    // Clear nháp trước import (BigSellerDraftClearer). true = đi tiếp import; false = kết thúc import shop (đã log lý do):
+    //  • TRƯỚC khi mở menu Bulk Actions: đọc mục tiêu Update của MỌI khoá còn SP chờ Update; có khoá không biết mục tiêu (shared:... của shop khác,
+    //    sheet không có, file lỗi) → không Clear, không reset bảng, không ghi completed (ImportScanPolicy.DecideClearGate);
+    //  • lỗi/hộp lạ TRƯỚC Confirm → chưa xoá gì, KHÔNG import vào trạng thái lạ;
+    //  • hộp confirm đúng câu + nút đúng Confirm → NGAY LẬP TỨC, TRƯỚC khi bấm Confirm, bỏ khỏi Import Done mọi SP mục tiêu Update chưa Update xong của cả
+    //    tài khoản (nháp của chúng sắp bị xoá), hub-mode thì reset cả mốc "đã import" phía Hub. Không bấm được Confirm sau đó → Aborted, log rõ "đã reset
+    //    bảng nhưng chưa chắc đã xoá nháp" (không hoàn tác reset: SP chỉ bị import lại, nháp trùng bị xoá ở lần Clear sau);
+    //  • hết 10 phút mà nháp chưa về 0 → dừng;
+    //  • sau cùng mới nạp lại danh sách (hub-mode) và seed _importedIds.
+    private async Task<bool> ClearDraftsBeforeImportAsync(IPage page, CancellationToken ct)
+    {
+        _log(new string('=', 50));
+        _log("XOÁ SẠCH NHÁP TRƯỚC KHI IMPORT (Bulk Actions → Clear)");
+        _log(new string('=', 50));
+
+        // Clear xoá nháp của CẢ tài khoản. Mọi khoá có SP đã import mà chưa Update xong phải biết mục tiêu Update thì bảng import mới reset đúng;
+        // đọc ngay đây (không phụ thuộc shop đang chạy có SP chờ Update hay không) và chặn trước khi chạm vào BigSeller.
+        var pendingKeys = GetPendingUpdateKeys();
+        await LoadUpdateTargetsAsync(pendingKeys, ct).ConfigureAwait(false);
+        if (!ApplyStartDecision(DecideStart(pendingKeys, _settings.UseHubData && CountImportedWithoutUpdate() > 0), braveOpen: true)) return false;
+
+        var progressResetOk = true;
+        var resetRan = false;
+        var clearer = new BigSellerDraftClearer(page, _log, DelayAsync);
+        DraftClearResult result;
+        try
+        {
+            result = await clearer.ClearAsync(async () =>
+            {
+                resetRan = true;
+                progressResetOk = false;   // chỉ true khi reset chạy xong trọn vẹn (ném lỗi giữa chừng vẫn là chưa trọn vẹn)
+                progressResetOk = await ResetImportProgressBeforeConfirmAsync().ConfigureAwait(false);
+                return progressResetOk;
+            }, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            // Bảng import local đã (cố) reset: _importedIds (seed từ trước Clear) giờ LỆCH với bảng. Seed lại trước MỌI lối ra (Confirm không
+            // bấm được, TimedOut, reset lỗi, Hub lỗi, hủy...) để AllImported / các nhánh "đủ" không dựa vào số liệu cũ.
+            if (resetRan) SeedImportedFromProgress();
+        }
+
+        switch (result.Status)
+        {
+            case DraftClearStatus.Aborted:
+                if (resetRan)
+                    _log($"✖ Đã reset bảng import nhưng chưa chắc đã xoá nháp — DỪNG import shop '{_settings.ShopName}' (không import vào trạng thái lạ; kiểm tra BigSeller rồi chạy lại): {result.Message}");
+                else
+                    _log($"✖ Không Clear được nháp — DỪNG import shop '{_settings.ShopName}' (chưa xoá gì, không import vào trạng thái lạ): {result.Message}");
+                return false;
+            case DraftClearStatus.TimedOut:
+                _log($"✖ {result.Message} DỪNG import shop '{_settings.ShopName}' (bảng import đã reset; chạy lại sau khi BigSeller xoá xong).");
+                return false;
+            case DraftClearStatus.NothingToClear:
+                _log($"✔ Không có gì để xoá — chưa xoá gì và KHÔNG reset bảng import: {result.Message}");
+                break;
+            default:
+                _log($"✔ Đã xoá sạch nháp: {result.Message}");
+                break;
+        }
+
+        if (!progressResetOk)
+        {
+            _log($"✖ Reset bảng import sau Clear KHÔNG trọn vẹn — DỪNG import shop '{_settings.ShopName}' để khỏi bỏ sót SP âm thầm (xem dòng lỗi phía trên; sửa rồi chạy lại).");
+            return false;
+        }
+
+        if (result.Status == DraftClearStatus.Cleared)
+        {
+            // Hub-mode: tập id lấy từ Hub (đã lọc SP đã import) → phải nạp lại sau khi mốc Hub được reset. Excel-mode: tập id không đổi.
+            if (_settings.UseHubData) await LoadImportItemIdSetAsync(ct).ConfigureAwait(false);
+            SeedImportedFromProgress();
+        }
+        _clearSettled = true;   // tới đây: Cleared hoặc NothingToClear, bảng import (nếu có reset) đã reset trọn vẹn
+
+        if (_importIds.Count == 0)
+        {
+            _log("Không có item id nào để import sau khi Clear. Kết thúc.");
+            return false;
+        }
+        if (_importedIds.Count >= _importIds.Count)
+        {
+            _log($"✔ Đã import đủ {_importedIds.Count}/{_importIds.Count} SP — không cần quét Crawl List. Kết thúc.");
+            return false;
+        }
+        return true;
+    }
+
+    // Ngay TRƯỚC khi bấm Confirm Clear: bỏ khỏi Import Done mọi SP mục tiêu Update chưa có Update Done (cho MỌI khoá của tài khoản mà biết được mục tiêu;
+    // khoá Update đã completed thì giữ nguyên). true = xong trọn vẹn.
+    private async Task<bool> ResetImportProgressBeforeConfirmAsync()
+    {
+        try
+        {
+            // Khoá tiến độ mà runner biết thuộc shop này: ProgressKey (khoá runner ghi) + tên shop (một trong các khoá ứng viên mà
+            // WorkspaceShopViewModel xét "Import xong"). Không thêm DataSheet: ở workbook chung nó là sheet gộp dùng chung nhiều shop.
+            var shopKeys = new[] { _settings.ProgressKey, _settings.ShopName };
+            var removed = OpProgressStore.Shared.ResetImportWithoutUpdate(_settings.AccountId, out var sheets, out var skipped, shopKeys, _updateTargetsByKey,
+                ignoreSharedKeys: !SharedKeysInUse);   // workbook chung tắt: khoá shared:... cũ không bị đụng (và không tính là "không biết mục tiêu")
+            var detail = sheets.Count == 0 ? "" : " (" + string.Join(", ", sheets.Select(s => $"{s.Sheet}: {s.Removed}")) + ")";
+            _log($"↺ Bảng import: đã bỏ {removed} SP mục tiêu Update chưa Update xong khỏi Import Done của tài khoản{detail} — sẽ import lại.");
+            if (skipped.Count > 0)
+            {
+                // Cổng Clear lẽ ra đã chặn ca này; tới đây là tiến độ đổi giữa lúc kiểm cổng và lúc reset. Clear sẽ xoá nháp của khoá không biết mục tiêu → KHÔNG Confirm.
+                _log($"✖ {skipped.Count} khoá còn SP chờ Update mà không biết mục tiêu Update (Import Done giữ nguyên): {string.Join(", ", skipped.Select(DescribeKey))} — KHÔNG Confirm Clear, nháp của chúng sẽ mất mà bảng import không biết.");
+                return false;
+            }
+        }
+        catch (Exception ex)
+        {
+            _log($"✖ Không reset được bảng import local sau Clear: {ex.Message}");
+            return false;
+        }
+        return !_settings.UseHubData || await ResetHubImportMarksAsync().ConfigureAwait(false);
+    }
+
+    // Hub-mode: Hub giữ mốc "đã import" riêng (product_rows.store_imported_at) và GetImportIds lọc theo mốc đó, nên nếu không reset thì SP bị
+    // Clear sẽ KHÔNG bao giờ được import lại. API duy nhất có sẵn là reset-store-progress theo (tài khoản + sheet + op) — xoá mốc của CẢ sheet — nên
+    // sau đó đánh dấu lại các SP mà tiến độ local biết là đã xong (Import Done + Update Done còn lại). Chỉ làm được cho sheet của shop đang
+    // chạy (tên sheet Hub của khoá khác không suy ra được từ tiến độ local).
+    private async Task<bool> ResetHubImportMarksAsync()
+    {
+        try
+        {
+            var client = CoordinationRuntime.Client;
+            if (client is null)
+            {
+                _log("✖ Hub-mode nhưng không có kết nối Hub để reset mốc 'đã import' — SP vừa bị Clear sẽ bị Hub lọc bỏ.");
+                return false;
+            }
+            var reset = await client.ResetProductStoreProgressAsync(_settings.AccountId, _settings.DataSheet, AssignmentOps.Import).ConfigureAwait(false);
+            var keep = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var id in OpProgressStore.Shared.GetDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import).Keys) keep.Add(id);
+            foreach (var id in OpProgressStore.Shared.GetDone(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Update).Keys) keep.Add(id);
+            var ids = keep.ToArray();
+            for (var i = 0; i < ids.Length; i += 1000)
+                await client.MarkProductImportedAsync(_settings.AccountId, _settings.DataSheet, ids[i..Math.Min(i + 1000, ids.Length)]).ConfigureAwait(false);
+            _log($"↺ Hub: đã xoá mốc 'đã import' của sheet '{_settings.DataSheet}' ({reset} dòng) rồi đánh dấu lại {ids.Length} SP đã xong (Import/Update).");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            _log($"✖ Reset mốc 'đã import' trên Hub lỗi: {ex.Message}");
+            return false;
+        }
     }
 
     // Brave chết hẳn (tab crash/OOM/đóng) → khởi động lại Brave cùng profile (phiên login bền trên đĩa),
@@ -619,21 +945,24 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
     // Đã bắt đầu bấm "Import to Stores" nhưng KHÔNG biết lô đã gửi hay chưa (lỗi lạ ngay trong ClickAsync, modal không
     // đóng sau 15s, lỗi khác sau click). Caller KHÔNG MarkDone và DỪNG import shop này ngay (không gửi lại trong lượt).
+    // ReportedFailure = chính BigSeller báo thất bại trên hộp tiến trình (Failed > 0): cùng đường dừng, chỉ khác dòng log.
     private sealed class ImportOutcomeUncertainException : Exception
     {
-        public ImportOutcomeUncertainException(string message) : base(message) { }
+        public bool ReportedFailure { get; }
+        public ImportOutcomeUncertainException(string message, bool reportedFailure = false) : base(message) { ReportedFailure = reportedFailure; }
     }
 
     // Phân loại kết quả (ném = không MarkDone; trả về bình thường = lô đã gửi):
     //  • lỗi TRƯỚC khi bấm, hoặc ClickAsync timeout → exception thường: CHƯA gửi, caller chạy tiếp, lượt sau thử lại.
-    //  • Click trả về + modal import đóng → theo dõi ≤5s (MonitorPostClickAsync, ImportPostClickClassifier): hết 5s không thấy
-    //    gì bất thường, hoặc gặp hộp "Hộp nháp" không kèm lỗi → trả về bình thường (đã gửi).
+    //  • Click trả về + modal import đóng → theo dõi (MonitorPostClickAsync, ImportPostClickClassifier): hộp tiến trình
+    //    "Importing… Finish" chờ tới trạng thái cuối (≤120s), Successfully = Total = expectedCount (số SP đã tick) và Failed = 0 →
+    //    trả về bình thường (đã gửi); gặp hộp "Hộp nháp"/"Draft Listing" không kèm lỗi → đã gửi; KHÔNG thấy hộp nào sau 5s → chưa chắc.
     //  • Click trả về rồi lỗi ĐIỀU HƯỚNG THẬT (CdpErrors.IsRealNavigationError) khi chờ → cũng đi qua bước theo dõi ở trên.
     //  • MỌI ca còn lại sau khi bắt đầu bấm (lỗi lạ trong ClickAsync, modal không đóng 15s, "Target closed"/"WebSocket"/
     //    Brave chết, URL lệch, toast lỗi, hộp lạ, hộp "Hộp nháp" kèm lỗi, trang điều hướng mà không thấy hộp "Hộp nháp",
     //    không đọc được URL) → ImportOutcomeUncertainException (CHƯA CHẮC).
     // Giới hạn: chưa biết endpoint/thông báo thành công của BigSeller nên "modal đóng" chỉ là tín hiệu gián tiếp.
-    private async Task SelectImportShopAndConfirmAsync(IPage page, ILocator modal, string shopName, CancellationToken ct)
+    private async Task SelectImportShopAndConfirmAsync(IPage page, ILocator modal, string shopName, int expectedCount, CancellationToken ct)
     {
         _log($"Chon shop import: {shopName}");
         var labels = await ReadImportShopLabelsAsync(modal);
@@ -680,6 +1009,8 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         // Chụp các toast tính-lỗi ĐANG có TRƯỚC click (toast cũ chưa tắt) để loại khỏi kết quả sau click. Đọc lỗi ở đây = lỗi
         // TRƯỚC khi bấm (chưa gửi), không phải ca chưa chắc.
         var toastsBeforeClick = new HashSet<string>((await ReadToastsAsync(page)).Counted, StringComparer.Ordinal);
+        // Tương tự với hộp thoại đang hiện (kể cả chính modal chọn shop): Monitor bỏ qua chúng, chỉ xét hộp MỚI xuất hiện sau click.
+        var modalsBeforeClick = (await ReadVisibleModalsAsync(page)).Select(m => m.Text).ToList();
 
         // Đếm điều hướng của MAIN FRAME từ TRƯỚC click đến hết cửa sổ theo dõi (gỡ handler ở finally). Driver Playwright hay
         // nuốt lỗi "context destroyed" nên không thể chỉ dựa vào exception để biết trang vừa reload/điều hướng.
@@ -730,7 +1061,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                 throw new ImportOutcomeUncertainException($"lỗi sau khi bấm 'Import to Stores' (shop '{selectedLabel}'): {ex.Message}");
             }
 
-            await MonitorPostClickAsync(page, () => Volatile.Read(ref navCount) > 0, selectedLabel, toastsBeforeClick, ct);
+            await MonitorPostClickAsync(page, () => Volatile.Read(ref navCount) > 0, selectedLabel, toastsBeforeClick, modalsBeforeClick, expectedCount, ct);
         }
         finally
         {
@@ -738,15 +1069,25 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         }
     }
 
-    // Theo dõi tối đa 5s (poll ~300ms) sau khi modal import đóng, TRƯỚC DismissPostImportDialogsAsync (hàm đó đóng sạch mọi
-    // hộp, kể cả hộp lỗi → mất dấu vết). Mỗi lần đọc: URL, các modal hiển thị, toast lỗi/thông báo. Toast lỗi, URL lệch,
-    // hộp lạ, hộp "Hộp nháp" kèm lỗi → chưa chắc NGAY. Gặp hộp "Hộp nháp" (đã xét lỗi) → thoát sớm = đã gửi. Hết 5s không
-    // thấy gì: có điều hướng của main frame mà không có hộp "Hộp nháp" → chưa chắc; không thì đã gửi.
+    // Sau khi modal "Import to Stores" đóng, BigSeller hiện hộp tiến trình "Importing… Finish" (Total / Successfully / Failed).
+    // Theo dõi (poll ~300ms) TRƯỚC DismissPostImportDialogsAsync (hàm đó đóng sạch mọi hộp, kể cả hộp lỗi → mất dấu vết). Mỗi
+    // lần đọc: URL, các modal hiển thị, toast lỗi/thông báo; ImportPostClickClassifier.Classify xét (expectedCount = số SP đã tick):
+    //  • Hộp tiến trình còn chạy → chờ tiếp tối đa 120s; hết giờ → chưa chắc. Hộp biến mất khi chưa thấy trạng thái cuối → chưa chắc.
+    //  • Hộp tiến trình đủ số: Successfully = Total = expectedCount, Failed = 0 → đã gửi (trả về). Failed > 0 → BigSeller báo thất
+    //    bại (ReportedFailure); Total lệch expectedCount → chưa chắc.
+    //  • Toast lỗi, URL lệch, hộp lạ, hộp "Hộp nháp"/"Draft Listing" kèm lỗi → chưa chắc NGAY. Gặp hộp "Hộp nháp" (đã xét lỗi) → đã gửi.
+    //  • Chưa thấy hộp nào sau 5s → chưa chắc (không có bằng chứng đã gửi); có điều hướng của main frame mà không có hộp "Hộp nháp" → chưa chắc.
+    //  • Hộp đã hiện TRƯỚC khi bấm (modalsBeforeClick, so theo nội dung) bị bỏ qua: hộp cũ chưa đóng không làm lô này "đã gửi" oan.
     private async Task MonitorPostClickAsync(
-        IPage page, Func<bool> navigated, string selectedLabel, HashSet<string> toastsBeforeClick, CancellationToken ct)
+        IPage page, Func<bool> navigated, string selectedLabel, HashSet<string> toastsBeforeClick, List<string> modalsBeforeClick, int expectedCount, CancellationToken ct)
     {
-        var end = DateTime.UtcNow.AddSeconds(5);
+        const int quietSeconds = 5, progressMaxSeconds = 120;
+        var start = DateTime.UtcNow;
+        var quietEnd = start.AddSeconds(quietSeconds);
+        var progressEnd = start.AddSeconds(progressMaxSeconds);
         string? lastBoxLogged = null;
+        string? lastProgressLogged = null;
+        var progressSeen = false;
         var loggedInfoToasts = new HashSet<string>(StringComparer.Ordinal);
         ImportPostClickVerdict verdict;
         bool urlOnCrawl; List<OpenModalInfo> modals; List<string> toasts;
@@ -754,6 +1095,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         {
             List<string> infoToasts;
             (urlOnCrawl, modals, toasts, infoToasts) = await ReadPostClickStateAsync(page, toastsBeforeClick, ct);
+            modals = ImportPostClickClassifier.ExcludeExistingModals(modals, modalsBeforeClick);
 
             // Thông báo KHÔNG phải lỗi/cảnh báo: chỉ log nội dung (một lần mỗi nội dung), không làm chưa chắc.
             foreach (var info in infoToasts)
@@ -761,7 +1103,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                     _log($"Thông báo sau Import (không tính lỗi): \"{ImportPostClickClassifier.Trim(info)}\"");
 
             // LUÔN log nội dung hộp kết quả (cắt 300 ký tự) — kể cả khi coi là đã gửi — để soi hộp thật khi chạy thật.
-            foreach (var box in modals.Where(m => m.HasDraftBoxLink))
+            foreach (var box in modals.Where(m => m.HasDraftBoxLink && !ImportPostClickClassifier.IsImportProgressBox(m.Text)))
             {
                 var text = ImportPostClickClassifier.Trim(box.Text);
                 if (text == lastBoxLogged) continue;
@@ -769,19 +1111,43 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                 _log($"Hộp kết quả sau Import: \"{text}\"");
             }
 
-            // Chưa tính điều hướng ở đây: hộp "Hộp nháp" có thể hiện muộn hơn một nhịp so với lúc điều hướng.
-            verdict = ImportPostClickClassifier.Classify(urlOnCrawl, modals, toasts, navigated: false);
-            if (!verdict.Sent) break;
-            if (modals.Any(m => m.HasDraftBoxLink)) return;   // hộp kết quả đã biết, không lỗi → đã gửi
-            if (DateTime.UtcNow >= end)
+            // Hộp tiến trình "Importing… Finish": log mỗi khi nội dung đổi (lấy mẫu từng trạng thái, kể cả trạng thái cuối).
+            var progressBoxes = modals.Where(m => ImportPostClickClassifier.IsImportProgressBox(m.Text)).ToList();
+            foreach (var box in progressBoxes)
             {
-                verdict = ImportPostClickClassifier.Classify(urlOnCrawl, modals, toasts, navigated());
+                var text = ImportPostClickClassifier.Trim(box.Text);
+                if (text == lastProgressLogged) continue;
+                lastProgressLogged = text;
+                _log($"Hộp tiến trình sau Import: \"{text}\"");
+            }
+            if (progressBoxes.Count > 0) progressSeen = true;
+
+            // Chưa tính điều hướng ở đây: hộp "Hộp nháp" có thể hiện muộn hơn một nhịp so với lúc điều hướng.
+            verdict = ImportPostClickClassifier.Classify(urlOnCrawl, modals, toasts, navigated: false, expectedCount);
+            if (verdict.Kind == ImportVerdictKind.InProgress)
+            {
+                if (DateTime.UtcNow >= progressEnd)
+                    throw new ImportOutcomeUncertainException(
+                        $"hộp tiến trình import chưa có kết quả cuối sau {progressMaxSeconds}s (shop '{selectedLabel}', hộp cuối: \"{lastProgressLogged}\", URL={page.Url})");
+                await DelayAsync(300, ct);
+                continue;
+            }
+            if (!verdict.Sent) break;
+            if (progressBoxes.Count > 0 || modals.Any(m => m.HasDraftBoxLink)) return;   // hộp tiến trình đã xong / hộp kết quả đã biết, không lỗi → đã gửi
+            if (progressSeen)
+                throw new ImportOutcomeUncertainException(
+                    $"hộp tiến trình import biến mất trước khi thấy kết quả cuối (shop '{selectedLabel}', hộp cuối: \"{lastProgressLogged}\", URL={page.Url})");
+            if (DateTime.UtcNow >= quietEnd)
+            {
+                // Hết cửa sổ mà không thấy hộp tiến trình lẫn hộp "Hộp nháp": KHÔNG có bằng chứng đã gửi → chưa chắc (requireEvidence).
+                verdict = ImportPostClickClassifier.Classify(urlOnCrawl, modals, toasts, navigated(), expectedCount, requireEvidence: true);
                 break;
             }
             await DelayAsync(300, ct);
         }
         if (!verdict.Sent)
-            throw new ImportOutcomeUncertainException($"{verdict.Reason} (shop '{selectedLabel}', URL={page.Url})");
+            throw new ImportOutcomeUncertainException(
+                $"{verdict.Reason} (shop '{selectedLabel}', URL={page.Url})", verdict.Kind == ImportVerdictKind.ReportedFailure);
     }
 
     // Toast đang hiển thị, chia 2: Counted = tính lỗi (ant-message lỗi — selector theo BigSellerMaterialCenterCleaner.ErrorToast;
@@ -821,15 +1187,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
             try
             {
                 var urlOnCrawl = BigSellerCrawlHelper.IsCrawlPage(page, _settings.CrawlUrl);
-                // Link "Hộp nháp" so không phân biệt hoa thường (giống :has-text ở DismissPostImportDialogsAsync).
-                var raw = await page.Locator(".ant-modal-content:visible").EvaluateAllAsync<string[][]>(
-                    @"els => els.map(el => [
-                        (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
-                        Array.from(el.querySelectorAll('a.has_underline')).some(a => (a.textContent || '').toLowerCase().includes('hộp nháp')) ? '1' : '0'
-                    ])");
-                var modals = (raw ?? [])
-                    .Select(m => new OpenModalInfo(m.Length > 0 ? m[0] : "", m.Length > 1 && m[1] == "1"))
-                    .ToList();
+                var modals = await ReadVisibleModalsAsync(page);
                 var (counted, infoOnly) = await ReadToastsAsync(page);
                 return (urlOnCrawl, modals, counted.Where(t => !toastsBeforeClick.Contains(t)).ToList(), infoOnly);
             }
@@ -843,6 +1201,20 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                 throw new ImportOutcomeUncertainException($"không đọc được URL/hộp thoại sau khi bấm Import: {ex.Message}");
             }
         }
+    }
+
+    // Các modal đang hiển thị (nội dung + có link "Hộp nháp"/"Draft Listing" không). Link so không phân biệt hoa thường
+    // (giống :has-text ở DismissPostImportDialogsAsync).
+    private static async Task<List<OpenModalInfo>> ReadVisibleModalsAsync(IPage page)
+    {
+        var raw = await page.Locator(".ant-modal-content:visible").EvaluateAllAsync<string[][]>(
+            @"els => els.map(el => [
+                (el.innerText || el.textContent || '').replace(/\s+/g, ' ').trim(),
+                Array.from(el.querySelectorAll('a.has_underline')).some(a => { const t = (a.textContent || '').toLowerCase(); return t.includes('hộp nháp') || t.includes('draft listing'); }) ? '1' : '0'
+            ])");
+        return (raw ?? [])
+            .Select(m => new OpenModalInfo(m.Length > 0 ? m[0] : "", m.Length > 1 && m[1] == "1"))
+            .ToList();
     }
 
     private static bool IsPlaywrightTimeout(Exception ex) =>
@@ -1037,6 +1409,19 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                 }
                 return Array.from(set);
             }");
+
+    // Trang hiện tại có phải CHỈ gồm các SP của lô vừa import không (mọi ảnh hiển thị đều map ra id ∈ lô, và có ít nhất một dòng)?
+    // Dùng để log đúng vòng sau khi tải lại: true = SP không rời tab (trang y nguyên), false = trang đã đổi nhưng không còn SP khớp.
+    private async Task<bool> PageShowsOnlyImportedAsync(IPage page, string[] batchIds)
+    {
+        string[] keys;
+        try { keys = await GetVisibleImageKeysAsync(page); }
+        catch (Exception ex) when (ex is not OperationCanceledException) { return false; }
+        if (keys.Length == 0) return false;
+        var batch = new HashSet<string>(batchIds, StringComparer.Ordinal);
+        lock (_apiLock)
+            return keys.All(k => _apiImageKeyToShopeeId.TryGetValue(k, out var id) && batch.Contains(id));
+    }
 
     // Tick từng dòng có item id ∈ tập cần import (và CHƯA import), nhận diện dòng qua KHOÁ ẢNH lấy từ API.
     // vxe fixed-column có thể render 2 bản CÙNG rowid: bản body chứa <img>, bản fixed-left chứa checkbox HIỂN

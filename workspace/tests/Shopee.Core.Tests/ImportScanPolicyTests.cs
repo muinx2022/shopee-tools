@@ -194,4 +194,50 @@ public sealed class ImportScanPolicyTests
         Assert.True(ImportScanPolicy.IsPageConfirmed(true, Array.Empty<string>(), 0, Array.Empty<string>()));
         Assert.False(ImportScanPolicy.IsPageConfirmed(true, Array.Empty<string>(), 3, new[] { "old.jpg" }));
     }
+
+    // ── Sau một lô: tải lại Crawl List hay bấm Next ─────────────────────────────────────────
+
+    [Fact]
+    public void NextStepAfterBatch_CommittedBatchOnUnclaimedTab_ReloadsFirstPage()
+    {
+        Assert.Equal(AfterBatchStep.ReloadFirstPage, ImportScanPolicy.NextStepAfterBatch(batchCommitted: true, unclaimedTab: true));
+    }
+
+    [Fact]
+    public void NextStepAfterBatch_FailedBatchOnUnclaimedTab_ClicksNext()
+    {
+        // Lô lỗi thường (chưa gửi): không SP nào rời tab, tải lại sẽ quay về đúng lô đó và lặp mãi → Next như trước.
+        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(batchCommitted: false, unclaimedTab: true));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void NextStepAfterBatch_ClaimedTab_AlwaysClicksNext(bool committed)
+    {
+        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(committed, unclaimedTab: false));
+    }
+
+    // ── "Đã import đủ" phải kèm Clear đã chốt ──────────────────────────────────────────────
+
+    [Fact]
+    public void IsAllImported_CountsMatchAndClearSettled_True()
+    {
+        Assert.True(ImportScanPolicy.IsAllImported(importIdCount: 5, importedIdCount: 5, clearSettled: true));
+        Assert.True(ImportScanPolicy.IsAllImported(5, 7, clearSettled: true));
+    }
+
+    [Fact]
+    public void IsAllImported_ClearNotSettled_FalseEvenWhenCountsMatch()
+    {
+        // Clear hết giờ / reset lỗi: _importedIds trong RAM có thể lệch với bảng import đã reset → không được coi là đủ.
+        Assert.False(ImportScanPolicy.IsAllImported(5, 5, clearSettled: false));
+    }
+
+    [Fact]
+    public void IsAllImported_NoIdsOrMissing_False()
+    {
+        Assert.False(ImportScanPolicy.IsAllImported(0, 0, clearSettled: true));
+        Assert.False(ImportScanPolicy.IsAllImported(5, 4, clearSettled: true));
+    }
 }

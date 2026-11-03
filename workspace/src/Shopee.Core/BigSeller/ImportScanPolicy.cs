@@ -1,5 +1,23 @@
 namespace Shopee.Core.BigSeller;
 
+/// <summary>Việc kế tiếp sau một lô Import trên Crawl List: bấm Next sang trang kế, hoặc tải lại Crawl List (về trang 1).</summary>
+public enum AfterBatchStep { ClickNext, ReloadFirstPage }
+
+/// <summary>Quyết định trước khi Clear nháp: <see cref="CanClear"/> = được Clear; ngược lại <see cref="UnknownKeys"/> = các khoá còn SP chờ Update
+/// mà không biết mục tiêu Update (Clear sẽ xoá nháp của chúng mà bảng import không biết SP nào phải import lại).</summary>
+public readonly record struct ClearGate(bool CanClear, IReadOnlyList<string> UnknownKeys);
+
+/// <summary>Việc runner làm trước khi mở menu Clear: <see cref="ExitEarly"/> = kết thúc import shop mà không Clear (xem <see cref="ImportExitReason"/>);
+/// <see cref="Blocked"/> = cổng Clear chặn (<see cref="ImportStartDecision.BlockedKeys"/>); <see cref="Clear"/> = đi tiếp Clear rồi import.</summary>
+public enum ImportStartKind { ExitEarly, Blocked, Clear }
+
+/// <summary>Vì sao thoát sớm: <see cref="NoItemIds"/> = sheet không có item id nào trong khoảng dòng; <see cref="AllDone"/> = mọi id đã import và Clear
+/// không làm mất id nào của shop (mọi SP đã import đều đã Update, hoặc không phải mục tiêu Update).</summary>
+public enum ImportExitReason { None, NoItemIds, AllDone }
+
+/// <summary>Kết quả <see cref="ImportScanPolicy.DecideImportStart"/>. <see cref="BlockedKeys"/> chỉ có nghĩa khi <see cref="Kind"/> = Blocked.</summary>
+public readonly record struct ImportStartDecision(ImportStartKind Kind, ImportExitReason ExitReason, IReadOnlyList<string> BlockedKeys);
+
 /// <summary>
 /// Quyết định thuần của lượt Import to Store (BigSeller) để test được, không dính Playwright:
 /// có quét thêm vòng không, trang crawl đã "xác nhận" (DOM khớp response pageList.json mới) chưa, và khi nào bỏ phần còn lại của tab.
@@ -17,6 +35,83 @@ public static class ImportScanPolicy
     /// Vòng không gửi gì và không có gì chưa xác nhận → quét lại cũng không ra thêm gì → dừng.</summary>
     public static bool ShouldRescan(int pass, int maxPasses, bool allImported, bool sentThisPass, bool hasUnconfirmed) =>
         !allImported && pass < maxPasses && (sentThisPass || hasUnconfirmed);
+
+    /// <summary>Sau một lô: chỉ lô ĐÃ GỬI (<paramref name="batchCommitted"/>) trên tab 'Chưa nhận' mới làm danh sách dồn lên (SP đã import
+    /// rời tab) nên phải tải lại Crawl List (về trang 1) để xét tiếp; lô lỗi thường (chưa gửi, không SP nào rời tab) và tab 'Đã nhận'
+    /// (SP ở lại tab) thì bấm Next như thường. Tải lại khi lô chưa gửi sẽ chỉ quay lại đúng lô đó và lặp vô hạn.</summary>
+    public static AfterBatchStep NextStepAfterBatch(bool batchCommitted, bool unclaimedTab) =>
+        batchCommitted && unclaimedTab ? AfterBatchStep.ReloadFirstPage : AfterBatchStep.ClickNext;
+
+    /// <summary>"Đã import đủ": có id cần import, mọi id đã import, VÀ bước Clear nháp đã chốt (Cleared / không có gì để xoá / bảng import đã
+    /// reset trọn vẹn — <paramref name="clearSettled"/>). Clear kết thúc kiểu khác (hết giờ chờ, reset lỗi) thì tiến độ trong RAM có thể lệch
+    /// với bảng import đã bị reset nên không được coi là đủ, dù đếm id có khớp.</summary>
+    public static bool IsAllImported(int importIdCount, int importedIdCount, bool clearSettled) =>
+        clearSettled && importIdCount > 0 && importedIdCount >= importIdCount;
+
+    /// <summary>Có được Clear nháp không. Clear xoá nháp của CẢ tài khoản, nên mọi khoá có SP đã import mà chưa Update xong
+    /// (<paramref name="pendingUpdateKeys"/>, từ <c>OpProgressStore.ImportKeysPendingUpdate</c>) phải biết mục tiêu Update
+    /// (<paramref name="keysWithTargets"/>: khoá đọc được mục tiêu) thì bảng import mới reset đúng. Còn khoá chờ Update mà không biết mục tiêu
+    /// (khoá <c>shared:...</c> của shop khác, sheet không có trong file nguồn, file không đọc được) → KHÔNG Clear, kèm danh sách khoá thiếu
+    /// (không phân biệt hoa thường, bỏ rỗng/trùng, giữ thứ tự). Không có khoá nào chờ Update → được Clear.</summary>
+    public static ClearGate DecideClearGate(IEnumerable<string?> pendingUpdateKeys, IEnumerable<string?> keysWithTargets)
+    {
+        var known = new HashSet<string>(keysWithTargets.Where(k => !string.IsNullOrWhiteSpace(k))!, StringComparer.OrdinalIgnoreCase);
+        var unknown = new List<string>();
+        foreach (var key in pendingUpdateKeys)
+            if (!string.IsNullOrWhiteSpace(key) && !known.Contains(key) && !unknown.Contains(key, StringComparer.OrdinalIgnoreCase))
+                unknown.Add(key);
+        return new ClearGate(unknown.Count == 0, unknown);
+    }
+
+    /// <summary>Sheet không có item id nào trong khoảng dòng và không phải hub-mode còn SP chờ Update (Hub đã lọc SP đã import nên tập id rỗng chưa chắc là hết việc).
+    /// Runner kiểm điều này TRƯỚC khi đọc mục tiêu Update (đọc file lớn) để khỏi đọc vô ích.</summary>
+    public static bool NothingToImport(int importIdCount, bool hubHasPendingUpdate) => importIdCount <= 0 && !hubHasPendingUpdate;
+
+    /// <summary>Điều phối đầu lượt import một shop (trước khi mở menu Clear), thuần để test: thoát sớm / bị cổng Clear chặn / đi tiếp Clear.
+    /// Gọi SAU khi đã đọc mục tiêu Update của <paramref name="pendingKeys"/> (<paramref name="keysWithTargets"/> = khoá đọc được).
+    /// <list type="number">
+    /// <item>Sheet không có item id (<paramref name="importIdCount"/> = 0) và không phải hub-mode còn SP chờ Update (<paramref name="hubHasPendingUpdate"/>) → thoát sớm (NoItemIds).</item>
+    /// <item>Shop đã import đủ (<paramref name="importedCount"/> ≥ <paramref name="importIdCount"/>): nếu khoá của shop (<paramref name="shopKey"/>) KHÔNG có trong
+    /// <paramref name="pendingKeys"/> → Clear không làm mất id nào của shop → thoát sớm (AllDone), kể cả khi khoá của shop khác không đọc được. Khoá của shop có trong
+    /// <paramref name="pendingKeys"/> mà không đọc được mục tiêu → KHÔNG được nói "đã Update hết": chặn. Đọc được mà <paramref name="shopRemovableCount"/> = 0 (không id nào
+    /// Clear sẽ bỏ) → thoát sớm (AllDone).</item>
+    /// <item>Còn lại: <see cref="DecideClearGate"/> — có khoá chờ Update mà không biết mục tiêu → chặn (kèm khoá), ngược lại → Clear.</item>
+    /// </list>
+    /// <paramref name="pendingKeys"/> phải là danh sách ĐÃ lọc (workbook chung tắt thì khoá <c>shared:...</c> cũ không có trong đó).</summary>
+    public static ImportStartDecision DecideImportStart(
+        int importIdCount, int importedCount, bool hubHasPendingUpdate, string? shopKey, int shopRemovableCount,
+        IReadOnlyCollection<string?> pendingKeys, IReadOnlyCollection<string?> keysWithTargets)
+    {
+        if (NothingToImport(importIdCount, hubHasPendingUpdate))
+            return new ImportStartDecision(ImportStartKind.ExitEarly, ImportExitReason.NoItemIds, Array.Empty<string>());
+
+        var gate = DecideClearGate(pendingKeys, keysWithTargets);
+        var allSeeded = importIdCount > 0 && importedCount >= importIdCount;
+        if (allSeeded)
+        {
+            var shopWaiting = !string.IsNullOrWhiteSpace(shopKey)
+                && pendingKeys.Any(k => string.Equals(k, shopKey, StringComparison.OrdinalIgnoreCase));
+            var shopKnown = !string.IsNullOrWhiteSpace(shopKey)
+                && keysWithTargets.Any(k => string.Equals(k, shopKey, StringComparison.OrdinalIgnoreCase));
+            if (!shopWaiting || (shopKnown && shopRemovableCount == 0))
+                return new ImportStartDecision(ImportStartKind.ExitEarly, ImportExitReason.AllDone, Array.Empty<string>());
+            if (!shopKnown)
+                return new ImportStartDecision(ImportStartKind.Blocked, ImportExitReason.None, gate.UnknownKeys);
+        }
+        return gate.CanClear
+            ? new ImportStartDecision(ImportStartKind.Clear, ImportExitReason.None, Array.Empty<string>())
+            : new ImportStartDecision(ImportStartKind.Blocked, ImportExitReason.None, gate.UnknownKeys);
+    }
+
+    /// <summary>Tên để log cho khoá tiến độ: khoá <c>shared:{shopId}</c> mà tìm được shop theo id trong <paramref name="shops"/> (<c>account.Shops</c>) thì kèm
+    /// tên shop; không tìm được (hoặc khoá là tên sheet riêng) thì giữ nguyên khoá (khoá <c>shared:</c> đã chứa id).</summary>
+    public static string DescribeProgressKey(string key, IEnumerable<BigSellerShop>? shops)
+    {
+        var id = SharedWorkbookCatalog.ShopIdFromKey(key);
+        if (id is null || shops is null) return key;
+        var name = shops.FirstOrDefault(s => string.Equals(s.Id, id, StringComparison.OrdinalIgnoreCase))?.Name;
+        return string.IsNullOrWhiteSpace(name) ? key : $"{key} (shop '{name.Trim()}')";
+    }
 
     /// <summary>Trang crawl đã được XÁC NHẬN chưa: có response pageList.json MỚI hơn mốc
     /// (<paramref name="newerResponse"/>) đã đọc được (<paramref name="responseKeys"/> ≠ null) VÀ ảnh trên DOM thuộc đúng

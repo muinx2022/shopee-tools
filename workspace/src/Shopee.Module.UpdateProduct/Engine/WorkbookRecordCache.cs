@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using ClosedXML.Excel;
 
 namespace UpdateProduct;
 
@@ -80,6 +81,83 @@ internal sealed class WorkbookRecordCache
 
         return (map, emptyRewriteRows);
     }
+
+    /// <summary>Item id của dòng nếu dòng là MỤC TIÊU Update, ngược lại null: cùng luật với <see cref="LoadRecordMapAsync"/> (nhánh Excel) — dòng định vị
+    /// được bằng Item ID / Link VÀ cột "Tên đã sửa" không trống (trống thì Update bỏ qua dòng, nên nó không bao giờ có Update Done).
+    /// Cột đã được caller kiểm hợp lệ (RewrittenNameColumn &gt; 0).</summary>
+    internal static string? TargetRowId(IXLRow row, BigSellerWorkflowSettings settings)
+    {
+        var rowId = WorkbookSheetReader.RowId(
+            WorkbookSheetReader.Cell(row, settings.ItemIdColumn), WorkbookSheetReader.Cell(row, settings.LinkColumn));
+        if (string.IsNullOrWhiteSpace(rowId)) return null;
+        return string.IsNullOrWhiteSpace(row.Cell(settings.RewrittenNameColumn).GetString().Trim()) ? null : rowId;
+    }
+
+    /// <summary>Tập "mục tiêu Update" của từng khoá tiến độ trong <paramref name="keys"/> (khoá = tên sheet trong file nguồn), dùng cùng định nghĩa
+    /// mục tiêu và ánh xạ cột của <paramref name="settings"/> như luồng Update. Mở file MỘT lần (khoá file như mọi lần đọc workbook; hub-mode: hỏi Hub
+    /// theo sheet, không đụng file). Khoá <paramref name="ownKey"/> (khoá của shop đang chạy, kể cả dạng <c>shared:...</c> ở workbook chung) đọc theo
+    /// <see cref="BigSellerWorkflowSettings.DataSheet"/> và vùng dòng StartRow..EndRow của shop; khoá khác đọc sheet cùng tên khoá, cả sheet (không biết
+    /// vùng dòng của shop đó → tập mục tiêu có thể rộng hơn thực tế, hậu quả chỉ là import lại thêm vài SP). Khoá <c>shared:...</c> của shop KHÁC và sheet
+    /// không có trong file/không đọc được thì KHÔNG đưa vào kết quả (lý do ghi qua <paramref name="log"/>). Cấu hình cột thiếu → ném lỗi (như Update).</summary>
+    internal static async Task<Dictionary<string, IReadOnlySet<string>>> LoadUpdateTargetsByKeyAsync(
+        BigSellerWorkflowSettings settings, string ownKey, IReadOnlyCollection<string> keys, Action<string> log, CancellationToken ct)
+    {
+        var result = new Dictionary<string, IReadOnlySet<string>>(StringComparer.OrdinalIgnoreCase);
+        bool IsOwn(string key) => string.Equals(key, ownKey, StringComparison.OrdinalIgnoreCase);
+        // Tên sheet thật của khoá: khoá của shop đang chạy luôn là DataSheet (ở workbook chung khoá là shared:..., không phải tên sheet).
+        string SheetOf(string key) => IsOwn(key) && !string.IsNullOrWhiteSpace(settings.DataSheet) ? settings.DataSheet : key;
+
+        var readable = keys.Where(k => !string.IsNullOrWhiteSpace(k) && (IsOwn(k) || !IsSharedKey(k))).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (readable.Count == 0) return result;
+
+        if (settings.UseHubData)
+        {
+            foreach (var key in readable)
+            {
+                try
+                {
+                    var perKey = settings with { DataSheet = SheetOf(key), StartRow = IsOwn(key) ? settings.StartRow : 2, EndRow = IsOwn(key) ? settings.EndRow : 0 };
+                    var map = await LoadRecordMapFromHubAsync(perKey, ct).ConfigureAwait(false);
+                    result[key] = new HashSet<string>(map.map.Keys, StringComparer.Ordinal);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { log($"  Không đọc được mục tiêu Update của '{key}' từ Hub: {ex.Message}"); }
+            }
+            return result;
+        }
+
+        if (settings.RewrittenNameColumn <= 0)
+            throw new InvalidOperationException("Chưa map cột 'Tên đã sửa' cho shop (mục BigSeller → Ánh xạ cột).");
+        if (settings.ItemIdColumn <= 0 && settings.LinkColumn <= 0)
+            throw new InvalidOperationException("Cần map ít nhất 'Item ID' hoặc 'Link' để khớp dòng (mục BigSeller → Ánh xạ cột).");
+
+        using var _ = await WorkbookFileLockHandle.AcquireAsync(settings.WorkbookPath, ct).ConfigureAwait(false);
+        using var wb = new XLWorkbook(settings.WorkbookPath);
+        foreach (var key in readable)
+        {
+            ct.ThrowIfCancellationRequested();
+            var sheetName = SheetOf(key).Trim();
+            if (!wb.TryGetWorksheet(sheetName, out var ws))
+            {
+                log($"  Sheet '{sheetName}' (khoá '{key}') không có trong file nguồn — không biết mục tiêu Update của khoá này.");
+                continue;
+            }
+            var start = IsOwn(key) ? Math.Max(2, settings.StartRow) : 2;
+            var last = ws.LastRowUsed()?.RowNumber() ?? 0;
+            var end = IsOwn(key) && settings.EndRow > 0 ? Math.Min(settings.EndRow, last) : last;
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            for (var r = start; r <= end; r++)
+            {
+                var id = TargetRowId(ws.Row(r), settings);
+                if (id is not null) ids.Add(id);
+            }
+            result[key] = ids;
+        }
+        return result;
+    }
+
+    /// <summary>Khoá tiến độ dạng <c>shared:{shopId}</c> (workbook chung): không phải tên sheet trong file nguồn nên không đọc được mục tiêu theo khoá.</summary>
+    internal static bool IsSharedKey(string key) => key.StartsWith("shared:", StringComparison.OrdinalIgnoreCase);
 
     // HUB-MODE của LoadRecordMapAsync: server đã LỌC đúng dòng cần update (name_rewritten non-blank AND có
     // itemId/link) trong [StartRow..EndRow] và trả field cấu trúc → dựng CÙNG map itemId→WorkbookRecord như nhánh

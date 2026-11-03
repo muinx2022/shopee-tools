@@ -627,8 +627,14 @@ internal static class BigSellerCrawlHelper
         catch { return false; }
     }
 
+    /// <summary>Đóng hộp thoại sau Import. Hộp tiến trình import đã xong có nút "Finish": bấm nó trước (cách đóng đúng của
+    /// BigSeller), chờ hộp đóng tối đa 5s; chỉ khi còn hộp thoại mới rơi về cách cũ (Escape / nút X). KHÔNG bấm link
+    /// "Draft Listing" / "Hộp nháp".</summary>
     public static async Task DismissPostImportDialogsAsync(IPage page, Action<string>? log = null)
     {
+        if (await TryCloseByFinishAsync(page, log))
+            return;
+
         try
         {
             var draftLink = page.Locator("a.has_underline:has-text('Hộp nháp')").First;
@@ -664,6 +670,35 @@ internal static class BigSellerCrawlHelper
 
         try { await page.Keyboard.PressAsync("Escape"); } catch { }
         await Task.Delay(500);
+    }
+
+    // Có nút Finish (đang hiện, đang bật) trong hộp thoại thì bấm và chờ không còn hộp thoại nào hiển thị (≤5s).
+    // true = đã đóng sạch; false = không có Finish, bấm lỗi, hoặc còn hộp thoại sau 5s (caller dùng cách đóng cũ).
+    private static async Task<bool> TryCloseByFinishAsync(IPage page, Action<string>? log)
+    {
+        try
+        {
+            var finish = page.Locator(".ant-modal-wrap:visible .ant-modal-content button:has-text('Finish')").Last;
+            if (await finish.CountAsync() == 0 || !await finish.IsVisibleAsync() || !await finish.IsEnabledAsync())
+                return false;
+
+            log?.Invoke("Bấm Finish để đóng hộp tiến trình import...");
+            await finish.ClickAsync(new() { Timeout = 3000 });
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (await page.Locator(".ant-modal-wrap:visible").CountAsync() == 0)
+                    return true;
+                await Task.Delay(250);
+            }
+            log?.Invoke("Đã bấm Finish nhưng còn hộp thoại sau 5s — đóng tiếp bằng cách cũ.");
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke($"Bấm Finish không được ({ex.Message}) — đóng bằng cách cũ.");
+        }
+        return false;
     }
 
     public static string ResolveCrawlUrl(string? targetUrl) =>

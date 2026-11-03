@@ -176,6 +176,12 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
 
     private void RaiseJobsChanged() => UiThread.Post(() => JobsChanged?.Invoke());
 
+    // Lý do lượt Import gần nhất của tk bị cổng Clear nháp chặn (key = Account.Id). Xoá đầu mỗi lượt Import của tk; Auto Run đọc sau khi lượt kết thúc.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _importBlocked = new();
+
+    /// <summary>Lý do lượt Import gần nhất của tk bị cổng Clear nháp chặn (không biết mục tiêu Update của khoá còn SP chờ Update); null = không bị chặn.</summary>
+    public string? GetImportBlockedReason(string accountId) => _importBlocked.TryGetValue(accountId, out var r) ? r : null;
+
     private async Task RunOneWorkflowAsync(
         string name, UpdateKind kind, Func<UpdateProductRunner, UpdateProductContext, CancellationToken, Task> action,
         UpdateRunTargetViewModel t, bool requiresBigSellerLogin, bool force = false, bool silent = false,
@@ -194,6 +200,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         // TryAdd = dedup + add ATOMIC dưới lock của registry.
         var job = new WsJob { Cts = new CancellationTokenSource(), ShopId = s.Id, Kind = kind };
         if (!_wsJobs.TryAdd(a.Id, job)) { Warn($"{a.DisplayName}: đang chạy 1 workflow rồi — bấm ■ để dừng trước.", silent); job.Cts.Dispose(); return; }
+        if (kind == UpdateKind.Import) _importBlocked.TryRemove(a.Id, out _);
         // Log gắn tk này → ghi vào CẢ buffer gộp lẫn buffer riêng của acc (tab log per-acc đợt sau bind vào).
         void LogA(string m) => LogAcc(a.Id, a.DisplayName, m);
         // ĐÃ đăng ký job → MỌI thứ sau đây phải nằm TRONG try/finally để dù setup (BuildContext / ctor runner)
@@ -287,6 +294,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             if (opProg != null) OpProgressStore.Shared.BeginRun(a.Id, resolved.ProgressKey, opProg, a.DisplayName);
             LogA($"▶ {name} — {prefix} (chạy song song).");
             await action(runner, ctx, job.Cts.Token).ConfigureAwait(false);
+            if (kind == UpdateKind.Import && !string.IsNullOrEmpty(runner.ImportBlockedReason)) _importBlocked[a.Id] = runner.ImportBlockedReason;
             // Engine có thể thoát ÊM khi bị hủy (OuterLoop check IsCancellationRequested ở đầu vòng; supervisor
             // đa-lane CỐ Ý nuốt OCE để lane nghỉ hưu) → "không exception" KHÔNG có nghĩa là xong. Bị hủy mà báo
             // "completed" → ledger hiện ✓ xong oan + hub tưởng op xong, nhảy op kế, bỏ sót SP.

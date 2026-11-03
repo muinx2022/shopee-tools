@@ -54,6 +54,10 @@ public sealed class UpdateProductRunner
     /// Đặt về false đầu mỗi lượt; hủy giữa chừng/lỗi thì giữ false (caller đã xét hủy trước khi đọc).</summary>
     public bool LastRunComplete { get; private set; }
 
+    /// <summary>Khác null khi lượt Import vừa rồi dừng vì cổng Clear nháp chặn (không biết mục tiêu Update của khoá còn SP chờ Update, Clear sẽ làm mất SP): lý
+    /// do ngắn để Auto Run báo "Import bị chặn" thay vì "0 SP". Đặt về null đầu mỗi lượt Import; chỉ đường 1 lane (đường Workspace) mới báo.</summary>
+    public string? ImportBlockedReason { get; private set; }
+
     private ProductNameRewriteRunner? _nameRunner;
     private readonly WorkflowPauseToken _pause = new();
 
@@ -144,6 +148,7 @@ public sealed class UpdateProductRunner
     public async Task RunImportAsync(UpdateProductContext ctx, CancellationToken ct)
     {
         LastRunComplete = false;
+        ImportBlockedReason = null;
         var wf = BuildWorkflow(ctx);
         var n = Math.Clamp(ctx.ImportMaxProcess, 1, 10);
         if (n == 1)
@@ -154,6 +159,7 @@ public sealed class UpdateProductRunner
             await using var runner = new BigSellerImportToStoreRunner(wf, m => Log?.Invoke(m), _pause, 0, 1);
             runner.RowsDone += (f, t) => RowsCompleted?.Invoke(f, t);
             await runner.RunAsync(ct);
+            ImportBlockedReason = runner.ClearBlockedReason;
             LastRunComplete = runner.AllImported;
             return;
         }

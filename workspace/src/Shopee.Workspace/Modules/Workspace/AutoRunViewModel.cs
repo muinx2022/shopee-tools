@@ -480,15 +480,25 @@ public sealed partial class AutoRunViewModel : ObservableObject
                         if (ct.IsCancellationRequested) break;
 
                         var after = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
-                        var imported = after - initialBefore;
+                        var imported = after - initialBefore;   // có thể ÂM: Clear nháp đầu lượt bỏ SP chưa Update khỏi Import Done (tổng sau reset < tổng trước)
 
                         // Runner đã LUÔN quét cả 2 tab (Chưa nhận → Đã nhận) trong 1 lượt nên không import lượt hai nữa:
                         // lượt hai chỉ lặp lại và mở đường gửi trùng sau ca "chưa chắc đã gửi" của runner.
+                        // Import bị cổng Clear nháp chặn (không biết mục tiêu Update của khoá khác, Clear sẽ làm mất SP) thì nói rõ lý do, không ghi "0 SP".
+                        var importBlocked = _workspace.Update.GetImportBlockedReason(acc.Account.Id);
+                        if (importBlocked is not null)
+                            Log($"[{acc.DisplayName}] ⛔ Import bị chặn: {importBlocked}. Shop '{shop.Name}' chưa import được lượt này.");
+
                         if (imported == 0 && after == 0 && !shop.ImportDone)
                         {
                             // Bỏ qua shop đó và tiếp tục với shop khác
-                            CurrentStatus = $"[{acc.DisplayName}] ({shop.Name}) 0 SP import - Bỏ qua";
-                            Log($"[{acc.DisplayName}] Import không được SP nào (0 SP) → Bỏ qua shop '{shop.Name}'.");
+                            CurrentStatus = importBlocked is not null
+                                ? $"[{acc.DisplayName}] ({shop.Name}) Import bị chặn - Bỏ qua"
+                                : $"[{acc.DisplayName}] ({shop.Name}) 0 SP import - Bỏ qua";
+                            if (importBlocked is null)
+                                Log($"[{acc.DisplayName}] Import không được SP nào (0 SP) → Bỏ qua shop '{shop.Name}'.");
+                            else
+                                Log($"[{acc.DisplayName}] Bỏ qua shop '{shop.Name}' (Import bị chặn, chưa có SP nào).");
                             continue;
                         }
 
@@ -498,7 +508,7 @@ public sealed partial class AutoRunViewModel : ObservableObject
                         if (imported > 0 || after > 0)
                         {
                             if (shop.ImportDone)
-                                Log($"[{acc.DisplayName}] Import hoàn tất ({imported} SP mới, tổng {after} SP) cho shop '{shop.Name}'.");
+                                Log($"[{acc.DisplayName}] Import hoàn tất ({Math.Max(0, imported)} SP mới, tổng {after} SP) cho shop '{shop.Name}'.");
                             else
                                 Log($"[{acc.DisplayName}] ⚠ Import chưa đủ ({after} SP) — vẫn Update phần đã có, lần chạy sau import tiếp.");
                         }
