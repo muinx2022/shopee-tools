@@ -12,4 +12,8 @@
   <ItemGroup>
     <ProjectReference Include="..\Shopee.Core\Shopee.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Cho phép bộ test đọc thành viên `internal` của module (UpdateTargetTracker, BigSellerSaveSuccessHelper…). -->
+    <InternalsVisibleTo Include="Shopee.Workspace.Tests" />
+  </ItemGroup>
 </Project>

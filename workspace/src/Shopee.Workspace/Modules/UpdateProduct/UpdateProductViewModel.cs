@@ -300,9 +300,13 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             {
                 // "Xong" = làm ĐỦ việc (xem ShouldMarkCompleted), KHÔNG phải "runner thoát không lỗi": hết lượt/hết trang mà
                 // còn thiếu thì ghi stopped → lần chạy sau làm tiếp phần còn lại (Done đã lưu giữ nguyên).
-                var markCompleted = ShouldMarkCompleted(kind, runner.ListingLimitReached, runner.LastRunComplete);
-                if (runner.ListingLimitReached)
-                    LogA($"{prefix} ⛔ dừng {name}: shop '{s.DisplayName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).");
+                var markCompleted = ShouldMarkCompleted(kind, runner.ListingLimitReached, runner.LastRunComplete, runner.ListingLimitFromToast);
+                if (runner.ListingLimitReached && runner.ListingLimitFromToast)
+                    LogA(markCompleted
+                        ? $"{prefix} ⛔ dừng {name}: BigSeller báo toast vượt giới hạn số sản phẩm của shop '{s.DisplayName}' (đã đủ việc nên vẫn ghi xong)."
+                        : $"{prefix} ⛔ dừng {name}: BigSeller báo toast vượt giới hạn số sản phẩm của shop '{s.DisplayName}' — CHƯA đánh dấu xong, lượt sau sẽ thử lại.");
+                else if (runner.ListingLimitReached)
+                    LogA($"{prefix} ⛔ dừng {name}: shop '{s.DisplayName}' đã đạt giới hạn số sản phẩm (listing limit).");
                 else if (markCompleted)
                     LogA($"{prefix} ✔ xong {name}.");
                 else
@@ -332,18 +336,24 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         }
     }
 
-    /// <summary>Lượt chạy kết thúc KHÔNG bị hủy thì ghi trạng thái "completed" hay "stopped"? Listing limit → true
-    /// (để Auto Run chuyển sang shop kế). Import/Update → chỉ khi runner báo xong THẬT (<paramref name="runComplete"/>:
-    /// import đủ mọi item id / update đủ SP mục tiêu). Rewrite giữ như cũ (true).</summary>
-    internal static bool ShouldMarkCompleted(UpdateKind kind, bool listingLimitReached, bool runComplete)
+    /// <summary>Lượt chạy kết thúc KHÔNG bị hủy thì ghi trạng thái "completed" hay "stopped"? Listing limit từ HỘP THOẠI
+    /// (wording đã xác nhận) → true; từ TOAST (<paramref name="listingLimitFromToast"/>, câu chữ đoán) thì đi theo
+    /// <paramref name="runComplete"/> như thường → "stopped", lượt sau thử lại. Import/Update → chỉ khi runner báo xong
+    /// THẬT (import đủ mọi item id / update đủ SP mục tiêu). Rewrite giữ như cũ (true). Auto Run đi tiếp sang shop kế
+    /// bất kể trạng thái này.</summary>
+    internal static bool ShouldMarkCompleted(UpdateKind kind, bool listingLimitReached, bool runComplete, bool listingLimitFromToast = false)
     {
-        if (listingLimitReached) return true;
+        if (ListingLimitCountsAsCompleted(listingLimitReached, listingLimitFromToast)) return true;
         return kind switch
         {
             UpdateKind.Import or UpdateKind.Update => runComplete,
             _ => true,
         };
     }
+
+    /// <summary>Chạm listing limit có tính là "xong" không? Chỉ khi nguồn là hộp thoại đã xác nhận; nguồn toast thì không.</summary>
+    internal static bool ListingLimitCountsAsCompleted(bool listingLimitReached, bool listingLimitFromToast)
+        => listingLimitReached && !listingLimitFromToast;
 
     /// <summary>Dừng RIÊNG workflow update của 1 tk (các tk khác chạy tiếp). Cho nút ■ inline theo shop.</summary>
     public void StopSingle(string accountId)

@@ -1,4 +1,5 @@
 using Microsoft.Playwright;
+using Shopee.Core.BigSeller;
 
 namespace UpdateProduct;
 
@@ -187,35 +188,102 @@ internal sealed class BigSellerMaterialCenterCleaner
     // "ngó đúng khoảnh khắc" MISS (bug prod v1.0.11: kho đầy thật, toast hiện, worker vẫn import 3 attempt, không
     // pause-all). Giải: cài MutationObserver ngay khi page tạo → toast nào hiện dù 1s cũng bị ghi vào window
     // .__ssyncToastLog; C# đọc buffer sau. Toàn bộ bọc try/catch, KHÔNG side-effect ngoài window.__ssyncToastLog.
+    // Mỗi mục: t = nguyên văn, ts = Date.now() của trang lúc ghi, k = loại suy từ class ('success' | 'info' | 'loading' |
+    // 'warning' | 'error'; còn lại coi là error; nhận cả ant-message-*, ant-notification-notice-icon-*, ant-alert-*, el-message--*,
+    // el-alert--*), s = nguồn:
+    //   'm' = .ant-message-custom-content — nguồn gốc, luồng media-đầy CHỈ đọc nguồn này;
+    //   'x' = toast THẬT mở rộng cho bước Lưu: .ant-notification-notice, .el-message — được phép kích hoạt dừng shop;
+    //   'a' = chỉ khớp [role=alert] (banner, vùng báo lỗi cố định…) — ghi với k = 'alert:<loại>' để LẤY MẪU log, KHÔNG kích hoạt.
+    // 'x'/'a' không ghi trùng phần tử lồng nhau (cha đã ghi → bỏ con; 'x' bọc/nằm trong 'm', 'a' bọc/nằm trong toast thật →
+    // bỏ vì toast thật đã ghi). CAP tính RIÊNG theo từng nguồn để mục mới không đẩy mất toast media. Phần tử rỗng lúc gắn
+    // (text đổ muộn) được đọc lại MỘT lần sau ~300ms.
     private const string ToastRecorderInitScript = @"(() => {
   try {
     if (window.__ssyncToastInstalled) return;
     window.__ssyncToastInstalled = true;
     window.__ssyncToastLog = window.__ssyncToastLog || [];
     var CAP = 30;
+    var SEL_M = '.ant-message-custom-content';
+    var SEL_X = '.ant-notification-notice, .el-message';
+    var SEL_A = '[role=alert]';
+    var SEL_REAL = SEL_M + ', ' + SEL_X;
+    var SEL_XA = SEL_X + ', ' + SEL_A;
+    var SEL = SEL_REAL + ', ' + SEL_A;
+    var seenN = new WeakSet();
+    var pending = new WeakSet();
+    var has = function(el, sel) { return !!(el.closest(sel) || el.querySelector(sel)); };
+    var kindOf = function(el) {
+      try {
+        if (has(el, '.ant-message-success, .el-message--success, .ant-notification-notice-icon-success, .ant-alert-success, .el-alert--success')) return 'success';
+        if (has(el, '.ant-message-info, .el-message--info, .ant-notification-notice-icon-info, .ant-alert-info, .el-alert--info')) return 'info';
+        if (has(el, '.ant-message-loading')) return 'loading';
+        if (has(el, '.ant-message-warning, .el-message--warning, .ant-notification-notice-icon-warning, .ant-alert-warning, .el-alert--warning')) return 'warning';
+      } catch (e) {}
+      return 'error';
+    };
+    var coveredBy = function(el, sel) {
+      var p = el.parentElement;
+      while (p) {
+        p = p.closest(sel);
+        if (!p) return false;
+        if (seenN.has(p)) return true;
+        p = p.parentElement;
+      }
+      return false;
+    };
+    var push = function(entry) {
+      var log = window.__ssyncToastLog;
+      log.push(entry);
+      var n = 0, i;
+      for (i = 0; i < log.length; i++) if (log[i].s === entry.s) n++;
+      i = 0;
+      while (n > CAP && i < log.length) {
+        if (log[i].s === entry.s) { log.splice(i, 1); n--; } else i++;
+      }
+    };
+    var emit = function(el, isRetry) {
+      try {
+        var src = el.matches(SEL_M) ? 'm' : (el.matches(SEL_X) ? 'x' : 'a');
+        if (src === 'x') {
+          if (seenN.has(el) || coveredBy(el, SEL_X) || has(el, SEL_M)) return;   // 'm' đã ghi (bọc/nằm trong)
+        } else if (src === 'a') {
+          if (seenN.has(el) || coveredBy(el, SEL_XA) || has(el, SEL_REAL)) return;   // toast thật đã ghi (bọc/nằm trong)
+        }
+        var t = (el.innerText || el.textContent || '').trim();
+        if (!t) {
+          if (!isRetry && !pending.has(el)) {
+            pending.add(el);
+            setTimeout(function() { try { emit(el, true); } catch (e) {} }, 300);   // text đổ muộn: đọc lại một lần
+          }
+          return;
+        }
+        if (src !== 'm') seenN.add(el);
+        var k = kindOf(el);
+        push({ t: t, ts: Date.now(), k: src === 'a' ? 'alert:' + k : k, s: src });
+      } catch (e) {}
+    };
     var record = function(node) {
       try {
         if (!node || node.nodeType !== 1) return;
         var hits = [];
-        if (node.matches && node.matches('.ant-message-custom-content')) hits.push(node);
+        if (node.matches && node.matches(SEL)) hits.push(node);
         if (node.querySelectorAll) {
-          var found = node.querySelectorAll('.ant-message-custom-content');
+          var found = node.querySelectorAll(SEL);
           for (var i = 0; i < found.length; i++) hits.push(found[i]);
         }
-        for (var j = 0; j < hits.length; j++) {
-          var t = (hits[j].innerText || hits[j].textContent || '').trim();
-          if (!t) continue;
-          window.__ssyncToastLog.push({ t: t, ts: Date.now() });
-          while (window.__ssyncToastLog.length > CAP) window.__ssyncToastLog.shift();
-        }
+        for (var j = 0; j < hits.length; j++) emit(hits[j], false);
       } catch (e) {}
     };
     var startObserve = function() {
       try {
         var target = document.documentElement || document.body;
         if (!target) return;
-        var existing = document.querySelectorAll('.ant-message-custom-content');   // toast đã hiện trước observer
-        for (var i = 0; i < existing.length; i++) record(existing[i]);
+        var existing = document.querySelectorAll(SEL);   // toast đã hiện trước observer
+        for (var i = 0; i < existing.length; i++) {
+          var par = existing[i].parentElement;
+          if (par && par.closest(SEL)) continue;   // chỉ gốc: record() tự duyệt phần tử con → khỏi ghi 2 lần
+          record(existing[i]);
+        }
         var obs = new MutationObserver(function(muts) {
           for (var m = 0; m < muts.length; m++) {
             var added = muts[m].addedNodes;
@@ -235,11 +303,37 @@ internal sealed class BigSellerMaterialCenterCleaner
     public static Task InstallToastRecorderAsync(IBrowserContext ctx)
         => ctx.AddInitScriptAsync(ToastRecorderInitScript);
 
-    /// <summary>Đọc buffer toast đã ghi (kể cả toast đã ẩn). Lỗi / chưa cài máy ghi → mảng rỗng.</summary>
+    /// <summary>Đọc buffer toast đã ghi (kể cả toast đã ẩn) — CHỈ nguồn gốc <c>.ant-message-custom-content</c> (s == 'm'),
+    /// dành cho luồng media-đầy: máy ghi mở rộng ('x', 'a') không đổi kết quả hàm này. Lỗi / chưa cài máy ghi → mảng rỗng.</summary>
     public static async Task<string[]> ReadRecordedToastsAsync(IPage page)
     {
-        try { return await page.EvaluateAsync<string[]>("() => (window.__ssyncToastLog || []).map(x => x.t)"); }
+        try { return await page.EvaluateAsync<string[]>("() => (window.__ssyncToastLog || []).filter(x => x.s === 'm').map(x => x.t)"); }
         catch { return Array.Empty<string>(); }
+    }
+
+    /// <summary>Đọc buffer đầy đủ (mọi nguồn) kèm mốc <c>ts</c> + loại, theo thứ tự ghi. Đọc lỗi (tab đóng…) → null
+    /// (khác "không có toast nào" = mảng rỗng). Truyền qua mảng chuỗi [t, ts, k] để khỏi phụ thuộc cách bind object.</summary>
+    public static async Task<RecordedToast[]?> ReadRecordedToastEntriesAsync(IPage page)
+    {
+        try
+        {
+            var raw = await page.EvaluateAsync<string[][]>(
+                "() => (window.__ssyncToastLog || []).map(x => [String(x.t), String(x.ts), String(x.k || 'error')])");
+            var list = new List<RecordedToast>(raw.Length);
+            foreach (var r in raw)
+                if (r.Length >= 3 && long.TryParse(r[1], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var ts))
+                    list.Add(new RecordedToast(r[0], ts, r[2]));
+            return list.ToArray();
+        }
+        catch { return null; }
+    }
+
+    /// <summary>Đồng hồ của TRANG (<c>Date.now()</c>) — cùng nguồn với <c>ts</c> máy ghi, làm mốc "từ lúc bấm Lưu".
+    /// Không đọc được → null.</summary>
+    public static async Task<long?> GetPageNowAsync(IPage page)
+    {
+        try { return (long)await page.EvaluateAsync<double>("() => Date.now()"); }
+        catch { return null; }
     }
 
     // Text đã chuẩn hoá (bỏ dấu, thường) có phải toast "kho đầy" không. 2 tầng mẫu, dùng chung cho DOM sống lẫn buffer.
@@ -302,6 +396,52 @@ internal sealed class BigSellerMaterialCenterCleaner
             log("⚠ toast lỗi CHƯA nhận diện (gửi dòng log này để bổ sung bộ nhận diện media-đầy): " + string.Join(" | ", parts));
         }
         catch { }
+    }
+
+    // Toast "số sản phẩm vượt giới hạn" (BigSeller báo lúc Lưu & Publish) → trả NGUYÊN VĂN toast khớp đầu tiên, không có thì null.
+    // CHỈ đọc buffer máy ghi (không đọc DOM sống): toast tự ẩn sau ~3s nên poll của helper lưu có thể trễ, buffer vẫn giữ,
+    // và buffer có mốc ts + loại để bỏ toast cũ (trước sinceTs = lúc bấm Lưu), toast success/info/loading và mục chỉ đến từ
+    // [role=alert] (loại "alert:…", chỉ để lấy mẫu log). Nhận diện + lọc thuần ở ProductLimitToastClassifier.
+    public static async Task<string?> FindProductLimitToastAsync(IPage page, long sinceTs)
+    {
+        var toasts = await ReadRecordedToastEntriesAsync(page);
+        return toasts is null ? null : ProductLimitToastClassifier.FindFirstProductLimitToast(toasts, sinceTs);
+    }
+
+    // Bước Lưu không xác nhận được → log MỌI toast máy ghi được từ mốc bấm Lưu (kèm loại, kể cả mục [role=alert]), hoặc một
+    // dòng "máy ghi không bắt được toast nào", để lấy mẫu thật. lead là lý do thật (caller chỉ nói "hết
+    // giờ" khi đúng là hết giờ). Hai suất riêng, mỗi cái 1 lần/lane: claimContentSlot chỉ được hỏi khi CÓ nội dung toast để
+    // log (dòng "không có toast" không khóa mất suất nội dung); claimEmptySlot cho dòng "không bắt được toast nào". Đọc
+    // buffer lỗi (tab đóng…) thì im lặng và KHÔNG chiếm suất nào (chưa biết có toast hay không).
+    public static async Task DumpSaveToastsOnceAsync(IPage page, long? sinceTs, string lead, Action<string> log,
+        Func<bool> claimContentSlot, Func<bool> claimEmptySlot)
+    {
+        try
+        {
+            var all = await ReadRecordedToastEntriesAsync(page);
+            if (all is null) return;
+            LogSaveToastDump(all, sinceTs, lead, log, claimContentSlot, claimEmptySlot);
+        }
+        catch { }
+    }
+
+    // Phần thuần của DumpSaveToastsOnceAsync (không đụng trang) — tách ra để test được luật hai suất.
+    internal static void LogSaveToastDump(IReadOnlyList<RecordedToast> all, long? sinceTs, string lead, Action<string> log,
+        Func<bool> claimContentSlot, Func<bool> claimEmptySlot)
+    {
+        var since = sinceTs ?? 0;
+        var parts = all.Where(x => x.Ts >= since)
+            .Select(x => $"[{x.Kind}] {System.Text.RegularExpressions.Regex.Replace(x.Text, @"\s+", " ").Trim()}")
+            .ToList();
+        var scope = sinceTs.HasValue ? "kể từ lúc bấm Lưu" : "(không lấy được mốc bấm Lưu nên liệt kê cả buffer)";
+        if (parts.Count == 0)
+        {
+            if (!claimEmptySlot()) return;
+            log($"⚠ {lead} — máy ghi không bắt được toast nào {scope}.");
+            return;
+        }
+        if (!claimContentSlot()) return;
+        log($"⚠ {lead} — {parts.Count} toast ghi được {scope} (gửi dòng log này để bổ sung bộ nhận diện): " + string.Join(" | ", parts));
     }
 
     // Đóng popup dung-lượng (đầy HOẶC sắp hết hạn) bằng X/Cancel — KHÔNG bao giờ bấm "Expand Space". True nếu có đóng.

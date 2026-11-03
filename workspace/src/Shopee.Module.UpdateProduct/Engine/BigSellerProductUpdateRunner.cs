@@ -51,10 +51,15 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
     // dồn về HandleMediaEmergencyAsync (pause-all + dọn toàn cục) thay vì fail lẻ tẻ → SP bị "fail 2 lần → bỏ oan".
     // Reset đầu mỗi ProcessProductAsync.
     private bool _mediaFullDetected;
-    // True nếu phát hiện shop đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) → dừng ngay toàn bộ shop.
+    // True nếu phát hiện shop đã đạt giới hạn số sản phẩm (listing limit) → dừng ngay toàn bộ shop.
     private bool _listingLimitDetected;
     // Đã dump 1 toast lỗi CHƯA-nhận-diện chưa (throttle 1 lần/lane để khỏi spam khi lỗi lặp).
     private bool _errorToastDumped;
+    // Như trên nhưng RIÊNG cho bước Lưu (dump toast từ lúc bấm Lưu khi không xác nhận được) — không dùng chung
+    // _errorToastDumped để lỗi media đã dump không nuốt mất mẫu toast của bước Lưu và ngược lại. Hai cờ: NỘI DUNG toast
+    // (chỉ khóa khi đã log được toast) và dòng "máy ghi không bắt được toast nào" (suất riêng, 1 lần/lane).
+    private bool _saveToastContentDumped;
+    private bool _saveToastEmptyDumped;
     // Số SP LIÊN TIẾP (per-lane) mà import ảnh fail dù KHÔNG bắt được toast/popup đầy → ngưỡng 2 = NGHI kho đầy
     // (detection trượt) → chủ động RequestCleanup. Reset khi ảnh lên OK hoặc sau khi kho vừa được dọn (Generation đổi).
     private int _imageUploadFailStreak;
@@ -144,7 +149,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
         }
         if (_targetTracker.IsListingLimitReached)
         {
-            _log($"⛔ Shop '{_settings.ShopName}': Đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng ngay, không mở Brave.");
+            _log($"⛔ Shop '{_settings.ShopName}': Đã đạt giới hạn số sản phẩm (listing limit) — dừng ngay, không mở Brave.");
             return;
         }
 
@@ -222,7 +227,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
         {
             if (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })
             {
-                _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng ngay, bỏ qua các sản phẩm còn lại của shop.");
+                _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn số sản phẩm (listing limit) — dừng ngay, bỏ qua các sản phẩm còn lại của shop.");
                 LogSummary();
                 return;
             }
@@ -231,7 +236,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                 await WaitIfNotPausedAsync(ct).ConfigureAwait(false);
                 if (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })
                 {
-                    _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng ngay, bỏ qua các sản phẩm còn lại của shop.");
+                    _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn số sản phẩm (listing limit) — dừng ngay, bỏ qua các sản phẩm còn lại của shop.");
                     LogSummary();
                     return;
                 }
@@ -277,7 +282,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                 switch (result)
                 {
                     case "listing_limit":
-                        _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng ngay, bỏ qua các sản phẩm còn lại của shop.");
+                        _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn số sản phẩm (listing limit) — dừng ngay, bỏ qua các sản phẩm còn lại của shop.");
                         LogSummary();
                         return;
                     case "all_done":
@@ -359,7 +364,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
             }
             catch (OperationCanceledException) when (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })
             {
-                _log($"⛔ Dừng lane vì shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).");
+                _log($"⛔ Dừng lane vì shop '{_settings.ShopName}' đã đạt giới hạn số sản phẩm (listing limit).");
                 LogSummary();
                 return;
             }
@@ -667,7 +672,7 @@ internal sealed partial class BigSellerProductUpdateRunner : BigSellerBraveRunne
                 else _log("  ⚠ LineIndex=0 — update xong nhưng KHÔNG báo được lên Thống kê (dòng này sẽ thiếu trên Hub).");
                 return Task.CompletedTask;
             };
-            var ok = await ProcessProductAsync(editPage, record!, onSaved, ct).ConfigureAwait(false);
+            var ok = await ProcessProductAsync(editPage, record!, itemId, onSaved, ct).ConfigureAwait(false);
             if (!ok)
             {
                 if (_listingLimitDetected || _targetTracker is { IsListingLimitReached: true })

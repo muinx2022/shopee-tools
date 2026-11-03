@@ -114,11 +114,21 @@ internal sealed class UpdateTargetTracker
     private readonly ConcurrentDictionary<string, byte> _handledIds = new(StringComparer.Ordinal);
     private readonly Action? _onListingLimitReached;
     private volatile bool _listingLimitReached;
+    // Nguồn chốt giới hạn: hộp thoại (đã xác nhận wording) hay toast (đoán câu chữ). Hộp thoại thắng nếu có cả hai.
+    private volatile bool _limitByDialog;
+    private volatile bool _limitByToast;
+    // Item id các SP KHÁC NHAU đã nhận toast nghi vượt giới hạn trong lượt này (thread-safe, mọi lane dùng chung).
+    private readonly ConcurrentDictionary<string, byte> _limitToastIds = new(StringComparer.Ordinal);
+
+    /// <summary>Số SP KHÁC NHAU cùng nhận toast nghi vượt giới hạn thì mới chốt dừng shop (1 toast khớp nhầm ở 1 SP không đủ).</summary>
+    public const int ListingLimitToastThreshold = 2;
 
     public int TargetCount { get; }
     public int CompletedCount => _completedIds.Count;
     public int HandledCount => _handledIds.Count;
     public bool IsListingLimitReached => _listingLimitReached;
+    /// <summary>True nếu giới hạn CHỈ được chốt bằng toast (chưa có hộp thoại xác nhận) — caller không coi là "xong".</summary>
+    public bool IsListingLimitFromToast => _limitByToast && !_limitByDialog;
     public bool IsAllCompleted => TargetCount > 0 && _completedIds.Count >= TargetCount;
     public bool IsAllHandled => TargetCount > 0 && _handledIds.Count >= TargetCount;
 
@@ -157,8 +167,24 @@ internal sealed class UpdateTargetTracker
         _handledIds.TryAdd(itemId, 0);
     }
 
-    public void MarkListingLimitReached()
+    /// <summary>Ghi nhận SP <paramref name="itemId"/> vừa nhận toast nghi vượt giới hạn. Chỉ khi đủ
+    /// <see cref="ListingLimitToastThreshold"/> item id KHÁC NHAU mới chốt giới hạn (nguồn toast); cùng một item id lặp lại
+    /// (thử lại, lane khác mở lại SP đó) chỉ tính MỘT lần. item id rỗng/null không được tính. Thread-safe.
+    /// Trả (số SP khác nhau đã ghi nhận, đã chốt chưa).</summary>
+    public (int Distinct, bool Decided) RecordProductLimitToast(string? itemId)
     {
+        if (!string.IsNullOrEmpty(itemId)) _limitToastIds.TryAdd(itemId, 0);
+        var distinct = _limitToastIds.Count;
+        var decided = distinct >= ListingLimitToastThreshold;
+        if (decided) MarkListingLimitReached(fromToast: true);
+        return (distinct, decided);
+    }
+
+    /// <param name="fromToast">True khi chốt từ toast BigSeller (câu chữ đoán). Mặc định = từ hộp thoại đã xác nhận.</param>
+    public void MarkListingLimitReached(bool fromToast = false)
+    {
+        // Ghi nguồn TRƯỚC khi xét "đã chốt" → lane đến sau bằng hộp thoại vẫn nâng nguồn lên "đã xác nhận".
+        if (fromToast) _limitByToast = true; else _limitByDialog = true;
         if (_listingLimitReached) return;
         _listingLimitReached = true;
         try { _onListingLimitReached?.Invoke(); } catch { }

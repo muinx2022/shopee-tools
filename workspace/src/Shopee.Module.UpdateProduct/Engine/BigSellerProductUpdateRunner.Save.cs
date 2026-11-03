@@ -6,7 +6,7 @@ namespace UpdateProduct;
 internal sealed partial class BigSellerProductUpdateRunner
 {
     // ── [12.2] save ──
-    private async Task<bool> SaveWithImageRetryAsync(IPage page, string? imagePath, int maxAttempts, Func<Task>? onSaved, CancellationToken ct)
+    private async Task<bool> SaveWithImageRetryAsync(IPage page, string? imagePath, int maxAttempts, string? itemId, Func<Task>? onSaved, CancellationToken ct)
     {
         // Tab đóng TRƯỚC khi kịp submit save = chưa lưu gì → KHÔNG được báo dòng oan (đó là thất bại thật).
         if (page.IsClosed) { _log("  ↳ Lưu: tab đã đóng trước khi kịp bấm Lưu → coi là CHƯA lưu (không báo dòng oan)."); return false; }
@@ -67,6 +67,10 @@ internal sealed partial class BigSellerProductUpdateRunner
                     try { await opt.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 3000 }); } catch { /* chờ option best-effort — nhánh dưới tự fallback nút thường */ }
                 }
 
+                // Mốc "từ lúc bấm Lưu" theo đồng hồ của TRANG (cùng nguồn ts máy ghi toast): toast ghi trước mốc này là toast
+                // cũ, không được dừng shop. Không lấy được → bỏ qua kiểm tra toast lượt này (null).
+                var saveClickTs = await BigSellerMaterialCenterCleaner.GetPageNowAsync(page);
+
                 if (await opt.IsVisibleAsync())
                 {
                     _log("  ↳ Lưu: bấm option 'Save & Publish' (dropdown).");
@@ -109,16 +113,45 @@ internal sealed partial class BigSellerProductUpdateRunner
                 }
 
                 string? publishFailReason = null;
-                if (await BigSellerSaveSuccessHelper.ConfirmSavedThenCloseAsync(page, _context!, 60000, _log, DelayAsync, onSaved, ct, r => publishFailReason = r)) return true;
+                var productLimitToast = false;
+                var saveTimedOut = false;
+                // Toast "số sản phẩm vượt giới hạn": CHỈ chốt listing limit khi đủ ngưỡng SP KHÁC NHAU nhận toast (tracker đếm
+                // theo item id, mọi lane chung) — 1 toast khớp nhầm ở 1 SP không được dừng cả shop. Nguồn = toast (câu chữ
+                // đoán → shop sẽ ghi stopped chứ không completed). Chưa đủ ngưỡng (hoặc không có tracker) thì _listingLimitDetected
+                // KHÔNG bật; vẫn return false ngay, không thử lượt Lưu tiếp → SP đi đường fail thường (fail 2 lần thì bỏ qua).
+                if (await BigSellerSaveSuccessHelper.ConfirmSavedThenCloseAsync(page, _context!, 60000, _log, DelayAsync, onSaved, ct, r => publishFailReason = r,
+                        toastText =>
+                        {
+                            productLimitToast = true;
+                            var (distinct, decided) = _targetTracker?.RecordProductLimitToast(itemId) ?? (0, false);
+                            if (decided)
+                            {
+                                _listingLimitDetected = true;
+                                _log($"⛔ Shop '{_settings.ShopName}': toast BigSeller nghi vượt giới hạn số sản phẩm \"{toastText}\" — {distinct}/{UpdateTargetTracker.ListingLimitToastThreshold} SP khác nhau, đủ ngưỡng → dừng update shop này (nguồn toast, chưa xác nhận câu chữ).");
+                            }
+                            else
+                                _log($"⚠ Toast nghi vượt giới hạn số sản phẩm \"{toastText}\" (SP {itemId}) — {distinct}/{UpdateTargetTracker.ListingLimitToastThreshold} SP khác nhau, chưa đủ ngưỡng dừng shop; SP này đi đường fail thường, không thử lượt Lưu tiếp.");
+                        }, saveClickTs, () => saveTimedOut = true)) return true;
+                if (productLimitToast) return false;
 
                 var fatalModal = publishFailReason ?? await BigSellerSaveSuccessHelper.TryDetectPublishFailureDialogAsync(page);
                 if (BigSellerSaveSuccessHelper.IsListingLimitFailure(fatalModal))
                 {
                     _listingLimitDetected = true;
-                    _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng update shop này.");
+                    _log($"⛔ Shop '{_settings.ShopName}' đã đạt giới hạn số sản phẩm (listing limit) — dừng update shop này.");
                     _targetTracker?.MarkListingLimitReached();
                     return false;
                 }
+                // Không xác nhận được lưu → log mọi toast ghi được từ lúc bấm Lưu để lấy mẫu thật bổ sung bộ nhận diện. Lời mở đầu
+                // theo đúng lý do: "hết giờ" CHỈ khi helper báo hết giờ; modal lỗi khác thì nói là modal; còn lại (tab/context
+                // đóng) không dump. Hai cờ riêng với _errorToastDumped của luồng media: suất NỘI DUNG chỉ khóa khi đã log được
+                // toast; dòng "không bắt được toast nào" có suất riêng (1 lần/lane) để không chiếm mất suất nội dung.
+                var dumpLead = saveTimedOut ? "Lưu hết giờ, không xác nhận được"
+                    : fatalModal is not null ? "Lưu thất bại (modal lỗi, không phải giới hạn số SP)" : null;
+                if (dumpLead is not null)
+                    await BigSellerMaterialCenterCleaner.DumpSaveToastsOnceAsync(page, saveClickTs, dumpLead, _log,
+                        () => { if (_saveToastContentDumped) return false; _saveToastContentDumped = true; return true; },
+                        () => { if (_saveToastEmptyDumped) return false; _saveToastEmptyDumped = true; return true; });
                 await DismissBlockingModalAsync(page);
                 await CloseVisibleAntModalAsync(page, 2000);
             }

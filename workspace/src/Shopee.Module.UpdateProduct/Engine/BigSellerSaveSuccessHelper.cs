@@ -46,12 +46,22 @@ internal static class BigSellerSaveSuccessHelper
     /// gọi <paramref name="onSuccess"/> ĐÚNG lúc đó. Trả true = đã lưu chắc chắn (onSuccess được gọi TỐI ĐA 1 lần);
     /// trả false = không xác nhận được (KHÔNG gọi onSuccess) — tuyệt đối không báo thành công oan, vì báo oan thì
     /// dòng sheet bị đánh dấu xong trên Hub trong khi SP chưa update → auto-dispatch bỏ sót SP.
+    /// <paramref name="onProductLimitToast"/> + <paramref name="toastSinceTs"/> (tùy chọn, phải có CẢ HAI): mỗi nhịp poll, SAU các
+    /// tín hiệu thành công (1)(2)(3) và SAU hộp thoại lỗi (4), xét buffer máy ghi xem có toast "số sản phẩm vượt giới hạn"
+    /// (chỉ toast thật, không phải <c>[role=alert]</c>) xuất hiện từ mốc <paramref name="toastSinceTs"/> (<c>Date.now()</c> của
+    /// trang ngay trước khi bấm Lưu) không; khớp → gọi callback với nguyên văn toast (callback tự log) + trả false ngay (không
+    /// chờ hết giờ). Thành công luôn thắng toast, hộp thoại lỗi thắng toast; toast cũ (trước mốc) bị bỏ. Thiếu mốc thì bỏ qua
+    /// kiểm tra toast. <paramref name="onTimeout"/> (tùy chọn): gọi ĐÚNG khi trả false vì hết giờ (không phải vì modal lỗi,
+    /// toast hay context chết) để caller lời log đúng lý do.
     /// </summary>
     public static async Task<bool> ConfirmSavedThenCloseAsync(
         IPage editPage, IBrowserContext context, int timeoutMs,
         Action<string> log, Func<int, CancellationToken, Task> delay,
         Func<Task>? onSuccess, CancellationToken ct,
-        Action<string>? onPublishFailure = null)
+        Action<string>? onPublishFailure = null,
+        Action<string>? onProductLimitToast = null,
+        long? toastSinceTs = null,
+        Action? onTimeout = null)
     {
         var deadline = timeoutMs;
         const int step = 250;
@@ -89,13 +99,23 @@ internal static class BigSellerSaveSuccessHelper
                 }
 
                 // (4) Modal báo "Tải lên thất bại" (vd: The shop has reached its listing limit) → thoát sớm ngay,
-                //     KHÔNG chờ 60s timeout vô ích.
+                //     KHÔNG chờ 60s timeout vô ích. (3b) Toast "số sản phẩm vượt giới hạn" — SAU mọi tín hiệu thành công
+                //     (toast cũ/lạc không được thắng một lần lưu đã thành công) và SAU hộp thoại lỗi (hộp thoại là nguồn đã
+                //     xác nhận câu chữ, toast chỉ là đoán → hộp thoại thắng). Buffer máy ghi giữ cả toast đã ẩn nên poll trễ vẫn
+                //     bắt được. Thứ tự do PickFailureSignal quyết.
                 var failReason = await TryDetectPublishFailureDialogAsync(editPage);
-                if (failReason is not null)
+                string? limitToast = null;
+                if (onProductLimitToast != null && toastSinceTs is { } since)
+                    limitToast = await BigSellerMaterialCenterCleaner.FindProductLimitToastAsync(editPage, since);
+                switch (PickFailureSignal(failReason, limitToast))
                 {
-                    log($"⛔ BigSeller báo tải lên thất bại (modal): {failReason}");
-                    onPublishFailure?.Invoke(failReason);
-                    return false;
+                    case SaveFailureSignal.Dialog:
+                        log($"⛔ BigSeller báo tải lên thất bại (modal): {failReason}");
+                        onPublishFailure?.Invoke(failReason!);
+                        return false;
+                    case SaveFailureSignal.Toast:
+                        onProductLimitToast!(limitToast!);
+                        return false;
                 }
             }
             catch (Exception ex) when ((ex.Message ?? "").Contains("closed", StringComparison.OrdinalIgnoreCase)
@@ -108,9 +128,19 @@ internal static class BigSellerSaveSuccessHelper
             deadline -= step;
         }
 
+        onTimeout?.Invoke();
         await DumpVisibleDialogsAsync(editPage, log);
         return false;
     }
+
+    /// <summary>Tín hiệu THẤT BẠI của một nhịp poll (sau khi các tín hiệu thành công đều không có).</summary>
+    internal enum SaveFailureSignal { None, Dialog, Toast }
+
+    /// <summary>Hộp thoại lỗi thắng toast (hộp thoại đã xác nhận câu chữ, toast chỉ là đoán). Thuần, để test được thứ tự.</summary>
+    internal static SaveFailureSignal PickFailureSignal(string? dialogFailReason, string? limitToast)
+        => dialogFailReason is not null ? SaveFailureSignal.Dialog
+         : limitToast is not null ? SaveFailureSignal.Toast
+         : SaveFailureSignal.None;
 
     // Brave sập → phải trả false (KHÔNG báo thành công oan). Dùng Browser.IsConnected (trạng thái kết nối CDP,
     // cập nhật tức thời) thay vì context.Pages — Pages là cache phía client, browser chết vẫn đọc được bình

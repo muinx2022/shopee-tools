@@ -42,8 +42,12 @@ public sealed class UpdateProductRunner
     /// <summary>(lane 0-based, dòng Excel) — lane vừa mở dòng này để sửa.</summary>
     public event Action<int, int>? RowOpening;
 
-    /// <summary>True nếu trong lượt chạy Update vừa rồi, shop đã chạm giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).</summary>
+    /// <summary>True nếu trong lượt chạy Update vừa rồi, shop đã chạm giới hạn số sản phẩm (listing limit).</summary>
     public bool ListingLimitReached { get; private set; }
+
+    /// <summary>True nếu <see cref="ListingLimitReached"/> CHỈ do toast BigSeller (câu chữ đoán, chưa có hộp thoại xác nhận).
+    /// Caller không được coi shop là "xong" ở trường hợp này. Reset đầu mỗi lượt cùng <see cref="ListingLimitReached"/>.</summary>
+    public bool ListingLimitFromToast { get; private set; }
 
     /// <summary>True nếu lượt Import/Update vừa rồi XONG THẬT: Import = mọi item id trong khoảng dòng đã import;
     /// Update = mọi SP mục tiêu đã update. Hết lượt/hết trang mà còn thiếu thì false → caller KHÔNG được ghi "xong".
@@ -168,6 +172,7 @@ public sealed class UpdateProductRunner
     public async Task RunUpdateAsync(UpdateProductContext ctx, CancellationToken ct)
     {
         ListingLimitReached = false;
+        ListingLimitFromToast = false;
         LastRunComplete = false;
         var wf = BuildWorkflow(ctx);
         var n = Math.Clamp(ctx.UpdateMaxProcess, 1, 10);
@@ -242,7 +247,7 @@ public sealed class UpdateProductRunner
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested && targetTracker.IsListingLimitReached)
         {
-            // Dừng chủ động toàn bộ các lane do shop đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit).
+            // Dừng chủ động toàn bộ các lane do shop đã đạt giới hạn số sản phẩm (listing limit).
         }
         finally
         {
@@ -252,7 +257,8 @@ public sealed class UpdateProductRunner
             if (targetTracker.IsListingLimitReached)
             {
                 ListingLimitReached = true;
-                Log?.Invoke($"⛔ Shop \"{wf.ShopName}\": Đã đạt giới hạn đăng sản phẩm tối đa trên Shopee (listing limit) — dừng update shop này (đã update {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP).");
+                ListingLimitFromToast = targetTracker.IsListingLimitFromToast;
+                Log?.Invoke($"⛔ Shop \"{wf.ShopName}\": Đã đạt giới hạn số sản phẩm (listing limit{(ListingLimitFromToast ? ", theo toast BigSeller" : "")}) — dừng update shop này (đã update {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP).");
             }
         }
     }

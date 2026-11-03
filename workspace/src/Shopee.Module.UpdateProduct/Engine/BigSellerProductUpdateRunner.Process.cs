@@ -8,7 +8,7 @@ namespace UpdateProduct;
 internal sealed partial class BigSellerProductUpdateRunner
 {
     // ── process one product ──
-    private async Task<bool> ProcessProductAsync(IPage page, WorkbookRecord rec, Func<Task>? onSaved, CancellationToken ct)
+    private async Task<bool> ProcessProductAsync(IPage page, WorkbookRecord rec, string? itemId, Func<Task>? onSaved, CancellationToken ct)
     {
         _lastProcessTransient = false;
         _mediaFullDetected = false;   // reset cờ kho-đầy cho SP này (upload ảnh/video/save sẽ bật khi gặp tín hiệu đầy)
@@ -211,7 +211,7 @@ internal sealed partial class BigSellerProductUpdateRunner
 
         await StepAsync("Lưu sản phẩm");
         // [14] save
-        return await SaveWithImageRetryAsync(page, imagePath, 3, onSaved, ct).ConfigureAwait(false);
+        return await SaveWithImageRetryAsync(page, imagePath, 3, itemId, onSaved, ct).ConfigureAwait(false);
     }
 
     private async Task<bool> SelectShippingChannelAsync(IPage page, string channelName, CancellationToken ct)
