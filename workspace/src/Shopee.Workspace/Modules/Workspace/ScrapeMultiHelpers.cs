@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using Shopee.Core.BigSeller;
+using Shopee.Core.Scrape;
 
 namespace Shopee.Workspace.Modules.Workspace;
 
@@ -89,4 +90,48 @@ internal static class ScrapeMultiSessionDecision
         BigSellerSessionProbe.Unreachable => ScrapeMultiSyncAction.Book,
         _ => ScrapeMultiSyncAction.MarkFailed,
     };
+}
+
+/// <summary>1 URL cần cào lại JSON + các mục sổ lỗi (mỗi mục = 1 tk + 1 dòng) đang chờ JSON đó.</summary>
+internal sealed record RescrapeUrlGroup(string Url, IReadOnlyList<FailedSyncItem> Items)
+{
+    /// <summary>Các tk có mục trong nhóm (không trùng) — ĐÚNG những tk được sync lại, không tk nào khác.</summary>
+    public IReadOnlyList<string> AccountIds =>
+        Items.Select(i => i.AccountId).Distinct(StringComparer.Ordinal).ToList();
+}
+
+/// <summary>Luật thuần của "Cào lại SP lỗi": mục sổ lỗi có JsonData rỗng (lúc cào không lấy được JSON nên gửi "{}"
+/// → BigSeller luôn từ chối) cần lấy lại JSON từ Shopee rồi mới sync được.</summary>
+internal static class ScrapeMultiRescrape
+{
+    /// <summary>JsonData rỗng = null/trắng/"{}" (bỏ khoảng trắng). Mục này gửi lại cũng vô ích.</summary>
+    public static bool IsEmptyJson(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return true;
+        return json.Where(c => !char.IsWhiteSpace(c)).SequenceEqual("{}");
+    }
+
+    public static IReadOnlyList<FailedSyncItem> FilterEmpty(IEnumerable<FailedSyncItem> items) =>
+        items.Where(i => IsEmptyJson(i.JsonData)).ToList();
+
+    /// <summary>Gom mục rỗng theo URL (không phân biệt hoa/thường, bỏ khoảng trắng đầu/cuối) để mỗi URL chỉ lấy
+    /// JSON 1 lần; giữ thứ tự xuất hiện đầu tiên. Mục không có URL bị bỏ (không có gì để mở).</summary>
+    public static IReadOnlyList<RescrapeUrlGroup> GroupByUrl(IEnumerable<FailedSyncItem> items)
+    {
+        var order = new List<string>();
+        var map = new Dictionary<string, (string Url, List<FailedSyncItem> Items)>(StringComparer.OrdinalIgnoreCase);
+        foreach (var item in FilterEmpty(items))
+        {
+            var url = (item.Url ?? "").Trim();
+            if (url.Length == 0) continue;
+            if (!map.TryGetValue(url, out var g))
+            {
+                g = (url, new List<FailedSyncItem>());
+                map[url] = g;
+                order.Add(url);
+            }
+            g.Items.Add(item);
+        }
+        return order.Select(u => new RescrapeUrlGroup(map[u].Url, map[u].Items)).ToList();
+    }
 }
