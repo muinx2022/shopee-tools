@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using OpenMultiBraveLauncherV3;
 using Shopee.Core.Browser;
 using Shopee.Core.Proxy;
+using Shopee.Core.Scrape;
 
 namespace Shopee.Modules.MultiBrave;
 
@@ -116,8 +117,8 @@ public sealed class ScrapeRunner
         // CTS phạm vi 1 job tk BigSeller: nếu 1 worker thấy "log in first" (mất phiên) → cancel để DỪNG
         // mọi worker cùng tk (vá/retry vô nghĩa khi token đã chết). Linked với ct ngoài (nút Dừng).
         using var jobCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        // Đếm login-first LIÊN TIẾP toàn job (reset khi có chunk chạy được) — chỉ dừng job khi vượt ngưỡng.
-        var needLoginStreak = new int[1];
+        // Đếm login-first LIÊN TIẾP toàn job (CHỈ reset khi một dòng thật sự cào xong) — dừng job khi chạm ngưỡng.
+        var needLoginStreak = new NeedLoginStreak(MaxNeedLoginBeforeStop);
         // Lý do DỪNG JOB vì lỗi hạ tầng TOÀN CỤC (key proxy chết). Worker gặp trước ghi vào đây (một lần) rồi
         // cancel jobCts để mọi worker khác dừng theo; sau khi tất cả dừng, runner báo ra ngoài qua JobFatal.
         var jobFatal = new string?[1];
@@ -146,10 +147,10 @@ public sealed class ScrapeRunner
     // (cứu phần còn lại của khối). 1-2 lần có thể do captcha/proxy nhất thời nên vẫn retry.
     private const int MaxStallRetries = 3;
 
-    // "Log in BigSeller first" từ 1 instance KHÔNG chắc tk BigSeller mất phiên TOÀN CỤC — thường chỉ 1
-    // proxy bị BigSeller từ chối (token vẫn sống ở IP khác; kiểm chứng: đóng mẻ xong mở BigSeller tay vẫn
-    // còn đăng nhập). CHỈ dừng cả job khi login-first xảy ra LIÊN TIẾP tới ngưỡng này (token thật sự chết →
-    // re-import cũng vô ích). Dưới ngưỡng: trả phần dở thành vá + thử lại bằng tk/proxy khác, KHÔNG nuke mẻ.
+    // "Log in BigSeller first" từ 1 instance có thể là glitch lẻ (1 proxy/lần mở bị từ chối) nên KHÔNG dừng
+    // job ngay. Dừng cả job khi login-first xảy ra LIÊN TIẾP tới ngưỡng này mà KHÔNG dòng nào cào xong xen
+    // giữa (server đã đá phiên: cookie vẫn nằm trong browser nhưng vô hiệu → re-import cũng vô ích). Dưới
+    // ngưỡng: trả phần dở thành vá + thử lại bằng tk Shopee khác, KHÔNG nuke mẻ. Reset duy nhất: có dòng xong thật.
     private const int MaxNeedLoginBeforeStop = 3;
 
     // Giãn khởi động giữa các lane: phóng tất cả Brave cùng lúc (thundering herd) làm nghẽn CPU,
@@ -166,7 +167,7 @@ public sealed class ScrapeRunner
 
     private async Task AutoWorkerAsync(
         int slot, WorkAllocator work, IScrapeAccountPool pool, string? cookieFile,
-        CancellationTokenSource jobCts, int[] needLoginStreak, string?[] jobFatal)
+        CancellationTokenSource jobCts, NeedLoginStreak needLoginStreak, string?[] jobFatal)
     {
         var ct = jobCts.Token;
         var key = "P" + slot;
@@ -211,13 +212,10 @@ public sealed class ScrapeRunner
 
                     if (ct.IsCancellationRequested) { pool.Release(spec); break; }
 
-                    // Có chunk KHÔNG báo login-first → token tk BigSeller vẫn dùng được → reset chuỗi đếm.
-                    if (!res.NeedLogin) Interlocked.Exchange(ref needLoginStreak[0], 0);
-
-                    // "Log in first" từ 1 instance: thường chỉ 1 proxy bị BigSeller TỪ CHỐI, token tk BigSeller
-                    // VẪN sống (kiểm chứng: đóng mẻ xong mở BigSeller tay vẫn còn đăng nhập). Nên KHÔNG nuke cả
-                    // job ngay — trả phần dở thành vá + thử lại bằng tk/proxy khác (mở lại sẽ re-import token còn
-                    // sống + lấy proxy mới). CHỈ dừng khi login-first LIÊN TIẾP tới ngưỡng (token thật sự chết).
+                    // "Log in first" từ 1 instance: có thể chỉ là glitch lẻ nên KHÔNG nuke cả job ngay — trả phần
+                    // dở thành vá + thử lại bằng tk Shopee khác. Lỗi này KHÔNG do tk Shopee → trả tk về kho
+                    // (Release), không cooldown. Chuỗi chỉ reset khi có dòng cào xong thật; chunk lỗi proxy /
+                    // không cào được gì KHÔNG reset. CHỈ dừng khi login-first LIÊN TIẾP tới ngưỡng (phiên chết thật).
                     if (res.NeedLogin)
                     {
                         var lastDoneNl = res.LastCompletedRow;
@@ -225,28 +223,17 @@ public sealed class ScrapeRunner
                         var nlFrom = Math.Max(from, lastDoneNl + 1);
                         if (nlFrom <= to) work.AddPatch(nlFrom, to, stall);
 
-                        // VERIFY "BigSeller out thật?": nếu tk khác TRONG KHUNG vẫn còn muc_token sống →
-                        // account CÒN sống, chỉ tk này glitch → cho nghỉ, vá bằng tk khác, KHÔNG dừng job.
-                        if (await AnySiblingHasBigSellerAuthAsync(key).ConfigureAwait(false))
+                        // Chống nhiễu 1 nhịp: xác nhận qua ngưỡng liên tiếp.
+                        pool.Release(spec);   // tk Shopee không lỗi → về kho
+                        if (needLoginStreak.RecordNeedLogin(out var streak))
                         {
-                            Interlocked.Exchange(ref needLoginStreak[0], 0);
-                            pool.Cooldown(spec);
-                            InstanceLog?.Invoke(key, $"⚠ {res.Reason} — nhưng tk khác trong khung CÒN phiên BigSeller sống → chỉ tk này lỗi, VÁ bằng tk khác (KHÔNG dừng job).");
-                            continue;
-                        }
-                        // Không tk nào trong khung còn phiên → nghi OUT THẬT; xác nhận qua ngưỡng liên tiếp (chống nhiễu 1 nhịp).
-                        var streak = Interlocked.Increment(ref needLoginStreak[0]);
-                        if (streak >= MaxNeedLoginBeforeStop)
-                        {
-                            pool.Release(spec);
-                            InstanceLog?.Invoke(key, $"⛔ {res.Reason} — KHÔNG tk nào trong khung còn phiên ({streak} lần) → BigSeller OUT thật → DỪNG job, cần đăng nhập lại.");
+                            InstanceLog?.Invoke(key, $"⛔ {res.Reason} — login-first {streak} lần liên tiếp, chưa dòng nào cào xong → phiên BigSeller bị đá → DỪNG job, cần đăng nhập lại.");
                             BigSellerNeedLogin?.Invoke(res.Reason);
                             try { jobCts.Cancel(); } catch { }
                             break;
                         }
-                        pool.Cooldown(spec);   // cho tk Shopee nghỉ; phần dở vá bằng tk khác
                         InstanceLog?.Invoke(key,
-                            $"⚠ {res.Reason} (lần {streak}/{MaxNeedLoginBeforeStop}, chưa thấy phiên sống) — thử lại bằng tk khác.");
+                            $"⚠ {res.Reason} (lần {streak}/{MaxNeedLoginBeforeStop}, chưa có dòng nào xong) — thử lại bằng tk khác.");
                         continue;
                     }
 
@@ -329,20 +316,6 @@ public sealed class ScrapeRunner
         catch (Exception ex) { InstanceLog?.Invoke(key, "✘ " + ex.Message); }
     }
 
-    /// <summary>Có process ANH EM nào (khác <paramref name="exceptKey"/>) đang chạy mà browser còn muc_token
-    /// BigSeller sống không. true → BigSeller CÒN sống (process báo login-first chỉ glitch lẻ); false → không
-    /// ai còn phiên (nghi account OUT thật).</summary>
-    private async Task<bool> AnySiblingHasBigSellerAuthAsync(string exceptKey)
-    {
-        foreach (var kv in _sessions)
-        {
-            if (kv.Key == exceptKey) continue;
-            try { if (await kv.Value.HasBigSellerAuthAsync().ConfigureAwait(false)) return true; }
-            catch { }
-        }
-        return false;
-    }
-
     /// <summary>Chuỗi hiển thị cột "Trạng thái" (cột 3) theo TỪNG DÒNG: "Đang mở dòng X…" / "Đang tải video
     /// dòng X…" thay cho "Đang chạy — proxy". Đọc pha + dòng hiện tại do engine ghi vào cfg mỗi nhịp.</summary>
     private static string RowStatus(InstanceConfig cfg)
@@ -377,7 +350,7 @@ public sealed class ScrapeRunner
     /// cfg.RunnerPhase/LastRunnerMessage sau khi xong để biết captcha/proxy lỗi.</summary>
     private async Task<ChunkResult> RunChunkAsync(
         ScrapeAccountSpec spec, string key, int from, int to, string? cookieFile, CancellationToken ct,
-        int[]? needLoginStreak = null)
+        NeedLoginStreak? needLoginStreak = null)
     {
         BraveInstanceSession? session = null;
         var cfg = BuildConfig(spec, from, to);
@@ -451,10 +424,10 @@ public sealed class ScrapeRunner
                     var lo = reportedRow + 1;
                     reportedRow = lc;
                     RowsCompleted?.Invoke(lo, lc);
-                    // Cào được 1 DÒNG = tk BigSeller CÒN SỐNG → reset chuỗi đếm login-first. Nhờ vậy vài
-                    // instance proxy xấu báo login-first KHÔNG dồn bộ đếm tới ngưỡng khi các instance khác
-                    // vẫn cào ngon → job KHÔNG tự đóng. Chỉ dừng nếu THỰC SỰ không cào được gì + login-first dồn.
-                    if (needLoginStreak is not null) Interlocked.Exchange(ref needLoginStreak[0], 0);
+                    // Cào được 1 DÒNG = phiên BigSeller CÒN SỐNG → reset chuỗi đếm login-first (đây là reset DUY NHẤT).
+                    // Nhờ vậy vài instance báo login-first lẻ KHÔNG dồn bộ đếm tới ngưỡng khi các instance khác vẫn
+                    // cào ngon. Chỉ dừng nếu login-first dồn mà KHÔNG dòng nào xong.
+                    needLoginStreak?.RecordRowCompleted();
                 }
             };
             if (!string.IsNullOrWhiteSpace(cookieFile)) session.SetBigSellerCookieFile(cookieFile);

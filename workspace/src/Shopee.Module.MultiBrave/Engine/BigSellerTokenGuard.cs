@@ -33,16 +33,6 @@ internal sealed class BigSellerTokenGuard(
     // (Muốn bật lại proxy riêng theo tk: dựng lại bản gọi BigSellerProxyResolver.ResolveServerAsync + PAC
     //  split-tunnel — xem lịch sử git trước đợt dọn 2026-08-06.)
 
-    /// <summary>Browser của instance này HIỆN có muc_token BigSeller sống không (qua CDP). Dùng để verify
-    /// "BigSeller có out thật không": nếu 1 process báo login-first mà process ANH EM cùng khung vẫn còn
-    /// token sống → account CÒN sống (chỉ process kia glitch), KHÔNG dừng cả job.</summary>
-    public async Task<bool> HasAuthAsync()
-    {
-        if (!isRunning()) return false;
-        try { return await BigSellerCookieEngine.HasAuthCookieInBrowserAsync(cdpPort).ConfigureAwait(false); }
-        catch { return false; }
-    }
-
     /// <summary>Kiểm token trong browser KHÔNG kèm guard/nuốt lỗi — dùng ở nhánh mở lại profile sau lỗi
     /// extension, nơi caller cần biết chính xác còn token hay không để quyết định có nạp đè hay không.</summary>
     public Task<bool> BrowserHasAuthCookieAsync() =>

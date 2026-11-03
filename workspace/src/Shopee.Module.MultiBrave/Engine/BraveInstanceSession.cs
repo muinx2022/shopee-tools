@@ -91,9 +91,6 @@ internal sealed partial class BraveInstanceSession : IDisposable, ISessionMonito
     // ── Cookie BigSeller (uỷ quyền cho BigSellerTokenGuard) ────────────────────────────────────────
     public void SetBigSellerCookieFile(string? cookieFile) => _bigSeller.SetCookieFile(cookieFile);
 
-    /// <summary>Browser của instance này HIỆN có muc_token BigSeller sống không (qua CDP).</summary>
-    public Task<bool> HasBigSellerAuthAsync() => _bigSeller.HasAuthAsync();
-
     // ── Đăng nhập Shopee (uỷ quyền cho ShopeeSessionBootstrapper) ──────────────────────────────────
     /// <summary>Thư mục profile (Edge) ĐÃ đăng nhập Shopee của tk này — để import nguyên session (SPC_ST/
     /// SPC_EC…) sang Brave, khỏi điền form. Trống/không hợp lệ → bỏ qua, login thường.</summary>
