@@ -195,27 +195,16 @@ public sealed class ImportScanPolicyTests
         Assert.False(ImportScanPolicy.IsPageConfirmed(true, Array.Empty<string>(), 3, new[] { "old.jpg" }));
     }
 
-    // ── Sau một lô: tải lại Crawl List hay bấm Next ─────────────────────────────────────────
+    // ── Sau một lô trên tab «Tất cả»: luôn Next ────────────────────────────────────────────
 
     [Fact]
-    public void NextStepAfterBatch_CommittedBatchOnUnclaimedTab_ReloadsFirstPage()
+    public void NextStepAfterBatch_AlwaysClicksNext_OnAllTabPolicy()
     {
-        Assert.Equal(AfterBatchStep.ReloadFirstPage, ImportScanPolicy.NextStepAfterBatch(batchCommitted: true, unclaimedTab: true));
-    }
-
-    [Fact]
-    public void NextStepAfterBatch_FailedBatchOnUnclaimedTab_ClicksNext()
-    {
-        // Lô lỗi thường (chưa gửi): không SP nào rời tab, tải lại sẽ quay về đúng lô đó và lặp mãi → Next như trước.
-        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(batchCommitted: false, unclaimedTab: true));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void NextStepAfterBatch_ClaimedTab_AlwaysClicksNext(bool committed)
-    {
-        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(committed, unclaimedTab: false));
+        // SP import xong vẫn nằm trong «Tất cả» → không RecheckSamePage.
+        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(batchCommitted: true, samePageRechecks: 0));
+        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(true, ImportScanPolicy.MaxSamePageRechecks - 1));
+        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(batchCommitted: false, samePageRechecks: 0));
+        Assert.Equal(AfterBatchStep.ClickNext, ImportScanPolicy.NextStepAfterBatch(true, ImportScanPolicy.MaxSamePageRechecks));
     }
 
     // ── "Đã import đủ" phải kèm Clear đã chốt ──────────────────────────────────────────────

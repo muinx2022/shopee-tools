@@ -30,6 +30,7 @@ public sealed class UpdateProductUiStore
         lock (_lock)
         {
             if (!File.Exists(FilePath)) return;   // chưa có file → GIỮ bản đang có (khác file hỏng → về mặc định)
+            // JSON cũ có thể còn field ô Import nhiều shop (đã gỡ) → bỏ qua (không map property → không crash).
             Current = JsonAtomicFile.TryLoad<UpdateProductUiSettings>(FilePath) ?? new();
         }
     }

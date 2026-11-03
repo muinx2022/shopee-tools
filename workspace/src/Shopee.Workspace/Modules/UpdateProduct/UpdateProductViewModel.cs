@@ -132,10 +132,10 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
 
     // ── v1.1 (màn gộp): chạy RIÊNG từng tk BigSeller, CHẠY SONG SONG được — mỗi tk 1 token + runner RIÊNG,
     //    ĐỘC LẬP với đường batch của màn cũ (không đụng _cts/_runners/IsRunning). Dùng cho nút inline theo shop. ──
-    public Task RunImportSingleAsync(UpdateRunTargetViewModel t, bool silent = false, int? startRow = null, int? endRow = null, bool? importFromClaimedTab = null, int? processes = null, int? reloadSeconds = null) =>
-        RunOneWorkflowAsync("Import to store", UpdateKind.Import, (r, ctx, ct) => r.RunImportAsync(ctx, ct), t, requiresBigSellerLogin: true, silent: silent, startRow: startRow, endRow: endRow, importFromClaimedTab: importFromClaimedTab, processes: processes, reloadSeconds: reloadSeconds);
-    public Task RunUpdateSingleAsync(UpdateRunTargetViewModel t, bool silent = false, int? startRow = null, int? endRow = null, int? processes = null, int? reloadSeconds = null) =>
-        RunOneWorkflowAsync("Update product", UpdateKind.Update, (r, ctx, ct) => r.RunUpdateAsync(ctx, ct), t, requiresBigSellerLogin: true, silent: silent, startRow: startRow, endRow: endRow, processes: processes, reloadSeconds: reloadSeconds);
+    public Task RunImportSingleAsync(UpdateRunTargetViewModel t, bool silent = false, int? startRow = null, int? endRow = null, bool? importFromClaimedTab = null, int? processes = null, int? reloadSeconds = null, CancellationToken externalCt = default) =>
+        RunOneWorkflowAsync("Import to store", UpdateKind.Import, (r, ctx, ct) => r.RunImportAsync(ctx, ct), t, requiresBigSellerLogin: true, silent: silent, startRow: startRow, endRow: endRow, importFromClaimedTab: importFromClaimedTab, processes: processes, reloadSeconds: reloadSeconds, externalCt: externalCt);
+    public Task RunUpdateSingleAsync(UpdateRunTargetViewModel t, bool silent = false, int? startRow = null, int? endRow = null, int? processes = null, int? reloadSeconds = null, CancellationToken externalCt = default) =>
+        RunOneWorkflowAsync("Update product", UpdateKind.Update, (r, ctx, ct) => r.RunUpdateAsync(ctx, ct), t, requiresBigSellerLogin: true, silent: silent, startRow: startRow, endRow: endRow, processes: processes, reloadSeconds: reloadSeconds, externalCt: externalCt);
     // Rewrite KHÔNG mở trình duyệt → processes vô nghĩa (caller truyền null); giữ param cho đồng nhất chữ ký.
     public Task RunNameRewriteSingleAsync(UpdateRunTargetViewModel t, bool silent = false, int? startRow = null, int? endRow = null, int? processes = null, int? reloadSeconds = null) =>
         RunOneWorkflowAsync("Update tên SP", UpdateKind.Rewrite, (r, ctx, ct) => r.RunNameRewriteAsync(ctx, ct), t, requiresBigSellerLogin: false, silent: silent, startRow: startRow, endRow: endRow, processes: processes, reloadSeconds: reloadSeconds);
@@ -186,7 +186,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         string name, UpdateKind kind, Func<UpdateProductRunner, UpdateProductContext, CancellationToken, Task> action,
         UpdateRunTargetViewModel t, bool requiresBigSellerLogin, bool force = false, bool silent = false,
         int? startRow = null, int? endRow = null, bool? importFromClaimedTab = null,
-        int? processes = null, int? reloadSeconds = null)
+        int? processes = null, int? reloadSeconds = null, CancellationToken externalCt = default)
     {
         if (!ValidateUpdateTarget(t, t.SelectedShop, requiresBigSellerLogin, out var problem)) { Warn(problem + ".", silent); return; }
         var a = t.Account; var s = t.SelectedShop!;
@@ -200,6 +200,8 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         // TryAdd = dedup + add ATOMIC dưới lock của registry.
         var job = new WsJob { Cts = new CancellationTokenSource(), ShopId = s.Id, Kind = kind };
         if (!_wsJobs.TryAdd(a.Id, job)) { Warn($"{a.DisplayName}: đang chạy 1 workflow rồi — bấm ■ để dừng trước.", silent); job.Cts.Dispose(); return; }
+        // Auto Run bấm Dừng đúng lúc job chưa vào sổ thì StopAllSingle không thấy nó: đăng ký SAU TryAdd (token đã hủy thì chạy ngay) để job vẫn bị hủy.
+        using var externalReg = externalCt.Register(() => CancelJob(job));
         if (kind == UpdateKind.Import) _importBlocked.TryRemove(a.Id, out _);
         // Log gắn tk này → ghi vào CẢ buffer gộp lẫn buffer riêng của acc (tab log per-acc đợt sau bind vào).
         void LogA(string m) => LogAcc(a.Id, a.DisplayName, m);
@@ -370,9 +372,11 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
     }
 
     /// <summary>Dừng TẤT CẢ workflow update đang chạy (mọi tk) — cho nút "Dừng tất cả".</summary>
-    public void StopAllSingle()
+    public int StopAllSingle()
     {
-        foreach (var j in _wsJobs.SnapshotSelect(j => j)) CancelJob(j);
+        var jobs = _wsJobs.SnapshotSelect(j => j);
+        foreach (var j in jobs) CancelJob(j);
+        return jobs.Count;
     }
 
     /// <summary>Xoá tiến độ RESUME per-SP của 1 shop cho 1 op (<see cref="AssignmentOps.Import"/>|<see
@@ -481,9 +485,9 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
 
     private UpdateProductContext BuildContext(UpdateRunTargetViewModel t, AiConfig ai, int? startRow = null, int? endRow = null,
         bool? importFromClaimedTab = null, string? imageOverride = null, int? processes = null, int? reloadSeconds = null,
-        UpdateKind kind = UpdateKind.Update)
+        UpdateKind kind = UpdateKind.Update, BigSellerShop? shop = null)
     {
-        var a = t.Account; var s = t.SelectedShop!;
+        var a = t.Account; var s = shop ?? t.SelectedShop!;
         var resolved = SharedWorkbookStore.ResolveForUpdate(a, s);
         // AI (viết lại tên/mô tả) dùng cấu hình AI CHUNG lấy từ Hub; key truyền THẲNG qua context
         // (không set biến môi trường process-wide để Brave/Playwright không kế thừa key).

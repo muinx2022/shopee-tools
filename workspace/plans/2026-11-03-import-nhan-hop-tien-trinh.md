@@ -1,7 +1,7 @@
 # Plan: Import nhận ra hộp tiến trình "Importing… Finish"
 
 - **Ngày:** 2026-11-03
-- **Trạng thái:** code xong qua 5g, chờ user commit và chạy thử trên site thật
+- **Trạng thái:** ĐÃ TẮT bước Clear nháp (03/11 tối): SP đã import rời Crawl List nên xoá nháp là mất hẳn (mất ~3.177 SP shop9x.store, 845 SP alina99.store). Giữ phần đọc hộp kết quả, Finish, tiếng Việt, Auto Run luôn Update. Chưa commit.
 - **Người lập:** phiên chính · **Người thực thi:** `opus-dev`
 - **Mốc code:** `cf7816b` trên `main`
 

@@ -523,3 +523,15 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Nguyên nhân gốc**: Triển khai từ môi trường Windows dev sang Linux VPS qua zip/scp không lưu cờ thực thi POSIX; lúc deploy chỉ `chmod +x` cho file chính `Shopee.Hub.Web` mà bỏ sót file Node trong thư mục ẩn `.playwright`.
 - **Đã sửa**: `sudo chmod +x /opt/shopee-hub/.playwright/node/linux-x64/node` (quyền nay là `0775`), restart service `shopee-hub`, xác nhận `node --version` trả về `v24.15.0`; đã note vào `CLAUDE.md` mục Deploy.
 
+
+### P-20261103-1 · [ĐÓNG (code 03/11 — chờ Auto Run xác nhận)] · VỪA — Import Crawl List: khớp item id nhưng tick checkbox = 0 → KHÔNG bấm Import
+- **Thấy lúc**: đọc log Auto Run rồi nghiệm thu plans/2026-11-03-import-tab-tat-ca-bo-multi-shop.md
+- **Ở đâu**: workspace/src/Shopee.Module.UpdateProduct/Engine/BigSellerImportToStoreRunner.cs (CheckMatchingRowsOnPageAsync / ReadTickedRowsAsync / EnsureTickedMatchBatchAsync)
+- **Bằng chứng cũ**: log 03/11 22:08/22:48 «50 SP khớp» rồi «0 dong … KHONG bam Import».
+- **Đã sửa**: plan `2026-11-03-fix-tick-checkbox-crawl-list.md` — JS dùng chung click `.vxe-checkbox--icon`, `isChecked` đa tín hiệu, delay 300ms + retick 1 lần; không dùng col_8 làm item id. Build Release OK; runtime chờ user chạy Auto Run.
+
+### P-20261103-2 · [MỞ] · NHỎ — Còn logic multi-shop chết trong matcher/classifier sau khi gỡ UI
+- **Thấy lúc**: review plan import-tab-tat-ca-bo-multi-shop
+- **Ở đâu**: workspace/.../ImportShopMatcher.PickMany, ImportPostClickClassifier nhánh shopCount > 1; param importFromClaimedTab vẫn truyền từ AutoRun/VM dù runner chỉ quét tab Tất cả
+- **Bằng chứng**: runner luôn 1 shop; rg không còn ImportAllShops/RunImportAll; PickMany + shopCount>1 vẫn trong src
+- **Vì sao không sửa ngay**: ngoài phạm vi; không còn đường UI gọi multi-shop

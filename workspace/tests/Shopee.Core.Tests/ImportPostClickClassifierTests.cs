@@ -385,6 +385,78 @@ public sealed class ImportPostClickClassifierTests
         Assert.Empty(ImportPostClickClassifier.ExcludeExistingModals([], ["X"]));
         Assert.Equal(2, ImportPostClickClassifier.ExcludeExistingModals([a, a], []).Count);
     }
+
+    // ── Giao diện tiếng Việt ("Đang import… Hoàn thành") ──
+
+    private const string ViRunning = "Đang import Shopee Tổng số: 50 Đang nhập.. Hoàn thành";        // nguyên văn từ log chạy thật 03/11
+    private const string EnRunning = "Importing Shopee Total: 50 Importing... Finish";                // nguyên văn từ log chạy thật 03/11
+    // Câu cuối tiếng Việt là GIẢ LẬP (nhãn Thành công / Thất bại chưa có mẫu thật).
+    private const string ViFinalOk = "Đang import Shopee Tổng số: 50 Thành công: 50 Thất bại: 0 Hộp nháp Hoàn thành";
+
+    [Theory]
+    [InlineData(ViRunning)]
+    [InlineData(EnRunning)]
+    [InlineData("ĐANG IMPORT Shopee Tổng số: 50 Đang nhập.. HOÀN THÀNH")]            // hoa thường
+    [InlineData("Dang import Shopee Tong so: 50 Dang nhap.. Hoan thanh")]            // không dấu
+    public void VietnameseAndEnglishRunningBox_IsInProgress_NotUnknownBox(string text)
+    {
+        Assert.True(ImportPostClickClassifier.IsImportProgressBox(text));
+        var v = ClassifyBox(text, 50);
+        Assert.False(v.Sent);
+        Assert.Equal(ImportVerdictKind.InProgress, v.Kind);
+    }
+
+    [Fact]
+    public void VietnameseRunningBox_DecomposedUnicode_IsStillProgressBox() =>
+        Assert.True(ImportPostClickClassifier.IsImportProgressBox(ViRunning.Normalize(System.Text.NormalizationForm.FormD)));
+
+    [Theory]
+    [InlineData("Đang import Shopee")]               // thiếu "hoàn thành"
+    [InlineData("Hoàn thành")]                       // thiếu "đang import"
+    [InlineData("Importing Shopee")]                 // thiếu "finish"
+    [InlineData("Đang import Shopee Finish")]        // trộn hai ngôn ngữ: không đủ cặp nào
+    public void ProgressBoxNeedsBothWordsOfOneLanguage(string text) =>
+        Assert.False(ImportPostClickClassifier.IsImportProgressBox(text));
+
+    [Fact]
+    public void VietnameseFinalBox_AllTicked_IsSent()
+    {
+        var v = ClassifyBox(ViFinalOk, 50, draftLink: true);
+        Assert.True(v.Sent);
+        Assert.Equal(ImportVerdictKind.Sent, v.Kind);
+        Assert.Equal(new ImportBoxCounts(50, 50, 0), ImportPostClickClassifier.ParseProgressCounts(ViFinalOk));
+        Assert.Equal(new ImportBoxCounts(50, null, null), ImportPostClickClassifier.ParseProgressCounts(ViRunning));
+    }
+
+    [Fact]
+    public void VietnameseFinalBox_Failures_IsPartialFailure()
+    {
+        var v = ClassifyBox("Đang import Shopee Tổng số: 50 Thành công: 47 Thất bại: 3 Hộp nháp Hoàn thành", 50, draftLink: true);
+        Assert.False(v.Sent);
+        Assert.Equal(ImportVerdictKind.ReportedFailure, v.Kind);
+        Assert.Contains("MỘT PHẦN", v.Reason);
+        var all = ClassifyBox("Đang import Shopee Tổng số: 50 Thành công: 0 Thất bại: 50 Hộp nháp Hoàn thành", 50, draftLink: true);
+        Assert.Equal(ImportVerdictKind.ReportedFailure, all.Kind);
+        Assert.Contains("cả lô", all.Reason);
+    }
+
+    [Fact]
+    public void VietnameseFinalBox_TotalDiffersFromTicked_IsUncertain()
+    {
+        var v = ClassifyBox(ViFinalOk, 49, draftLink: true);
+        Assert.False(v.Sent);
+        Assert.Equal(ImportVerdictKind.Uncertain, v.Kind);
+        Assert.Contains("khác số SP đã tick", v.Reason);
+    }
+
+    [Fact]
+    public void VietnameseBoxWithUnknownLabels_NeverCompletes_StaysInProgress()
+    {
+        // Nhãn trạng thái cuối chưa có mẫu thật: nếu BigSeller dùng chữ khác thì không đủ số → InProgress (hết 120s → chưa chắc), không phải Sent.
+        var v = ClassifyBox("Đang import Shopee Tổng số: 50 Hoàn tất: 50 Lỗi: 0 Hộp nháp Hoàn thành", 50, draftLink: true);
+        Assert.False(v.Sent);
+        Assert.Equal(ImportVerdictKind.InProgress, v.Kind);   // không đủ ba số → chờ tiếp; MonitorPostClickAsync hết 120s → chưa chắc (an toàn)
+    }
 }
 
 /// <summary>

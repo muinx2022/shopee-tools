@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -17,8 +18,9 @@ public sealed record ImportPostClickVerdict(bool Sent, string Reason, ImportVerd
         : this(Sent, Reason, Sent ? ImportVerdictKind.Sent : ImportVerdictKind.Uncertain) { }
 }
 
-/// <summary>Ba con số đọc từ hộp tiến trình ("Total: 50", "Successfully: 50", "Failed: 0"); null = chưa hiện/không đọc được.</summary>
-public sealed record ImportBoxCounts(int? Total, int? Success, int? Failed)
+/// <summary>Ba con số đọc từ hộp tiến trình ("Total: 50", "Successfully: 50", "Failed: 0" / "Tổng số: 50", "Thành công: 50", "Thất bại: 0");
+/// null = chưa hiện/không đọc được. <see cref="RepeatedLabel"/> = một trong ba nhãn xuất hiện hơn một lần trong hộp (không biết số nào là của lô).</summary>
+public sealed record ImportBoxCounts(int? Total, int? Success, int? Failed, bool RepeatedLabel = false)
 {
     public bool IsComplete => Total.HasValue && Success.HasValue && Failed.HasValue;
 }
@@ -29,7 +31,7 @@ public enum ImportBoxStatus { Running, Succeeded, AllFailed, PartialFailed }
 /// <summary>
 /// Phân loại thuần "lô Import đã gửi chưa" sau khi modal import đã đóng, xét TRƯỚC khi đóng các hộp thoại sau import.
 /// Hộp kết quả đã biết duy nhất có bằng chứng trong code: modal chứa link a.has_underline chữ "Hộp nháp".
-/// Hộp tiến trình "Importing… Finish" (<see cref="IsImportProgressBox"/>) được xét theo số (<see cref="JudgeProgressBox"/>):
+/// Hộp tiến trình "Importing… Finish" / "Đang import… Hoàn thành" (<see cref="IsImportProgressBox"/>) được xét theo số (<see cref="JudgeProgressBox"/>):
 /// còn chạy → <see cref="ImportVerdictKind.InProgress"/> (chưa phải đã gửi); đủ Total = Successfully, Failed = 0 và Total khớp
 /// số SP đã tick → đã gửi; Failed &gt; 0 → <see cref="ImportVerdictKind.ReportedFailure"/>.
 /// CHƯA CHẮC (không MarkDone, dừng import shop) khi: URL không còn Crawl List; có toast lỗi; còn hộp lạ; hộp "Hộp nháp"
@@ -45,7 +47,8 @@ public static class ImportPostClickClassifier
 
     public static ImportPostClickVerdict Classify(
         bool urlOnCrawl, IReadOnlyList<OpenModalInfo> openModals,
-        IReadOnlyList<string>? errorToasts = null, bool navigated = false, int? expectedCount = null, bool requireEvidence = false)
+        IReadOnlyList<string>? errorToasts = null, bool navigated = false, int? expectedCount = null, bool requireEvidence = false,
+        int shopCount = 1)
     {
         if (!urlOnCrawl)
             return new(false, "URL trang không còn là Crawl List sau khi bấm Import (có thể rớt phiên về login hoặc điều hướng lạ).");
@@ -59,7 +62,7 @@ public static class ImportPostClickClassifier
             // Hộp tiến trình "Importing… Finish" luôn hiện sau Import to Stores: xét theo số, không phải "hộp đã biết".
             if (IsImportProgressBox(modal.Text))
             {
-                var judged = JudgeProgressBox(modal.Text, expectedCount);
+                var judged = JudgeProgressBox(modal.Text, expectedCount, shopCount);
                 if (judged.Kind == ImportVerdictKind.InProgress) running = judged;
                 else if (!judged.Sent) return judged;
                 continue;
@@ -102,11 +105,15 @@ public static class ImportPostClickClassifier
     /// chưa đủ số mà đã có chữ lỗi (không đọc nổi mà vẫn nói lỗi → chưa chắc ngay). Đã đủ số: Total khác
     /// <paramref name="expectedCount"/> (số SP đã tick) → chưa chắc; Total = Successfully, Failed = 0 → đã gửi; Failed = Total →
     /// thất bại cả lô; còn lại → thất bại một phần (không biết SP nào lỗi).</summary>
-    public static ImportPostClickVerdict JudgeProgressBox(string? text, int? expectedCount = null)
+    public static ImportPostClickVerdict JudgeProgressBox(string? text, int? expectedCount = null, int shopCount = 1)
     {
         var counts = ParseProgressCounts(text);
         var status = GetStatus(counts);
         var shown = Trim(text);
+
+        // Nhãn Total / Successfully / Failed lặp lại (vd hộp liệt kê số theo từng shop): không biết số nào là của cả lô → CHƯA CHẮC.
+        if (counts.RepeatedLabel)
+            return new(false, $"hộp tiến trình import có nhãn Total/Successfully/Failed xuất hiện nhiều hơn một lần, không biết số nào là của lô: \"{shown}\"");
 
         if (status == ImportBoxStatus.Running)
         {
@@ -115,8 +122,20 @@ public static class ImportPostClickClassifier
             return new(false, $"hộp tiến trình import đang chạy: \"{shown}\"", ImportVerdictKind.InProgress);
         }
 
-        if (expectedCount is { } expected && counts.Total != expected)
-            return new(false, $"hộp tiến trình import báo Total={counts.Total} khác số SP đã tick ({expected}): \"{shown}\"");
+        // Import nhiều shop một lần (k > 1): CHỈ nhận Total = số SP × k (đếm theo cặp SP×shop); Total = số SP thì chưa biết BigSeller đếm kiểu nào
+        // (có thể chỉ một shop nhận) nên CHƯA CHẮC, không MarkDone. k = 1: Total phải bằng số SP như cũ. Successfully = Total và Failed = 0 xét bên dưới.
+        if (expectedCount is { } expected)
+        {
+            if (shopCount > 1)
+            {
+                if (counts.Total == expected)
+                    return new(false, $"hộp nhiều shop ({shopCount} shop) báo Total = số SP ({expected}), chưa biết BigSeller đếm kiểu nào — gửi nguyên văn hộp cho dev: \"{shown}\"");
+                if ((long?)counts.Total != (long)expected * shopCount)
+                    return new(false, $"hộp tiến trình import báo Total={counts.Total} khác số SP × {shopCount} shop ({(long)expected * shopCount}): \"{shown}\"");
+            }
+            else if (counts.Total != expected)
+                return new(false, $"hộp tiến trình import báo Total={counts.Total} khác số SP đã tick ({expected}): \"{shown}\"");
+        }
 
         return status switch
         {
@@ -129,13 +148,15 @@ public static class ImportPostClickClassifier
         };
     }
 
-    /// <summary>Đọc Total / Successfully / Failed từ nội dung hộp (đã gộp khoảng trắng). Số có thể có dấu phân cách nghìn
-    /// ("1,234" hoặc "1.234"). Nhãn nào chưa có hoặc không có số liền sau thì null.</summary>
+    /// <summary>Đọc Total / Successfully / Failed (hoặc Tổng số / Thành công / Thất bại) từ nội dung hộp (đã gộp khoảng trắng). Số có thể
+    /// có dấu phân cách nghìn ("1,234" hoặc "1.234"). Nhãn nào chưa có hoặc không có số liền sau thì null. Nhãn so sau <see cref="Fold"/>
+    /// (không dấu, không phân biệt hoa thường).</summary>
     public static ImportBoxCounts ParseProgressCounts(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return new(null, null, null);
-        var t = text.Normalize(NormalizationForm.FormC);
-        return new(ReadCount(TotalLabel, t), ReadCount(SuccessLabel, t), ReadCount(FailedLabel, t));
+        var t = Fold(text);
+        var repeated = TotalWord.Matches(t).Count > 1 || SuccessWord.Matches(t).Count > 1 || FailedWord.Matches(t).Count > 1;
+        return new(ReadCount(TotalLabel, t), ReadCount(SuccessLabel, t), ReadCount(FailedLabel, t), repeated);
     }
 
     /// <summary>Running khi chưa đủ ba số hoặc Success + Failed &lt; Total; sau đó: Failed = 0 và Success = Total → Succeeded;
@@ -158,13 +179,31 @@ public static class ImportPostClickClassifier
         return int.TryParse(digits, out var n) ? n : null;
     }
 
-    /// <summary>Hộp tiến trình import của BigSeller ("Importing Shopee Total: 50 Importing... Finish"): chứa đồng thời
-    /// "importing" và "finish" (không phân biệt hoa thường). Chỉ có một trong hai thì KHÔNG phải hộp này (hộp lạ).</summary>
+    /// <summary>Hộp tiến trình import của BigSeller. Tiếng Anh ("Importing Shopee Total: 50 Importing... Finish"): chứa đồng thời
+    /// "importing" và "finish". Tiếng Việt ("Đang import Shopee Tổng số: 50 Đang nhập.. Hoàn thành", chạy thật 03/11): chứa đồng thời
+    /// "đang import" và "hoàn thành". So sau <see cref="Fold"/> (NFC, bỏ dấu, không phân biệt hoa thường). Chỉ có một trong hai
+    /// của cùng một ngôn ngữ thì KHÔNG phải hộp này (hộp lạ).</summary>
     public static bool IsImportProgressBox(string? text)
     {
         if (string.IsNullOrWhiteSpace(text)) return false;
-        return text.Contains("importing", StringComparison.OrdinalIgnoreCase)
-            && text.Contains("finish", StringComparison.OrdinalIgnoreCase);
+        var t = Fold(text);
+        return (t.Contains("importing", StringComparison.Ordinal) && t.Contains("finish", StringComparison.Ordinal))
+            || (t.Contains("dang import", StringComparison.Ordinal) && t.Contains("hoan thanh", StringComparison.Ordinal));
+    }
+
+    // Chuẩn hoá để so chữ giao diện: NFC → NFD bỏ dấu kết hợp, đ→d, gộp khoảng trắng, chữ thường (cùng quy tắc với
+    // BigSellerDraftClearer.Normalize ở module UpdateProduct; Core không tham chiếu được module đó nên giữ bản riêng như
+    // ImportShopMatcher / ProductLimitToastClassifier). Chỉ để SO SÁNH, không dùng để hiển thị/log.
+    private static string Fold(string text)
+    {
+        var d = text.Normalize(NormalizationForm.FormC).Normalize(NormalizationForm.FormD);
+        var sb = new StringBuilder(d.Length);
+        foreach (var c in d)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.NonSpacingMark) continue;
+            sb.Append(c is 'đ' or 'Đ' ? 'd' : c);
+        }
+        return Regex.Replace(sb.ToString().Normalize(NormalizationForm.FormC), @"\s+", " ").Trim().ToLowerInvariant();
     }
 
     /// <summary>Cắt nội dung hộp/toast tới <see cref="MaxBoxTextLength"/> ký tự để đưa vào log.</summary>
@@ -213,9 +252,18 @@ public static class ImportPostClickClassifier
     private static readonly Regex NumberBefore = new(@"(?<![\d.,])(?<n>\d+(?:[.,]\d+)*)\s*$", RegexOptions.Compiled);
     private static readonly Regex ZeroNumber = new(@"^0+(?:[.,]0+)*$", RegexOptions.Compiled);
 
-    // Nhãn của hộp tiến trình + số liền sau (cho phép ':' '：' '=' và khoảng trắng; số có thể có dấu phân cách nghìn).
+    // Nhãn của hộp tiến trình + số liền sau (cho phép ':' '：' '=' và khoảng trắng; số có thể có dấu phân cách nghìn). Chạy trên chữ đã
+    // Fold (không dấu, chữ thường): Anh Total / Success(fully) / Fail(ed); Việt "Tổng số" / "Thành công" / "Thất bại".
+    // "Tổng số" có bằng chứng thật (hộp đang chạy 03/11: "Đang import Shopee Tổng số: 50 Đang nhập.. Hoàn thành"). "Thành công" và
+    // "Thất bại" là GIẢ ĐỊNH (dịch tương ứng Successfully / Failed, CHƯA có mẫu hộp tiếng Việt ở trạng thái cuối): nếu BigSeller dùng chữ
+    // khác thì hộp không bao giờ đủ ba số → hết 120s → "chưa chắc" (an toàn, không MarkDone). Log nguyên văn hộp mỗi lần đổi nội dung
+    // (MonitorPostClickAsync) để lần sau có mẫu thật.
     private const string CountTail = @"\w*\s*[:：=]?\s*(?<n>\d+(?:[.,]\d+)*)";
-    private static readonly Regex TotalLabel = new(@"(?<![A-Za-z])Total" + CountTail, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex SuccessLabel = new(@"(?<![A-Za-z])Success" + CountTail, RegexOptions.Compiled | RegexOptions.IgnoreCase);
-    private static readonly Regex FailedLabel = new(@"(?<![A-Za-z])Fail" + CountTail, RegexOptions.Compiled | RegexOptions.IgnoreCase);
+    // Chỉ để ĐẾM số lần nhãn xuất hiện (không đòi có số liền sau).
+    private static readonly Regex TotalWord = new(@"(?<![a-z])(?:total|tong so)", RegexOptions.Compiled);
+    private static readonly Regex SuccessWord = new(@"(?<![a-z])(?:success|thanh cong)", RegexOptions.Compiled);
+    private static readonly Regex FailedWord = new(@"(?<![a-z])(?:fail|that bai)", RegexOptions.Compiled);
+    private static readonly Regex TotalLabel = new(@"(?<![a-z])(?:total|tong so)" + CountTail, RegexOptions.Compiled);
+    private static readonly Regex SuccessLabel = new(@"(?<![a-z])(?:success|thanh cong)" + CountTail, RegexOptions.Compiled);
+    private static readonly Regex FailedLabel = new(@"(?<![a-z])(?:fail|that bai)" + CountTail, RegexOptions.Compiled);
 }

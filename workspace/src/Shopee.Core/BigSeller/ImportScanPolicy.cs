@@ -1,7 +1,8 @@
 namespace Shopee.Core.BigSeller;
 
-/// <summary>Việc kế tiếp sau một lô Import trên Crawl List: bấm Next sang trang kế, hoặc tải lại Crawl List (về trang 1).</summary>
-public enum AfterBatchStep { ClickNext, ReloadFirstPage }
+/// <summary>Việc kế tiếp sau một lô Import trên Crawl List. Tab «Tất cả»: SP vừa import vẫn nằm trên trang → luôn bấm Next
+/// (không ở lại xét lại). <see cref="RecheckSamePage"/> giữ để tương thích tên cũ / test cũ nhưng policy hiện tại không trả về.</summary>
+public enum AfterBatchStep { RecheckSamePage, ClickNext }
 
 /// <summary>Quyết định trước khi Clear nháp: <see cref="CanClear"/> = được Clear; ngược lại <see cref="UnknownKeys"/> = các khoá còn SP chờ Update
 /// mà không biết mục tiêu Update (Clear sẽ xoá nháp của chúng mà bảng import không biết SP nào phải import lại).</summary>
@@ -24,7 +25,7 @@ public readonly record struct ImportStartDecision(ImportStartKind Kind, ImportEx
 /// </summary>
 public static class ImportScanPolicy
 {
-    /// <summary>Số vòng quét tối đa (mỗi vòng = quét cả 2 tab từ trang 1).</summary>
+    /// <summary>Số vòng quét tối đa (mỗi vòng = quét tab «Tất cả» từ trang 1).</summary>
     public const int MaxPasses = 3;
 
     /// <summary>Số trang LIÊN TIẾP vừa chưa xác nhận vừa không có SP khớp thì bỏ phần còn lại của tab (phanh).</summary>
@@ -36,11 +37,17 @@ public static class ImportScanPolicy
     public static bool ShouldRescan(int pass, int maxPasses, bool allImported, bool sentThisPass, bool hasUnconfirmed) =>
         !allImported && pass < maxPasses && (sentThisPass || hasUnconfirmed);
 
-    /// <summary>Sau một lô: chỉ lô ĐÃ GỬI (<paramref name="batchCommitted"/>) trên tab 'Chưa nhận' mới làm danh sách dồn lên (SP đã import
-    /// rời tab) nên phải tải lại Crawl List (về trang 1) để xét tiếp; lô lỗi thường (chưa gửi, không SP nào rời tab) và tab 'Đã nhận'
-    /// (SP ở lại tab) thì bấm Next như thường. Tải lại khi lô chưa gửi sẽ chỉ quay lại đúng lô đó và lặp vô hạn.</summary>
-    public static AfterBatchStep NextStepAfterBatch(bool batchCommitted, bool unclaimedTab) =>
-        batchCommitted && unclaimedTab ? AfterBatchStep.ReloadFirstPage : AfterBatchStep.ClickNext;
+    /// <summary>Giữ hằng số cũ (tab Chưa nhận/Đã nhận từng dùng ở lại trang); tab «Tất cả» không dùng RecheckSamePage.</summary>
+    public const int MaxSamePageRechecks = 200;
+
+    /// <summary>Sau một lô trên tab «Tất cả»: luôn bấm Next. SP import xong vẫn nằm trong «Tất cả» → ở lại trang không dồn SP mới lên.
+    /// Tham số giữ chữ ký cũ (caller/test) nhưng không ảnh hưởng kết quả.</summary>
+    public static AfterBatchStep NextStepAfterBatch(bool batchCommitted, int samePageRechecks)
+    {
+        _ = batchCommitted;
+        _ = samePageRechecks;
+        return AfterBatchStep.ClickNext;
+    }
 
     /// <summary>"Đã import đủ": có id cần import, mọi id đã import, VÀ bước Clear nháp đã chốt (Cleared / không có gì để xoá / bảng import đã
     /// reset trọn vẹn — <paramref name="clearSettled"/>). Clear kết thúc kiểu khác (hết giờ chờ, reset lỗi) thì tiến độ trong RAM có thể lệch

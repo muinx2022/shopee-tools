@@ -8,6 +8,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Shopee.Core.BigSeller;
 using Shopee.Core.Coordination;
+using Shopee.Core.Infrastructure;
 using Shopee.Core.Progress;
 using Shopee.Core.Scrape;
 using Shopee.Workspace.Infrastructure;
@@ -56,6 +57,18 @@ public sealed partial class AutoRunViewModel : ObservableObject
     private volatile bool _skipCurrentShop;
     private WorkspaceAccountViewModel? _currentRunningAccount;
     private WorkspaceShopViewModel? _currentRunningShop;
+    private DateTime? _lastRunEndedUtc;
+
+    /// <summary>Sau khi lượt Auto Run kết thúc, nút "Bắt đầu" nhảy vào đúng chỗ nút "Dừng" — bấm Dừng vào lúc đó trúng Bắt đầu.
+    /// Lệnh Bắt đầu đến trong khoảng này sau mốc kết thúc là bấm nhầm → bỏ qua.</summary>
+    internal static readonly TimeSpan StartGuardWindow = TimeSpan.FromSeconds(3);
+
+    internal static bool ShouldIgnoreStart(DateTime? lastRunEndedUtc, DateTime nowUtc) =>
+        lastRunEndedUtc is { } ended && nowUtc - ended < StartGuardWindow;
+
+    /// <summary>Lượt Import của shop không thêm được SP nào (0 SP mới, tổng 0, shop chưa Import xong: kể cả ca bị cổng Clear chặn hoặc lô
+    /// chưa chắc). Chỉ để chọn câu log/trạng thái: dù đúng hay sai, bước Update của shop VẪN chạy (trừ UpdateDone / Dừng / Next shop).</summary>
+    internal static bool IsZeroImportRun(int imported, int after, bool importDone) => imported == 0 && after == 0 && !importDone;
 
     public ObservableCollection<AutoRunAccountItem> Accounts { get; } = [];
     public LogBuffer LogLines { get; } = new("workspace-autorun.log");
@@ -88,8 +101,8 @@ public sealed partial class AutoRunViewModel : ObservableObject
     public string HeaderCaption => WorkspaceAppConfig.Role switch
     {
         WorkspaceRole.Scrape => "Chọn các tài khoản BigSeller cần chạy. Mỗi tài khoản sẽ tự động thực hiện Scrape (1 shop đại diện/tài khoản).",
-        WorkspaceRole.ImportUpdate => "Chọn các tài khoản BigSeller cần chạy. Mỗi tài khoản sẽ tuần tự thực hiện: Import (tất cả shop) → Update (tất cả shop).",
-        _ => "Tự động chạy tuần tự: Scrape (chỉ 1 lần/acc) → Import (thử thường rồi tab Đã nhận) → Update cho danh sách tài khoản đã chọn."
+        WorkspaceRole.ImportUpdate => "Chọn các tài khoản BigSeller cần chạy. Mỗi tài khoản sẽ tuần tự thực hiện: Import (1 shop/lần, tab Tất cả) → Update (từng shop).",
+        _ => "Tự động chạy tuần tự: Scrape (chỉ 1 lần/acc) → Import (tab Tất cả, 1 shop/lần) → Update cho danh sách tài khoản đã chọn."
     };
 
     [ObservableProperty]
@@ -201,6 +214,11 @@ public sealed partial class AutoRunViewModel : ObservableObject
     private async Task StartAutoRunAsync()
     {
         if (IsRunning) return;
+        if (ShouldIgnoreStart(_lastRunEndedUtc, DateTime.UtcNow))
+        {
+            Log("Bỏ qua Bắt đầu vì lượt trước vừa kết thúc (dưới 3 giây) — có thể là bấm nhầm khi định bấm Dừng.");
+            return;
+        }
         BigSellerStore.Shared.ReloadIfExternalChange();
         ScrapeProgressStore.Shared.ReloadIfExternalChange();
         OpProgressStore.Shared.ReloadIfExternalChange();
@@ -229,6 +247,7 @@ public sealed partial class AutoRunViewModel : ObservableObject
         }
         finally
         {
+            _lastRunEndedUtc = DateTime.UtcNow;
             IsRunning = false;
             _cts?.Dispose();
             _cts = null;
@@ -240,7 +259,12 @@ public sealed partial class AutoRunViewModel : ObservableObject
 
     public void Stop()
     {
-        if (!IsRunning) return;
+        if (!IsRunning)
+        {
+            Log("Người dùng bấm Dừng Auto Run nhưng không có lượt Auto Run nào đang chạy.");
+            return;
+        }
+        Log($"Người dùng bấm Dừng Auto Run (token hủy: {(_cts is null ? "không có" : "có")}).");
         CurrentStatus = "Đang dừng Auto Run...";
         try
         {
@@ -248,7 +272,8 @@ public sealed partial class AutoRunViewModel : ObservableObject
         }
         catch { }
 
-        _workspace.Update.StopAllSingle();
+        var stoppedJobs = _workspace.Update.StopAllSingle();
+        Log($"Dừng Auto Run: đã hủy {stoppedJobs} job Update/Import đang chạy.");
         if (_workspace.Scrape.StopCommand.CanExecute(null))
             _workspace.Scrape.StopCommand.Execute(null);
     }
@@ -300,6 +325,141 @@ public sealed partial class AutoRunViewModel : ObservableObject
         await Task.Delay(500);
     }
 
+    /// <summary>Khung xử lý Import + Update của MỘT tài khoản: <paramref name="shopStep"/> (Import 1 shop rồi Update) chạy lần lượt từng shop.
+    /// Update luôn chạy sau Import, kết quả Import (đủ, 0 SP, chưa đủ) không ảnh hưởng. Dừng (<paramref name="ct"/>) thì không chạy tiếp;
+    /// <paramref name="shopStep"/> trả false = dừng vòng lặp shop.</summary>
+    internal static async Task RunAccountShopsAsync<T>(
+        IReadOnlyList<T> shops, Func<T, int, Task<bool>> shopStep, CancellationToken ct)
+    {
+        for (var i = 0; i < shops.Count; i++)
+        {
+            if (ct.IsCancellationRequested) break;
+            if (!await shopStep(shops[i], i)) break;
+        }
+    }
+
+    // Import RIÊNG shop này (UpdateTarget.SelectedShop đã trỏ vào shop). Trả false = dừng vòng lặp shop.
+    // Trạng thái xong/chưa do RunOneWorkflowAsync ghi (completed chỉ khi import đủ mọi item id; lỗi/hủy/thiếu thì stopped) — KHÔNG ghi đè ở đây.
+    private async Task<bool> ImportSingleShopAsync(AutoRunAccountItem accItem, WorkspaceShopViewModel shop, int shopIdx, CancellationToken ct)
+    {
+        var acc = accItem.Account;
+        if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); return true; }
+        if (shop.ImportDone)
+        {
+            CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Import đã xong - Bỏ qua";
+            Log($"[{acc.DisplayName}] Shop '{shop.Name}': Import đã hoàn tất trước đó → Bỏ qua Import.");
+            return true;
+        }
+
+        CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đang Import...";
+        accItem.Status = $"Import ({shop.Name})";
+        Log($"[{acc.DisplayName}] Đang Import thẳng cho shop '{shop.Name}'...");
+
+        var progressKey = SharedWorkbookStore.ResolveForUpdate(acc.Account, shop.Shop).ProgressKey;
+        var initialBefore = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
+
+        // Runner quét tab «Tất cả» trong 1 lượt nên không import lượt hai.
+        try
+        {
+            await _workspace.Update.RunImportSingleAsync(acc.UpdateTarget, silent: true, importFromClaimedTab: false, externalCt: ct);
+        }
+        catch (OperationCanceledException) when (_skipCurrentShop) { }
+
+        if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); return true; }
+        if (ct.IsCancellationRequested) return false;
+
+        var after = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
+        var imported = after - initialBefore;   // có thể ÂM nếu tiến độ bị reset giữa lượt
+
+        var importBlocked = _workspace.Update.GetImportBlockedReason(acc.Account.Id);
+        if (importBlocked is not null)
+            Log($"[{acc.DisplayName}] ⛔ Import bị chặn: {importBlocked}. Shop '{shop.Name}' chưa import được lượt này.");
+
+        if (IsZeroImportRun(imported, after, shop.ImportDone))
+        {
+            // KHÔNG bỏ qua shop: lô "chưa chắc đã gửi" vẫn có thể đã thành nháp, và Update làm việc trên nháp theo sheet.
+            CurrentStatus = importBlocked is not null
+                ? $"[{acc.DisplayName}] ({shop.Name}) Import bị chặn - vẫn chạy Update"
+                : $"[{acc.DisplayName}] ({shop.Name}) 0 SP import - vẫn chạy Update";
+            if (importBlocked is null)
+                Log($"[{acc.DisplayName}] Import không được SP nào (0 SP) → vẫn chạy Update cho shop '{shop.Name}'.");
+            else
+                Log($"[{acc.DisplayName}] Shop '{shop.Name}' (Import bị chặn, chưa có SP nào) → vẫn chạy Update.");
+        }
+
+        if (imported > 0 || after > 0)
+        {
+            if (shop.ImportDone)
+                Log($"[{acc.DisplayName}] Import hoàn tất ({Math.Max(0, imported)} SP mới, tổng {after} SP) cho shop '{shop.Name}'.");
+            else
+                Log($"[{acc.DisplayName}] ⚠ Import chưa đủ ({after} SP) — vẫn Update phần đã có, lần chạy sau import tiếp.");
+        }
+        await UiThread.InvokeAsync(() => shop.RefreshFleet());
+        return true;
+    }
+
+    // Một shop của vòng lặp. withImport = false: chỉ Update (Import đã chạy chung ở ImportAccountAsync). withImport = true: flow cũ — Import 1 shop rồi Update.
+    // Trả false = dừng vòng lặp shop (đã Dừng).
+    private async Task<bool> ShopStepAsync(AutoRunAccountItem accItem, WorkspaceShopViewModel shop, int shopIdx, bool withImport, CancellationToken ct)
+    {
+        var acc = accItem.Account;
+        _currentRunningAccount = acc;
+        _currentRunningShop = shop;
+        _skipCurrentShop = false;
+
+        await UiThread.InvokeAsync(() =>
+        {
+            acc.UpdateTarget.SelectedShop = shop.Shop;
+            shop.RefreshStatus();
+        });
+
+        Log($"[{acc.DisplayName}] Shop '{shop.Name}': Import: {(shop.ImportDone ? "Đã xong" : "Chưa")}, Update: {(shop.UpdateDone ? "Đã xong" : "Chưa")}");
+
+        // Kiểm tra skip cả shop: nếu shop.ImportDone && shop.UpdateDone
+        if (shop.ImportDone && shop.UpdateDone)
+        {
+            CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đã hoàn thành (Import & Update) - Bỏ qua";
+            Log($"[{acc.DisplayName}] Shop '{shop.Name}' đã hoàn thành cả Import & Update → Bỏ qua.");
+            return true;
+        }
+
+        if (withImport && !await ImportSingleShopAsync(accItem, shop, shopIdx, ct)) return false;
+        if (ct.IsCancellationRequested) return false;
+
+        // c) UPDATE
+        if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); return true; }
+        if (shop.UpdateDone)
+        {
+            CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Update đã xong - Bỏ qua";
+            Log($"[{acc.DisplayName}] Shop '{shop.Name}': Update đã hoàn tất trước đó → Bỏ qua Update.");
+            return true;
+        }
+
+        CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đang Update...";
+        accItem.Status = $"Update ({shop.Name})";
+        Log($"[{acc.DisplayName}] Đang Update cho shop '{shop.Name}'...");
+
+        try
+        {
+            await _workspace.Update.RunUpdateSingleAsync(acc.UpdateTarget, silent: true, externalCt: ct);
+        }
+        catch (OperationCanceledException) when (_skipCurrentShop) { }
+        catch (Exception ex)
+        {
+            Log($"[{acc.DisplayName}] ✘ Lỗi Update shop '{shop.Name}': {ex.Message}");
+        }
+
+        if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); return true; }
+        if (ct.IsCancellationRequested) return false;
+
+        await UiThread.InvokeAsync(() => shop.RefreshFleet());
+        if (shop.UpdateDone)
+            Log($"[{acc.DisplayName}] Update shop '{shop.Name}' hoàn tất.");
+        else
+            Log($"[{acc.DisplayName}] ⚠ Shop '{shop.Name}' chưa hoàn thành Update (kiểm tra log chi tiết / ảnh update).");
+        return true;
+    }
+
     public Task RunAsync(CancellationToken ct = default)
     {
         var targets = Accounts.Where(a => a.IsSelected).ToList();
@@ -315,6 +475,7 @@ public sealed partial class AutoRunViewModel : ObservableObject
         {
             CurrentStatus = "Bắt đầu Auto Run...";
             Log($"=== BẮT ĐẦU AUTO RUN ({targets.Count} tài khoản được chọn) ===");
+            Log("Chế độ Import: từng shop Import (1 shop) rồi Update, lần lượt.");
 
             foreach (var accItem in Accounts)
             {
@@ -426,134 +587,11 @@ public sealed partial class AutoRunViewModel : ObservableObject
                     continue;
                 }
 
-                for (int shopIdx = 0; shopIdx < acc.Shops.Count; shopIdx++)
-                {
-                    if (ct.IsCancellationRequested) break;
-
-                    var shop = acc.Shops[shopIdx];
-                    _currentRunningAccount = acc;
-                    _currentRunningShop = shop;
-                    _skipCurrentShop = false;
-
-                    await UiThread.InvokeAsync(() =>
-                    {
-                        acc.UpdateTarget.SelectedShop = shop.Shop;
-                        shop.RefreshStatus();
-                    });
-
-                    Log($"[{acc.DisplayName}] Shop '{shop.Name}': Import: {(shop.ImportDone ? "Đã xong" : "Chưa")}, Update: {(shop.UpdateDone ? "Đã xong" : "Chưa")}");
-
-                    // Kiểm tra skip cả shop: nếu shop.ImportDone && shop.UpdateDone
-                    if (shop.ImportDone && shop.UpdateDone)
-                    {
-                        CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đã hoàn thành (Import & Update) - Bỏ qua";
-                        Log($"[{acc.DisplayName}] Shop '{shop.Name}' đã hoàn thành cả Import & Update → Bỏ qua.");
-                        continue;
-                    }
-
-                    var resolved = SharedWorkbookStore.ResolveForUpdate(acc.Account, shop.Shop);
-                    var progressKey = resolved.ProgressKey;
-
-                    // b) BƯỚC 2: IMPORT
-                    if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); continue; }
-                    if (shop.ImportDone)
-                    {
-                        CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Import đã xong - Bỏ qua";
-                        Log($"[{acc.DisplayName}] Shop '{shop.Name}': Import đã hoàn tất trước đó → Bỏ qua Import.");
-                    }
-                    else
-                    {
-                        CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đang Import...";
-                        accItem.Status = $"Import ({shop.Name})";
-                        Log($"[{acc.DisplayName}] Đang Import thẳng cho shop '{shop.Name}'...");
-
-                        var initialBefore = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
-
-                        // Gọi import thẳng (runner tự quét cả 2 tab Chưa nhận & Đã nhận)
-                        try
-                        {
-                            await _workspace.Update.RunImportSingleAsync(acc.UpdateTarget, silent: true, importFromClaimedTab: false);
-                        }
-                        catch (OperationCanceledException) when (_skipCurrentShop) { }
-
-                        if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); continue; }
-                        if (ct.IsCancellationRequested) break;
-
-                        var after = OpProgressStore.Shared.GetDone(acc.Account.Id, progressKey, AssignmentOps.Import).Count;
-                        var imported = after - initialBefore;   // có thể ÂM: Clear nháp đầu lượt bỏ SP chưa Update khỏi Import Done (tổng sau reset < tổng trước)
-
-                        // Runner đã LUÔN quét cả 2 tab (Chưa nhận → Đã nhận) trong 1 lượt nên không import lượt hai nữa:
-                        // lượt hai chỉ lặp lại và mở đường gửi trùng sau ca "chưa chắc đã gửi" của runner.
-                        // Import bị cổng Clear nháp chặn (không biết mục tiêu Update của khoá khác, Clear sẽ làm mất SP) thì nói rõ lý do, không ghi "0 SP".
-                        var importBlocked = _workspace.Update.GetImportBlockedReason(acc.Account.Id);
-                        if (importBlocked is not null)
-                            Log($"[{acc.DisplayName}] ⛔ Import bị chặn: {importBlocked}. Shop '{shop.Name}' chưa import được lượt này.");
-
-                        if (imported == 0 && after == 0 && !shop.ImportDone)
-                        {
-                            // Bỏ qua shop đó và tiếp tục với shop khác
-                            CurrentStatus = importBlocked is not null
-                                ? $"[{acc.DisplayName}] ({shop.Name}) Import bị chặn - Bỏ qua"
-                                : $"[{acc.DisplayName}] ({shop.Name}) 0 SP import - Bỏ qua";
-                            if (importBlocked is null)
-                                Log($"[{acc.DisplayName}] Import không được SP nào (0 SP) → Bỏ qua shop '{shop.Name}'.");
-                            else
-                                Log($"[{acc.DisplayName}] Bỏ qua shop '{shop.Name}' (Import bị chặn, chưa có SP nào).");
-                            continue;
-                        }
-
-                        // Trạng thái xong/chưa do RunOneWorkflowAsync ghi (completed chỉ khi import đủ mọi item id; lỗi/hủy/thiếu
-                        // thì stopped) — KHÔNG ghi đè ở đây, nếu không import lỗi giữa chừng vẫn thành "xong" và lần sau bị bỏ qua.
-                        // Chưa đủ thì vẫn Update phần đã có rồi sang shop kế; shop giữ trạng thái chưa xong, lần chạy sau import tiếp.
-                        if (imported > 0 || after > 0)
-                        {
-                            if (shop.ImportDone)
-                                Log($"[{acc.DisplayName}] Import hoàn tất ({Math.Max(0, imported)} SP mới, tổng {after} SP) cho shop '{shop.Name}'.");
-                            else
-                                Log($"[{acc.DisplayName}] ⚠ Import chưa đủ ({after} SP) — vẫn Update phần đã có, lần chạy sau import tiếp.");
-                        }
-                        await UiThread.InvokeAsync(() => shop.RefreshFleet());
-                    }
-
-                    if (ct.IsCancellationRequested) break;
-
-                    // c) BƯỚC 3: UPDATE
-                    if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); continue; }
-                    if (shop.UpdateDone)
-                    {
-                        CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Update đã xong - Bỏ qua";
-                        Log($"[{acc.DisplayName}] Shop '{shop.Name}': Update đã hoàn tất trước đó → Bỏ qua Update.");
-                    }
-                    else
-                    {
-                        CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đang Update...";
-                        accItem.Status = $"Update ({shop.Name})";
-                        Log($"[{acc.DisplayName}] Đang Update cho shop '{shop.Name}'...");
-
-                        try
-                        {
-                            await _workspace.Update.RunUpdateSingleAsync(acc.UpdateTarget, silent: true);
-                        }
-                        catch (OperationCanceledException) when (_skipCurrentShop) { }
-                        catch (Exception ex)
-                        {
-                            Log($"[{acc.DisplayName}] ✘ Lỗi Update shop '{shop.Name}': {ex.Message}");
-                        }
-
-                        if (_skipCurrentShop) { await MarkShopDoneAndAdvanceAsync(acc, shop); continue; }
-                        if (ct.IsCancellationRequested) break;
-
-                        await UiThread.InvokeAsync(() => shop.RefreshFleet());
-                        if (shop.UpdateDone)
-                        {
-                            Log($"[{acc.DisplayName}] Update shop '{shop.Name}' hoàn tất.");
-                        }
-                        else
-                        {
-                            Log($"[{acc.DisplayName}] ⚠ Shop '{shop.Name}' chưa hoàn thành Update (kiểm tra log chi tiết / ảnh update).");
-                        }
-                    }
-                }
+                // Từng shop Import (1 shop, quét tab «Tất cả») rồi Update, lần lượt.
+                await RunAccountShopsAsync(
+                    acc.Shops.ToList(),
+                    shopStep: (shop, shopIdx) => ShopStepAsync(accItem, shop, shopIdx, withImport: true, ct),
+                    ct);
 
                 if (ct.IsCancellationRequested)
                 {
@@ -583,6 +621,7 @@ public sealed partial class AutoRunViewModel : ObservableObject
             _currentRunningAccount = null;
             _currentRunningShop = null;
             _skipCurrentShop = false;
+            _lastRunEndedUtc = DateTime.UtcNow;
             IsRunning = false;
         }
     }

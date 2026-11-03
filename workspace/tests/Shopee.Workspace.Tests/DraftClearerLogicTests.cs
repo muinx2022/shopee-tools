@@ -23,6 +23,32 @@ public sealed class DraftClearerLogicTests
     public void OtherConfirmBox_IsNotClearAll_SoCallerCancels(string? text) => Assert.False(BigSellerDraftClearer.IsClearAllConfirmText(text));
 
     [Theory]
+    [InlineData("Please confirm again if you want to clear, the products cannot be recovered after clearing. Cancel Confirm")]   // câu thật 03/11
+    [InlineData("PLEASE CONFIRM AGAIN\nIF YOU  WANT TO CLEAR, the products cannot be recovered")]   // hoa thường + xuống dòng/nhiều khoảng trắng
+    public void SecondConfirm_RecognisedByPhrase(string text) => Assert.True(BigSellerDraftClearer.IsClearAllSecondConfirmText(text));
+
+    [Theory]
+    [InlineData("The task of clearing all filtered products cannot be stopped. Are you sure? Cancel Confirm")]   // câu hộp một
+    [InlineData("Are you sure you want to delete the selected products? Cancel Confirm")]
+    [InlineData("Please confirm again if you want to delete")]   // thiếu "to clear"
+    [InlineData("")]
+    [InlineData(null)]
+    public void NotSecondConfirm_SoCallerCancels(string? text) => Assert.False(BigSellerDraftClearer.IsClearAllSecondConfirmText(text));
+
+    [Fact]
+    public void NewConfirmBox_SkipsFirstBoxStillClosing()
+    {
+        const string first = "The task of clearing all filtered products cannot be stopped.";
+        const string second = "Please confirm again if you want to clear, the products cannot be recovered after clearing.";
+        Assert.Equal(-1, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { first }, first));             // hộp một đang đóng
+        Assert.Equal(-1, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { "  " + first + " ", "" }, first));
+        Assert.Equal(-1, BigSellerDraftClearer.FindNewConfirmBoxIndex(System.Array.Empty<string?>(), first));
+        Assert.Equal(1, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { first, second }, first));     // hai hộp cùng có trong DOM
+        Assert.Equal(0, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { second }, first));
+        Assert.Equal(0, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { "Hộp lạ" }, first));          // hộp lạ vẫn được chọn để caller Cancel
+    }
+
+    [Theory]
     [InlineData("Clear", true)]
     [InlineData("  clear \n", true)]
     [InlineData("Clear Filters", false)]
@@ -38,6 +64,104 @@ public sealed class DraftClearerLogicTests
     [InlineData("Confirm all", false)]
     [InlineData(null, false)]
     public void ConfirmButton_MustBeExactlyConfirm(string? text, bool expected) => Assert.Equal(expected, BigSellerDraftClearer.IsConfirmButtonText(text));
+
+    // ── Giao diện tiếng Việt (song song tiếng Anh) ─────────────────────────────────────────────
+
+    // Câu hộp 1/hộp 2 nguyên văn (Anh: DOM thật 03/11; Việt: user dán 03/11).
+    private const string EnBox1 = "The task of clearing all filtered products cannot be stopped. Are you sure? Cancel Confirm";
+    private const string EnBox2 = "Please confirm again if you want to clear, the products cannot be recovered after clearing. Cancel Confirm";
+    private const string ViBox1 = "Thao tác này sẽ xóa tất cả các sản phẩm đã lọc và không thể chấm dứt nhiệm vụ xóa. Sản phẩm sau khi bị xóa không thể khôi phục, bạn có chắc chắn xóa hay không? Hủy Đồng ý";
+    private const string ViBox2 = "Vui lòng xác nhận lại nếu bạn muốn xóa sạch, các sản phẩm không thể khôi phục sau khi xóa. Hủy Đồng ý";
+
+    [Theory]
+    [InlineData("Clear")]
+    [InlineData("Xóa sạch")]
+    [InlineData("Xoá sạch")]                 // dấu cũ (oá) vẫn khớp
+    [InlineData("  xóa   sạch \n")]          // khoảng trắng/xuống dòng/hoa thường
+    [InlineData("XÓA SẠCH")]
+    [InlineData("Xo\u0301a sa\u0323ch")]      // NFD (dấu rời) vẫn khớp nhờ NFC + bỏ dấu
+    [InlineData("Xóa\u00A0sạch")]            // khoảng trắng không ngắt
+    public void ClearMenuItem_BothLanguages_Match(string text) => Assert.True(BigSellerDraftClearer.IsClearMenuText(text));
+
+    [Theory]
+    [InlineData("Xóa")]                       // "Delete" tiếng Việt: xoá SP đang chọn, TUYỆT ĐỐI không khớp
+    [InlineData("Xoá")]
+    [InlineData("Delete")]
+    [InlineData("Chỉnh sửa hình ảnh")]
+    [InlineData("Chỉnh sửa danh mục")]
+    [InlineData("Xóa sạch bộ lọc")]           // chứa "Xóa sạch" nhưng không phải nguyên chuỗi
+    [InlineData("Clear Filters")]
+    public void ClearMenuItem_OtherItems_DoNotMatch(string text) => Assert.False(BigSellerDraftClearer.IsClearMenuText(text));
+
+    [Theory]
+    [InlineData(EnBox1)]
+    [InlineData(ViBox1)]
+    [InlineData("THAO TÁC NÀY SẼ XOÁ TẤT CẢ CÁC SẢN PHẨM ĐÃ LỌC")]   // hoa thường + dấu cũ
+    public void ClearAllConfirm_BothLanguages_Recognised(string text) => Assert.True(BigSellerDraftClearer.IsClearAllConfirmText(text));
+
+    [Theory]
+    [InlineData(EnBox2)]
+    [InlineData(ViBox2)]
+    [InlineData("Thao tác này sẽ xóa các sản phẩm đã chọn. Hủy Đồng ý")]   // hộp xoá SP đang chọn
+    public void ClearAllConfirm_CrossBoxOrOther_NotRecognised(string text) => Assert.False(BigSellerDraftClearer.IsClearAllConfirmText(text));
+
+    [Theory]
+    [InlineData(EnBox2)]
+    [InlineData(ViBox2)]
+    [InlineData("VUI LÒNG XÁC NHẬN LẠI NẾU BẠN MUỐN XOÁ SẠCH, các sản phẩm")]   // hoa thường + dấu cũ
+    public void SecondConfirm_BothLanguages_Recognised(string text) => Assert.True(BigSellerDraftClearer.IsClearAllSecondConfirmText(text));
+
+    [Theory]
+    [InlineData(EnBox1)]
+    [InlineData(ViBox1)]
+    [InlineData("Vui lòng xác nhận lại nếu bạn muốn xóa")]   // thiếu "sạch"
+    public void SecondConfirm_CrossBoxOrOther_NotRecognised(string text) => Assert.False(BigSellerDraftClearer.IsClearAllSecondConfirmText(text));
+
+    [Theory]
+    [InlineData("Confirm", true)]
+    [InlineData("Đồng ý", true)]
+    [InlineData("  ĐỒNG   Ý \n", true)]
+    [InlineData("Dong y", true)]              // bỏ dấu hoàn toàn vẫn khớp (so không dấu)
+    [InlineData("Hủy", false)]
+    [InlineData("Cancel", false)]
+    [InlineData("Đồng ý xóa", false)]         // chứa nhưng không nguyên chuỗi
+    public void ConfirmButton_BothLanguages(string text, bool expected) => Assert.Equal(expected, BigSellerDraftClearer.IsConfirmButtonText(text));
+
+    [Theory]
+    [InlineData("Cancel", true)]
+    [InlineData("Hủy", true)]
+    [InlineData("Huỷ", true)]
+    [InlineData("Confirm", false)]
+    [InlineData("Đồng ý", false)]
+    [InlineData("Hủy bỏ", false)]
+    [InlineData(null, false)]
+    public void CancelButton_BothLanguages(string? text, bool expected) => Assert.Equal(expected, BigSellerDraftClearer.IsCancelButtonText(text));
+
+    [Theory]
+    [InlineData("Bulk Actions", true)]
+    [InlineData("Thao tác hàng loạt", true)]
+    [InlineData(" THAO TÁC  HÀNG LOẠT ", true)]
+    [InlineData("Chỉnh sửa hàng loạt", false)]   // nút cùng thanh: Bulk Edit
+    [InlineData("Tải lên", false)]
+    [InlineData("Nhập", false)]
+    [InlineData("Thêm sản phẩm", false)]
+    [InlineData("Bulk Edit", false)]
+    public void BulkButton_BothLanguages(string text, bool expected) => Assert.Equal(expected, BigSellerDraftClearer.IsBulkButtonText(text));
+
+    [Fact]
+    public void NewConfirmBox_Vietnamese_SkipsFirstBoxStillClosing()
+    {
+        Assert.Equal(-1, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { ViBox1 }, ViBox1));             // hộp một đang đóng
+        Assert.Equal(1, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { ViBox1, ViBox2 }, ViBox1));     // hai hộp cùng có trong DOM
+        Assert.Equal(0, BigSellerDraftClearer.FindNewConfirmBoxIndex(new string?[] { ViBox2 }, ViBox1));
+    }
+
+    [Fact]
+    public void ButtonDiagnostics_MentionsBothLanguageButtonTexts()
+    {
+        var line = BigSellerDraftClearer.FormatButtonDiagnostics(0, 0, new string?[] { "Thao tác hàng loạt" });
+        Assert.Contains("Bulk Actions/Thao tác hàng loạt", line);
+    }
 
     [Fact]
     public void EmptyNeedsThreeConsecutiveZeroReads()
@@ -127,4 +251,37 @@ public sealed class DraftClearerLogicTests
 
     [Fact]
     public void MergeToastTexts_NothingSeen_IsEmpty() => Assert.Equal("", BigSellerDraftClearer.MergeToastTexts(Array.Empty<string?>()));
+
+    // ── Chẩn đoán khi không thấy nút Bulk Actions ──────────────────────────────────────────────
+
+    [Fact]
+    public void ButtonDiagnostics_CountsAndCapsAt15Buttons_SquashesAndTruncates()
+    {
+        var texts = new List<string?> { "  Bulk\n Actions ", "", null, new string('x', 100) };
+        for (var i = 0; i < 20; i++) texts.Add("b" + i);
+        var line = BigSellerDraftClearer.FormatButtonDiagnostics(3, 1, texts);
+        Assert.Contains("khớp 3 phần tử, đang hiện 1", line);
+        Assert.Contains("24 button đang hiện", line);
+        Assert.Contains("[Bulk Actions | (trống) | (trống) | " + new string('x', 40) + "… | b0 |", line);
+        Assert.Contains("b10", line);     // phần tử thứ 14
+        Assert.DoesNotContain("b11", line);   // phần tử thứ 16 trở đi bị cắt
+        Assert.EndsWith("(+9 nữa)", line);
+    }
+
+    // ── Trang nháp rỗng: bỏ qua Clear ──
+
+    [Theory]
+    [InlineData(true, 0, true)]      // có dấu "Không có dữ liệu" + 0 dòng → bỏ qua Clear
+    [InlineData(false, 0, false)]    // 0 dòng mà KHÔNG có dấu (đang tải...) → vẫn Clear
+    [InlineData(true, 3, false)]     // có dấu mà vẫn đếm được dòng (đọc lệch) → vẫn Clear
+    [InlineData(false, 3, false)]    // có dòng → Clear
+    public void ShouldSkipClear_OnlyWhenEmptyMarkerAndZeroRows(bool marker, int rows, bool expected) =>
+        Assert.Equal(expected, BigSellerDraftClearer.ShouldSkipClear(marker, rows));
+
+    [Fact]
+    public void PageEmptyResult_DefaultsFalse_SoOtherNothingToClearPathsKeepOldMeaning()
+    {
+        Assert.False(new DraftClearResult(DraftClearStatus.NothingToClear, "x").PageEmpty);
+        Assert.True(new DraftClearResult(DraftClearStatus.NothingToClear, "x", PageEmpty: true).PageEmpty);
+    }
 }
