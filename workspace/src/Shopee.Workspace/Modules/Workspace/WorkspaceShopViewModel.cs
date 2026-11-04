@@ -32,26 +32,43 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     public string Name => Shop.DisplayName;
     public string DisplayName => Name;
 
-    /// <summary>Đang chạy thì hiện tiến độ trực tiếp; nếu đã update xong thì hiện tổng số dòng &amp; khoảng dòng đã cập nhật.</summary>
-    public string ProgressLine
+    /// <summary>Câu cột TIẾN ĐỘ khi lượt Update chạm listing limit (hộp thoại hoặc toast).</summary>
+    internal const string ListingLimitProgressText = "Đã đạt giới hạn SP của shop";
+
+    /// <summary>Đang chạy thì hiện tiến độ trực tiếp; shop vừa chạm listing limit thì câu giới hạn
+    /// (kể cả Update chưa xong và kể cả đã có số dòng); nếu đã update xong thì hiện tổng số dòng.</summary>
+    public string ProgressLine => FormatProgress(ShopLiveLine.For(Parent.Account.Id, Shop.Id));
+
+    public string ProgressTooltip => FormatProgress(ShopLiveLine.TooltipFor(Parent.Account.Id, Shop.Id));
+
+    /// <summary>Chọn chữ cột TIẾN ĐỘ / tooltip: dòng live thắng; không thì cờ listing limit thắng cả khi
+    /// <paramref name="updateDone"/> sai và cả khi <paramref name="completedText"/> đã là «Đã cập nhật N dòng»;
+    /// không cờ thì chỉ trả chữ đó khi Update đã xong, còn lại rỗng.</summary>
+    internal static string ChooseProgressText(string? live, bool listingLimit, bool updateDone, string completedText)
     {
-        get
-        {
-            var live = ShopLiveLine.For(Parent.Account.Id, Shop.Id);
-            if (!string.IsNullOrEmpty(live)) return live;
-            return UpdateDone ? GetCompletedUpdateProgressText() : "";
-        }
+        if (!string.IsNullOrEmpty(live)) return live;
+        if (listingLimit) return ListingLimitProgressText;
+        return updateDone ? completedText : "";
     }
 
-    public string ProgressTooltip
+    private string FormatProgress(string? live)
     {
-        get
-        {
-            var live = ShopLiveLine.TooltipFor(Parent.Account.Id, Shop.Id);
-            if (!string.IsNullOrEmpty(live)) return live;
-            return UpdateDone ? GetCompletedUpdateProgressText() : "";
-        }
+        if (!string.IsNullOrEmpty(live)) return ChooseProgressText(live, listingLimit: false, updateDone: false, "");
+        var limit = UpdateHitListingLimit();
+        var completed = !limit && UpdateDone ? GetCompletedUpdateProgressText() : "";
+        return ChooseProgressText(null, limit, UpdateDone, completed);
     }
+
+    private bool UpdateHitListingLimit()
+    {
+        var account = Parent.Account;
+        var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
+        return OpProgressStore.Shared.HasListingLimit(account.Id, UpdateCandidateSheets(resolved), AssignmentOps.Update);
+    }
+
+    /// <summary>Cùng các khoá sheet mà cột tiến độ hỏi khi lấy chữ «Đã cập nhật … dòng».</summary>
+    private string?[] UpdateCandidateSheets(SharedWorkbookTarget resolved) =>
+        new[] { resolved.ProgressKey, Shop.ShopeeDataSheet, Shop.Name };
 
     private string GetCompletedUpdateProgressText()
     {
@@ -59,7 +76,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
         var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
         var summary = OpProgressStore.Shared.TryGetSummary(
             account.Id,
-            new[] { resolved.ProgressKey, Shop.ShopeeDataSheet, Shop.Name },
+            UpdateCandidateSheets(resolved),
             AssignmentOps.Update);
 
         if (summary is not { DoneCount: > 0 } s)

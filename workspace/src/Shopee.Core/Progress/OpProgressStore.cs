@@ -32,6 +32,11 @@ public sealed class OpProgress
     /// <summary>Xem <see cref="LedgerStatus"/> — client đẩy thẳng chuỗi này lên sổ hoàn thành của Hub.</summary>
     public string Status { get; set; } = LedgerStatus.Idle;
     public DateTimeOffset? LastRunAt { get; set; }
+
+    /// <summary>Lượt Update gần nhất chạm listing limit (hộp thoại hoặc toast). <c>false</c> không ghi ra JSON
+    /// để file cũ và round-trip từng byte giữ nguyên; file thiếu field đọc ra <c>false</c>.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public bool ListingLimit { get; set; }
 }
 
 /// <summary>
@@ -135,6 +140,25 @@ public sealed class OpProgressStore
         }
     }
 
+    /// <summary>Một trong các khoá sheet ứng viên (cùng danh sách UI hỏi khi vẽ cột tiến độ) của op này
+    /// đang bật <see cref="OpProgress.ListingLimit"/>.</summary>
+    public bool HasListingLimit(string accountId, IEnumerable<string?> candidateSheets, string op)
+    {
+        lock (_lock) return AnyListingLimit(_items, accountId, candidateSheets, op);
+    }
+
+    /// <summary>Phần thuần của <see cref="HasListingLimit"/> (test trực tiếp, không đụng file).</summary>
+    internal static bool AnyListingLimit(IReadOnlyList<OpProgress> items, string accountId, IEnumerable<string?> candidateSheets, string op)
+    {
+        foreach (var sheet in candidateSheets)
+        {
+            if (string.IsNullOrWhiteSpace(sheet)) continue;
+            var p = items.FirstOrDefault(x => KeyEq(x, accountId, sheet, op));
+            if (p is { ListingLimit: true }) return true;
+        }
+        return false;
+    }
+
     /// <summary>Ghi nhận N itemId ĐÃ xong (import: value=null; update: value=tên đã điền) kèm khoảng dòng Excel (nếu có).
     /// GHI FILE NGAY để bền với kill giữa chừng. Idempotent — ghi lại cùng itemId chỉ cập nhật giá trị.
     /// Import thêm id MỚI vào khoá mà Update cùng khoá đang "completed" thì Update đó về "stopped" (xem <see cref="ApplyDone"/>).</summary>
@@ -187,18 +211,25 @@ public sealed class OpProgressStore
         if (changed) Changed?.Invoke();
     }
 
-    /// <summary>Bắt đầu lượt CHẠY: đặt trạng thái running (GIỮ NGUYÊN Done — resume tiếp phần còn thiếu). Reset về
-    /// đầu là việc riêng của <see cref="Clear"/>.</summary>
+    /// <summary>Bắt đầu lượt CHẠY: đặt trạng thái running (GIỮ NGUYÊN Done — resume tiếp phần còn thiếu) và tắt
+    /// <see cref="OpProgress.ListingLimit"/> của lượt trước. Reset về đầu là việc riêng của <see cref="Clear"/>.</summary>
     public void BeginRun(string accountId, string sheet, string op, string accountName)
     {
         lock (_lock)
         {
             var p = GetOrCreateLocked(accountId, sheet, op, accountName);
-            p.Status = LedgerStatus.Running;
-            p.LastRunAt = DateTimeOffset.Now;
+            ApplyBegin(p);
             SaveLocked();
         }
         Changed?.Invoke();
+    }
+
+    /// <summary>Phần thuần của <see cref="BeginRun"/> (test trực tiếp, không đụng file): running + tắt cờ listing limit.</summary>
+    internal static void ApplyBegin(OpProgress p)
+    {
+        p.Status = LedgerStatus.Running;
+        p.LastRunAt = DateTimeOffset.Now;
+        p.ListingLimit = false;
     }
 
     /// <summary>Đánh dấu hoàn thành thủ công (Mark as done) cho (acc + sheet + op) — tự tạo bản ghi nếu chưa có.</summary>
@@ -214,8 +245,9 @@ public sealed class OpProgressStore
         Changed?.Invoke();
     }
 
-    /// <summary>Kết thúc lượt chạy: completed (chạy trọn) hoặc stopped (bị hủy giữa chừng). GIỮ NGUYÊN Done.</summary>
-    public void FinishRun(string accountId, string sheet, string op, bool completed)
+    /// <summary>Kết thúc lượt chạy: completed (chạy trọn) hoặc stopped (bị hủy giữa chừng). GIỮ NGUYÊN Done.
+    /// <paramref name="listingLimit"/> ghi đè cờ mỗi lần (true bật, false tắt). Hủy / lỗi / Next shop không kèm cờ nên tắt.</summary>
+    public void FinishRun(string accountId, string sheet, string op, bool completed, bool listingLimit = false)
     {
         lock (_lock)
         {
@@ -223,10 +255,17 @@ public sealed class OpProgressStore
                 ? GetOrCreateLocked(accountId, sheet, op, "")
                 : _items.FirstOrDefault(x => KeyEq(x, accountId, sheet, op));
             if (p is null) return;
-            p.Status = completed ? LedgerStatus.Completed : LedgerStatus.Stopped;
+            ApplyFinish(p, completed, listingLimit);
             SaveLocked();
         }
         Changed?.Invoke();
+    }
+
+    /// <summary>Phần thuần của <see cref="FinishRun"/> (test trực tiếp, không đụng file).</summary>
+    internal static void ApplyFinish(OpProgress p, bool completed, bool listingLimit)
+    {
+        p.Status = completed ? LedgerStatus.Completed : LedgerStatus.Stopped;
+        p.ListingLimit = listingLimit;
     }
 
     /// <summary>Sau khi BigSeller "Clear" toàn bộ nháp của tài khoản: với các khoá tiến độ (sheet) của <paramref name="accountId"/> mà

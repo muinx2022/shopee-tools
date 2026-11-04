@@ -322,7 +322,10 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
                 else
                     LogA($"{prefix} ⚠ {name} chưa đủ — lần chạy sau làm tiếp.");
             // [bỏ] Hub.PublishCompletion Completed
-                if (opProg != null) OpProgressStore.Shared.FinishRun(a.Id, resolved.ProgressKey, opProg, markCompleted);
+                if (opProg != null)
+                    OpProgressStore.Shared.FinishRun(
+                        a.Id, resolved.ProgressKey, opProg, markCompleted,
+                        listingLimit: kind == UpdateKind.Update && runner.ListingLimitReached);
             }
         }
             // [bỏ] catch: Hub.PublishCompletion Stopped (canceled)
