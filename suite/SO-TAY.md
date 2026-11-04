@@ -535,3 +535,31 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: workspace/.../ImportShopMatcher.PickMany, ImportPostClickClassifier nhánh shopCount > 1; param importFromClaimedTab vẫn truyền từ AutoRun/VM dù runner chỉ quét tab Tất cả
 - **Bằng chứng**: runner luôn 1 shop; rg không còn ImportAllShops/RunImportAll; PickMany + shopCount>1 vẫn trong src
 - **Vì sao không sửa ngay**: ngoài phạm vi; không còn đường UI gọi multi-shop
+
+### P-20261104-1 · [MỞ] · NHỎ — App suite vẫn sanitize video riêng, không đẩy hub
+- **Thấy lúc**: review plan hub trung gian video scrape
+- **Ở đâu**: `suite/suite/Shopee.Core/Scrape/VideoDownloader.cs` (hàm sanitize riêng). Workspace đã chuyển sang `SkuVideoSync`.
+- **Vì sao không sửa ngay**: plan cấm sửa suite. Máy đang cào/update đi đường workspace.
+
+### P-20261104-2 · [MỞ] · NHỎ — Scrape vẫn xóa `{sku}.mp4` rồi ghi đè, không vào khóa kéo của update
+- **Thấy lúc**: phản biện khóa lane update
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/VideoDownloader.cs` (`dest.part`, `File.Delete(dest)` rồi `Move`)
+- **Bằng chứng**: update kéo đã dùng `{dest}.{guid}.part` + khóa theo SKU. Scrape trên cùng máy, cùng SKU, vẫn có thể xóa file đúng lúc lane update đang đăng video lên BigSeller.
+- **Vì sao không sửa ngay**: ca chính là hai máy khác nhau. Sửa downloader nằm ngoài plan.
+
+### P-20261104-3 · [MỞ] · NHỎ — Hủy giữa lúc tải video scrape bị nuốt
+- **Thấy lúc**: đọc call site đẩy hub
+- **Ở đâu**: `LauncherRunnerLoop.cs` catch `Exception` quanh retry tải video và quanh cả bước quét video
+- **Bằng chứng**: `OperationCanceledException` là `Exception`, nên hủy của user trong lúc tải/quét video không thoát vòng. Đẩy hub nằm sau khối đó nên hủy lúc đẩy vẫn dừng.
+- **Vì sao không sửa ngay**: có từ trước, không chặn việc hub.
+
+### P-20261104-4 · [MỞ] · NHỎ — Video trên hub không có hạn giữ
+- **Thấy lúc**: chốt plan hub video
+- **Ở đâu**: blob `videos/{sku}.mp4` trong kho file hub (`/files/`)
+- **Bằng chứng**: mỗi SKU cào lại thì PUT đè. SKU không cào lại thì file nằm mãi. Không nút xóa riêng, trang Files thấy chung với config.
+- **Vì sao không sửa ngay**: user chỉ xin video scrape từ nay đi qua hub. Chưa có chủ trương dọn đĩa VPS.
+
+### P-20261104-5 · [ĐÓNG (deploy hub 04/11 10:19)] · VỪA — Hạn 30 ngày và xóa sạch video cần DELETE trên hub
+- **Thấy lúc**: nghiệm thu plan `2026-11-04-xoa-video-hub-30-ngay`, rồi user bảo deploy
+- **Ở đâu**: `DELETE /files/{*name}` trong `suite/server/Shopee.Hub.Web/Api/ClientApiEndpoints.cs`
+- **Đã deploy**: backup `/opt/shopee-hub/Shopee.Hub.Web.dll.bak-20261104-101953`, health `{"ok":true,"pg":true}`, `DELETE /files/videos/no-such-probe.mp4` không token trả 401 (route có, chưa mở). App client vẫn phải phát hành thì máy mới gọi được.

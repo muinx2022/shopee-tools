@@ -882,6 +882,23 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
         var leadShop = leadAcc.Shops[0];
         leadAcc.ScrapeTarget.SelectedShop = leadShop.Shop;
 
+        // Một lần, trước khi kiểm tra Lead. Chưa nối hub thì không hỏi. Không = cào, giữ video đang có.
+        // Lỗi hỏi/xóa không được chặn lượt cào — RunDeleteAllAsync đã nuốt lỗi mạng; đây là lưới cuối.
+        try
+        {
+            if (CoordinationRuntime.Client is not null
+                && await Dialogs.ConfirmAsync(
+                    "Xóa toàn bộ video trên hub trước khi scrape? Video trên máy này không bị xóa.",
+                    "Video trên hub"))
+            {
+                await HubVideoMaintenance.RunDeleteAllAsync(Log, CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log($"✖ Không xóa được video trên hub: {ex.Message}");
+        }
+
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
         IsRunning = true;

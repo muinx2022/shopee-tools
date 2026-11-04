@@ -35,7 +35,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     public BigSellerViewModel BigSeller { get; }
     public ScrapeViewModel Scrape { get; }
     public UpdateProductViewModel Update { get; }
-    public AutoRunViewModel AutoRun { get; }
+    public AutoRunViewModel AutoRun { get; }
     public ScrapeMultiViewModel ScrapeMulti { get; }
 
     public bool ShowScrape => WorkspaceAppConfig.ShowScrape;
@@ -119,7 +119,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         BigSeller = bigSeller;
         Scrape = scrape;
         Update = update;
-        AutoRun = new AutoRunViewModel(this);
+        AutoRun = new AutoRunViewModel(this);
         ScrapeMulti = new ScrapeMultiViewModel(this);
         _logMode = WorkspaceAppConfig.IsImportUpdateOnly ? WorkspaceLogMode.Update : WorkspaceLogMode.Scrape;
 
@@ -439,11 +439,39 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     [RelayCommand] private void ScrapeShop(WorkspaceShopViewModel? shop) => RunScrapeShop(shop, resume: false);
     [RelayCommand] private void ResumeShop(WorkspaceShopViewModel? shop) => RunScrapeShop(shop, resume: true);
 
-    private void RunScrapeShop(WorkspaceShopViewModel? shop, bool resume)
+    private void RunScrapeShop(WorkspaceShopViewModel? shop, bool resume, bool askDeleteHubVideos = false)
     {
         if (shop is null) return;
         shop.Parent.ScrapeTarget.SelectedShop = shop.Shop;
-        _ = Scrape.RunSingleAsync(shop.Parent.ScrapeTarget, resume);
+        // Hỏi xóa video nằm trong tác vụ nền: RelayCommand vẫn VOID để không khoá nút (comment khối trên).
+        _ = RunScrapeShopAsync(shop, resume, askDeleteHubVideos);
+    }
+
+    private async Task RunScrapeShopAsync(WorkspaceShopViewModel shop, bool resume, bool askDeleteHubVideos)
+    {
+        // Nút SCRAPE trên lưới là ScrapeToggle (resume true vì tiếp tục dòng thiếu) — vẫn hỏi khi BẮT ĐẦU.
+        // Lệnh ScrapeShop (resume false) cũng hỏi. Tiếp tục / dừng / Auto Run không truyền cờ và không vào đây.
+        if ((askDeleteHubVideos || !resume) && CoordinationRuntime.Client is not null)
+        {
+            try
+            {
+                if (await Dialogs.ConfirmAsync(
+                        "Xóa toàn bộ video trên hub trước khi scrape? Video trên máy này không bị xóa.",
+                        "Video trên hub"))
+                {
+                    var acc = shop.Parent;
+                    await HubVideoMaintenance.RunDeleteAllAsync(
+                        msg => Scrape.LogAcc(acc.Account.Id, acc.DisplayName, msg),
+                        CancellationToken.None);
+                }
+            }
+            catch (Exception ex)
+            {
+                var acc = shop.Parent;
+                Scrape.LogAcc(acc.Account.Id, acc.DisplayName, $"✖ Không xóa được video trên hub: {ex.Message}");
+            }
+        }
+        await Scrape.RunSingleAsync(shop.Parent.ScrapeTarget, resume);
     }
 
     /// <summary>Dừng RIÊNG scrape của tk chứa shop này (1 shop/account) — tk khác chạy tiếp.</summary>
@@ -480,7 +508,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     {
         if (shop is null) return;
         if (shop.IsScraping) _ = Scrape.StopSingleAsync(shop.Parent.ScrapeTarget);
-        else RunScrapeShop(shop, resume: true);   // bấm chạy = tiếp tục dòng còn thiếu
+        else RunScrapeShop(shop, resume: true, askDeleteHubVideos: true);   // bấm chạy = tiếp tục dòng còn thiếu, vẫn hỏi xóa video hub
     }
 
     [RelayCommand] private void ImportToggle(WorkspaceShopViewModel? shop) => ToggleUpdateOp(shop, shop?.IsImporting ?? false, t => Update.RunImportSingleAsync(t));

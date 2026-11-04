@@ -1,4 +1,5 @@
 using Shopee.Core.BigSeller;
+using Shopee.Core.Coordination;
 using Shopee.Core.Scrape;
 
 namespace OpenMultiBraveLauncherV3;
@@ -457,6 +458,10 @@ internal static class LauncherRunnerLoop
                         .ConfigureAwait(false);
                 }
 
+                // File local đã có là đủ cho dòng này. Đẩy hub là phụ: lỗi mạng không hạ videoOk, không làm rớt dòng.
+                if (!string.IsNullOrWhiteSpace(videoPath) && File.Exists(videoPath))
+                    await PushLocalVideoToHubAsync(videoPath, sku, log, cancellationToken).ConfigureAwait(false);
+
                 config.RunLog.Add(new RunnerLogEntry
                 {
                     RowNumber = rowNumber,
@@ -734,6 +739,72 @@ internal static class LauncherRunnerLoop
 
         await ExtensionRunnerAutomation.SetDisplayStateAsync(
             cdpPort, profileRoot, state, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Đẩy đúng file vừa tải. Client hub null → bỏ qua, không lỗi. Giữ khóa video hub suốt PUT để lượt quét
+    /// 30 ngày không đọc manifest cũ rồi xóa file vừa đẩy. Chờ khóa nằm ngoài timeout 90s — 90s chỉ bọc HTTP
+    /// (nối token vòng chạy), không chiếm timeout 5 phút của HttpClient bulk. Hủy của user thì ném tiếp.
+    /// </summary>
+    private static async Task PushLocalVideoToHubAsync(
+        string videoPath, string sku, Action<string> log, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(videoPath) || !File.Exists(videoPath)) return;
+        var client = CoordinationRuntime.Client;
+        if (client is null) return;
+
+        var file = Path.GetFileName(videoPath);
+        string? reason = null;
+        try
+        {
+            await HubVideoMaintenance.RunExclusiveAsync(async ct =>
+            {
+                var ok = await SkuVideoSync.TryPushAsync(
+                    videoPath,
+                    sku,
+                    async (name, bytes, token) =>
+                    {
+                        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        timeoutCts.CancelAfter(SkuVideoSync.TransferTimeout);
+                        try
+                        {
+                            var resp = await client.UploadAsync(name, bytes, null, timeoutCts.Token).ConfigureAwait(false);
+                            if (resp.Ok) return true;
+                            reason = ShortHubReason(resp.Conflict);
+                            return false;
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex)
+                        {
+                            reason = ShortHubReason(ex.Message);
+                            return false;
+                        }
+                    },
+                    ct).ConfigureAwait(false);
+
+                log(ok
+                    ? $"Đã đẩy {file} lên hub"
+                    : reason is null
+                        ? $"Không đẩy được {file} lên hub"
+                        : $"Không đẩy được {file} lên hub ({reason})");
+            }, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (cancellationToken.IsCancellationRequested) throw;
+            var timeoutS = (int)SkuVideoSync.TransferTimeout.TotalSeconds;
+            log($"Không đẩy được {file} lên hub (quá {timeoutS} giây)");
+        }
+    }
+
+    private static string? ShortHubReason(string? reason)
+    {
+        if (string.IsNullOrWhiteSpace(reason)) return null;
+        var oneLine = reason.Trim().Replace('\r', ' ').Replace('\n', ' ');
+        return oneLine.Length <= 120 ? oneLine : oneLine[..120];
     }
 
     private static async Task<VideoDownloadResult> DownloadBestVideoAsync(

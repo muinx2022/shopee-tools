@@ -57,6 +57,15 @@ public static class ClientApiEndpoints
             var res = db.PutFile(name, ms.ToArray(), ifMatch, updatedBy);
             return res.Ok ? Results.Json(res) : Results.Json(res, statusCode: StatusCodes.Status409Conflict);
         });
+        // Chỉ video. Config/cookie/ảnh đi cùng kho file — token máy không được xóa chúng. Tên video không có
+        // trong DB: DeleteFile vẫn trả true nếu tên hợp lệ (bỏ dòng manifest) → 200, client coi là đã sạch.
+        api.MapDelete("/files/{*name}", (string name) =>
+        {
+            if (!HubVideoNames.IsVideoName(name))
+                return Results.StatusCode(StatusCodes.Status403Forbidden);
+            db.DeleteFile(name);
+            return Results.Ok();
+        });
 
         // ── Khoá việc theo shop+op ──
         api.MapPost(HubRoutes.LeasesAcquire, (LeaseAcquireRequest? r) => r is null ? Results.BadRequest() : Results.Json(db.AcquireLease(r)));

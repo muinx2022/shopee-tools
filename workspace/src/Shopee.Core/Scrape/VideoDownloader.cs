@@ -51,7 +51,7 @@ public static class VideoDownloader
                     $"Bỏ tải video: ổ đĩa đích còn trống < {DiskSpaceGuard.ToGb(DiskSpaceGuard.VideoMinFreeBytes)}.");
 
             Directory.CreateDirectory(outputDir);
-            var dest = Path.Combine(outputDir, SanitizeFileName(sku) + ".mp4");
+            var dest = Path.Combine(outputDir, SkuVideoSync.FileName(sku));
             var tmp = dest + ".part";
 
             using (var resp = await Http.GetAsync(best.Url, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false))
@@ -92,11 +92,5 @@ public static class VideoDownloader
         }
         catch { }
         return null;
-    }
-
-    private static string SanitizeFileName(string name)
-    {
-        var cleaned = string.Join("_", (name ?? "video").Split(Path.GetInvalidFileNameChars())).Trim().Trim('.');
-        return string.IsNullOrEmpty(cleaned) ? "video" : cleaned;
     }
 }

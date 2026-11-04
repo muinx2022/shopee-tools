@@ -18,6 +18,9 @@ public partial class App : Application
     /// <summary>Hook đóng app chạy ĐÚNG MỘT LẦN (Closing của cửa sổ chính, Exit và SessionEnding đều gọi).</summary>
     private int _shutdownHooksRan;
 
+    /// <summary>Quét video hub quá 30 ngày: một lần ngay sau init, rồi mỗi 6 giờ khi app còn mở.</summary>
+    private System.Threading.Timer? _hubVideoSweep;
+
     /// <summary>
     /// Bọc lỗi gọi khởi tạo module Workspace — LÝ DO TỒN TẠI DUY NHẤT là để tránh lỗi nạp assembly.
     /// </summary>
@@ -80,6 +83,17 @@ public partial class App : Application
         }
         catch (Exception ex) { TryLog("BraveFleet.Init", ex); }
 
+        // App suite gọi init sau BraveFleet. Workspace trước đây không gọi → CoordinationRuntime.Client luôn
+        // null: đẩy/kéo video và xóa video quá hạn đều không chạy. Lỗi init không được chặn cửa sổ.
+        try { Shopee.Core.Coordination.CoordinationRuntime.InitForCurrentMode(); }
+        catch (Exception ex) { TryLog("Coordination.Init", ex); }
+        try
+        {
+            _hubVideoSweep = new System.Threading.Timer(
+                _ => SweepHubVideos(), null, TimeSpan.Zero, TimeSpan.FromHours(6));
+        }
+        catch (Exception ex) { TryLog("HubVideoSweep", ex); }
+
         try
         {
             Shopee.Core.Infrastructure.StartupJanitor.Notice = msg => TryLog("StartupJanitor", new Exception(msg));
@@ -100,6 +114,9 @@ public partial class App : Application
     private void RunShutdownHooks()
     {
         if (System.Threading.Interlocked.Exchange(ref _shutdownHooksRan, 1) != 0) return;
+
+        try { _hubVideoSweep?.Dispose(); } catch { }
+        _hubVideoSweep = null;
 
         try { Shopee.Core.BigSeller.BigSellerStore.Shared.Save(); } catch { }
         if (WorkspaceAppConfig.ShowImportUpdate)
@@ -148,6 +165,22 @@ public partial class App : Application
                 return true;
         }
         return false;
+    }
+
+    private static void SweepHubVideos()
+    {
+        _ = SweepHubVideosAsync();
+    }
+
+    private static async Task SweepHubVideosAsync()
+    {
+        try
+        {
+            await Shopee.Core.Scrape.HubVideoMaintenance.RunExpiredSweepAsync(
+                msg => TryLog("HubVideo", new Exception(msg)),
+                CancellationToken.None);
+        }
+        catch (Exception ex) { TryLog("HubVideo", ex); }
     }
 
     private static void TryLog(string source, Exception? ex)

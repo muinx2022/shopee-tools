@@ -519,6 +519,21 @@ public sealed class HubClient : IDisposable
         return await r.Content.ReadFromJsonAsync<FilePutResponse>(ct) ?? new FilePutResponse(false, 0, "no-response");
     }
 
+    /// <summary>Xóa một file trên hub. 200 và 404 đều là xong (404 = đã không còn). Mã khác hoặc lỗi mạng → false,
+    /// không ném — vòng xóa video bỏ qua file đó rồi đi tiếp. Hủy của caller thì ném tiếp; timeout của
+    /// <c>_http</c> (không phải hủy) cũng trả false để một file treo không cắt cả lượt quét.</summary>
+    public async Task<bool> DeleteFileAsync(string name, CancellationToken ct = default)
+    {
+        try
+        {
+            using var r = await _http.DeleteAsync(HubRoutes.Files + EncodePath(name), ct);
+            return r.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
+        catch (OperationCanceledException) { throw; }
+        catch { return false; }
+    }
+
     private async Task PostAsync<T>(string path, T body, CancellationToken ct)
     {
         var r = await _http.PostAsJsonAsync(path, body, ct);

@@ -1,5 +1,6 @@
 using Microsoft.Playwright;
 using Shopee.Core.Ai;
+using Shopee.Core.Scrape;
 
 namespace UpdateProduct;
 
@@ -108,7 +109,8 @@ internal sealed partial class BigSellerProductUpdateRunner
     {
         var folder = _settings.VideoFolder;
         if (string.IsNullOrWhiteSpace(folder)) return null;
-        var candidate = Path.Combine(folder, sku + ".mp4");
+        // Cùng tên file máy cào đã ghi (sanitize + .mp4). Ghép sku thô sẽ lệch khi sku có / \ :.
+        var candidate = SkuVideoSync.LocalPath(folder, sku);
         if (!File.Exists(candidate)) return null;
         var dur = Mp4Duration.TryGetSeconds(candidate);
         if (dur != null && dur >= 60) return null; // bỏ video dài

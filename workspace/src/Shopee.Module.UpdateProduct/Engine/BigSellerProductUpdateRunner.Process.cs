@@ -1,5 +1,7 @@
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
+using Shopee.Core.Coordination;
+using Shopee.Core.Scrape;
 
 namespace UpdateProduct;
 
@@ -182,7 +184,8 @@ internal sealed partial class BigSellerProductUpdateRunner
         }
         catch (Exception ex) { _log($"  ↳ Điền cân nặng lỗi: {ex.Message}"); }
 
-        // video discovery
+        // Thiếu file local thì kéo bản máy cào đã đẩy. 404 / hub tắt: im. Lỗi hub: một dòng log. SP vẫn đi tiếp.
+        await PullScrapedVideoIfMissingAsync(rec.Sku, ct).ConfigureAwait(false);
         var videoPath = ResolveVideoPath(rec.Sku);
 
         // [12] upload video (non-fatal, 3 attempts)
@@ -212,6 +215,61 @@ internal sealed partial class BigSellerProductUpdateRunner
         await StepAsync("Lưu sản phẩm");
         // [14] save
         return await SaveWithImageRetryAsync(page, imagePath, 3, itemId, onSaved, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Kéo video scrape từ hub về <c>VideoFolder</c> khi máy này chưa có file. Client null hoặc 404 → im.
+    /// Lỗi mạng / quá 90s → một dòng log, không làm fail SP. Có byte nhưng không ghi được file (quá trần, lỗi đĩa)
+    /// → <c>Không lưu được video</c>. Hủy của vòng update thì ném tiếp, không log.
+    /// File đã có sẵn thì không kéo và không log.
+    /// </summary>
+    private async Task PullScrapedVideoIfMissingAsync(string sku, CancellationToken ct)
+    {
+        var client = CoordinationRuntime.Client;
+        var gotBytes = false;
+        var hubFail = false;
+        string? saved = null;
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(SkuVideoSync.TransferTimeout);
+            saved = await SkuVideoSync.TryEnsureLocalAsync(
+                _settings.VideoFolder,
+                sku,
+                async (name, token) =>
+                {
+                    if (client is null) return null;
+                    try
+                    {
+                        var data = await client.DownloadAsync(name, token).ConfigureAwait(false);
+                        if (data is { Length: > 0 }) gotBytes = true;
+                        return data;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        throw;
+                    }
+                    catch
+                    {
+                        hubFail = true;
+                        return null;
+                    }
+                },
+                timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            if (ct.IsCancellationRequested) throw;
+            hubFail = true;
+            saved = null;
+        }
+
+        if (gotBytes && saved is not null)
+            _log($"Kéo video {Path.GetFileName(saved)} từ hub");
+        else if (gotBytes)
+            _log($"Không lưu được video {sku} từ hub");
+        else if (hubFail)
+            _log($"Không kéo được video {sku} từ hub");
     }
 
     private async Task<bool> SelectShippingChannelAsync(IPage page, string channelName, CancellationToken ct)
