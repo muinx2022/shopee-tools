@@ -1,5 +1,6 @@
 using System.Text.RegularExpressions;
 using Microsoft.Playwright;
+using Shopee.Core.BigSeller;
 
 namespace UpdateProduct;
 
@@ -581,6 +582,78 @@ internal static class BigSellerCrawlHelper
         catch { return 0; }
     }
 
+    /// <summary>
+    /// Đóng mọi hộp đang hiện (<c>[role=dialog]</c>, <c>.ant-modal-wrap</c>) mà
+    /// <see cref="StrayModalPolicy.ShouldCloseStrayModal"/> bảo đóng: bấm nút đóng có sẵn trên hộp
+    /// (<c>.ant-modal-close</c>, aria-label Close, nút chữ Close / Đóng / ×), không có thì Escape.
+    /// Lớp che click (fixed hoặc mask đè nút, không nằm trong hộp) thì gỡ khỏi DOM.
+    /// Giữ hộp có nút Import to Stores, checkbox shop, nút Finish / Hoàn thành, hộp listing limit
+    /// (cờ = <see cref="BigSellerSaveSuccessHelper.IsListingLimitFailure"/>), và hộp kết quả có link Hộp nháp.
+    /// Best-effort, vài vòng, không ném.
+    /// </summary>
+    public static async Task DismissStrayModalsAsync(IPage page, Action<string>? log = null)
+    {
+        try
+        {
+            var removedLayers = 0;
+            var closed = false;
+            for (var round = 0; round < 3; round++)
+            {
+                var removedNow = await RemoveClickBlockingLayersAsync(page);
+                removedLayers += removedNow;
+                var boxes = await ReadVisibleStrayModalsAsync(page);
+                var toClose = new List<int>();
+                foreach (var box in boxes)
+                {
+                    if (ShouldKeepStrayModal(box)) continue;
+                    if (box.HasCloseButton) toClose.Add(box.Index);
+                }
+
+                var clicked = toClose.Count == 0 ? 0 : await ClickStrayModalCloseAsync(page, toClose);
+                var pressedEscape = false;
+                // Escape đóng hộp trên cùng. Chỉ bấm khi hộp trên cùng chính là hộp cần đóng và hộp đó không có nút đóng —
+                // kẻo Escape trúng hộp chọn shop / Finish đang nằm trên.
+                if (clicked == 0 && boxes.Count > 0 && !boxes[^1].HasCloseButton && !ShouldKeepStrayModal(boxes[^1]))
+                {
+                    try
+                    {
+                        await page.Keyboard.PressAsync("Escape");
+                        pressedEscape = true;
+                    }
+                    catch { /* best-effort */ }
+                }
+
+                if (clicked > 0 || pressedEscape) closed = true;
+                if (clicked == 0 && !pressedEscape && removedNow == 0)
+                    break;
+                await Task.Delay(400);
+            }
+
+            try
+            {
+                await page.EvaluateAsync(
+                    "() => document.querySelectorAll('[data-stray-modal]').forEach(el => el.removeAttribute('data-stray-modal'))");
+            }
+            catch { /* best-effort */ }
+
+            if (closed)
+                log?.Invoke("Đã đóng hộp thoại không phải hộp đang cần.");
+            if (removedLayers > 0)
+                log?.Invoke($"Đã gỡ {removedLayers} lớp che click.");
+        }
+        catch { /* best-effort, không ném */ }
+    }
+
+    // Cờ Finish = nút đang hiện chữ đúng "Finish" hoặc "Hoàn thành" (JS đọc). Listing limit = tín hiệu lỗi đã có, không phải tên hộp.
+    // Link a.has_underline "Hộp nháp" / "Draft Listing" là hộp kết quả đã biết — không đóng.
+    private static bool ShouldKeepStrayModal(StrayModalSnapshot box) =>
+        box.HasDraftBoxLink ||
+        !StrayModalPolicy.ShouldCloseStrayModal(
+            box.HasImportToStoresButton,
+            box.HasShopCheckbox,
+            box.HasFinishButton,
+            BigSellerSaveSuccessHelper.IsListingLimitFailure(box.Text));
+
     /// <summary>Đóng popup hướng dẫn đổi ngôn ngữ của BigSeller ("Guide: Click here to switch the language…"
     /// + menu ngôn ngữ bị banh sẵn ra) — popup này KHÔNG phải ant-modal nên DismissBlockingModal thường không
     /// đóng được; dropdown góc phải đè đúng cột Thao tác → không click được Edit. Nhận diện THEO CẤU TRÚC
@@ -795,4 +868,137 @@ internal static class BigSellerCrawlHelper
         return current.Host.Contains("bigseller.com", StringComparison.OrdinalIgnoreCase) &&
                string.Equals(current.AbsolutePath, target.AbsolutePath, StringComparison.OrdinalIgnoreCase);
     }
+
+    // Hằng DOM dùng chung lúc đọc cờ và lúc bấm đóng. Không so tên chiến dịch.
+    // Checkbox shop = label.ant-checkbox-wrapper trong .btmOut / .cont_btm (cùng vùng danh sách shop của hộp Import).
+    private const string StrayModalProbeJs = @"
+        const norm = s => (s || '').replace(/\s+/g, ' ').trim();
+        const vis = el => !!el && el.getClientRects().length > 0;
+        const btnText = el => norm(el.innerText || el.textContent || '');
+        const isFinishText = t => t === 'Finish' || t === 'Hoàn thành';
+        const isCloseText = t => t === 'Close' || t === 'Đóng' || t === '×' || t === '✕' || t === '✖';
+        const findClose = root => {
+            const nodes = root.querySelectorAll('.ant-modal-close, button, [role=""button""], a, [aria-label]');
+            for (const el of nodes) {
+                if (el === root || !vis(el)) continue;
+                if (el.matches('.ant-modal-close')) return el;
+                const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+                if (aria === 'close') return el;
+                if (el.matches('button, [role=""button""], a') && isCloseText(btnText(el))) return el;
+            }
+            return null;
+        };
+        const controlButtons = root => Array.from(root.querySelectorAll('button, [role=""button""], a, .ant-btn'));
+        ";
+
+    private readonly record struct StrayModalSnapshot(
+        int Index,
+        string Text,
+        bool HasImportToStoresButton,
+        bool HasShopCheckbox,
+        bool HasFinishButton,
+        bool HasDraftBoxLink,
+        bool HasCloseButton);
+
+    private static async Task<List<StrayModalSnapshot>> ReadVisibleStrayModalsAsync(IPage page)
+    {
+        var raw = await page.EvaluateAsync<string[][]>(
+            "() => {" + StrayModalProbeJs + @"
+                document.querySelectorAll('[data-stray-modal]').forEach(el => el.removeAttribute('data-stray-modal'));
+                const roots = [];
+                const seen = new Set();
+                const add = el => {
+                    if (!el || seen.has(el) || !vis(el)) return;
+                    seen.add(el);
+                    roots.push(el);
+                };
+                document.querySelectorAll('.ant-modal-wrap').forEach(add);
+                document.querySelectorAll('[role=""dialog""]').forEach(el => {
+                    if (el.closest('.ant-modal-wrap')) return;
+                    add(el);
+                });
+                const out = [];
+                roots.forEach((root, i) => {
+                    root.setAttribute('data-stray-modal', String(i));
+                    const buttons = controlButtons(root);
+                    const hasImport = buttons.some(b => vis(b) && btnText(b).includes('Import to Stores'));
+                    const hasFinish = buttons.some(b => vis(b) && isFinishText(btnText(b)));
+                    const hasShop = Array.from(root.querySelectorAll('.cont_btm label.ant-checkbox-wrapper, .btmOut label.ant-checkbox-wrapper'))
+                        .some(l => vis(l) && l.querySelector('input[type=""checkbox""]'));
+                    const hasDraft = Array.from(root.querySelectorAll('a.has_underline')).some(a => {
+                        const t = (a.textContent || '').toLowerCase();
+                        return t.includes('hộp nháp') || t.includes('draft listing');
+                    });
+                    const text = norm(root.innerText || root.textContent || '').slice(0, 4000);
+                    out.push([String(i), hasImport ? '1' : '0', hasShop ? '1' : '0', hasFinish ? '1' : '0', hasDraft ? '1' : '0', findClose(root) ? '1' : '0', text]);
+                });
+                return out;
+            }");
+
+        var list = new List<StrayModalSnapshot>();
+        foreach (var row in raw ?? [])
+        {
+            if (row is not { Length: >= 7 }) continue;
+            if (!int.TryParse(row[0], out var index)) continue;
+            list.Add(new StrayModalSnapshot(
+                index,
+                row[6] ?? "",
+                row[1] == "1",
+                row[2] == "1",
+                row[3] == "1",
+                row[4] == "1",
+                row[5] == "1"));
+        }
+        return list;
+    }
+
+    private static Task<int> ClickStrayModalCloseAsync(IPage page, IReadOnlyList<int> indices) =>
+        page.EvaluateAsync<int>(
+            "indices => {" + StrayModalProbeJs + @"
+                let n = 0;
+                for (const i of indices) {
+                    const root = document.querySelector('[data-stray-modal=""' + i + '""]');
+                    if (!root) continue;
+                    const btn = findClose(root);
+                    if (!btn) continue;
+                    try { btn.click(); n++; } catch (e) {}
+                }
+                return n;
+            }",
+            indices.ToArray());
+
+    // Phần tử fixed hoặc có class mask, đang đè một nút, và không nằm trong hộp thoại: gỡ khỏi DOM.
+    // Không cần đúng class language_switch_guide. Không gỡ chính hộp thoại (đường đóng nút xử lý hộp).
+    private static Task<int> RemoveClickBlockingLayersAsync(IPage page) =>
+        page.EvaluateAsync<int>(
+            @"() => {
+                const vis = el => !!el && el.getClientRects().length > 0;
+                const inDialog = el => !!el.closest('.ant-modal-wrap, [role=""dialog""]');
+                let n = 0;
+                const seen = new Set();
+                for (const btn of document.querySelectorAll('button, [role=""button""], a')) {
+                    if (!vis(btn)) continue;
+                    const br = btn.getBoundingClientRect();
+                    if (br.width < 2 || br.height < 2) continue;
+                    const top = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2);
+                    if (!top || top === btn || btn.contains(top)) continue;
+                    let el = top;
+                    let candidate = null;
+                    while (el && el !== document.body && el !== document.documentElement) {
+                        if (inDialog(el)) { candidate = null; break; }
+                        if (el.contains(btn)) break;
+                        const cls = el.getAttribute('class') || '';
+                        const blocks = getComputedStyle(el).position === 'fixed' || /mask/i.test(cls);
+                        if (blocks) {
+                            const r = el.getBoundingClientRect();
+                            if (r.width >= 40 && r.height >= 40) candidate = el;
+                        }
+                        el = el.parentElement;
+                    }
+                    if (!candidate || seen.has(candidate)) continue;
+                    seen.add(candidate);
+                    try { candidate.remove(); n++; } catch (e) {}
+                }
+                return n;
+            }");
 }

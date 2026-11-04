@@ -430,6 +430,9 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
 
                         await DelayAsync(2000, cancellationToken);
                         await BigSellerCrawlHelper.DismissPostImportDialogsAsync(page, _log);
+                        // Đóng hộp không phải việc đang cần (nút đóng có sẵn, không thì Escape) rồi đếm lại.
+                        // Hộp chọn shop / Finish / listing limit / Hộp nháp không bị đóng. Chỉ dừng khi vẫn còn hộp.
+                        await BigSellerCrawlHelper.DismissStrayModalsAsync(page, _log);
 
                         // Còn modal hiển thị sau khi đã đóng hộp tiến trình (Finish/Escape/X không đóng nổi): không chạy tiếp kẻo
                         // hộp cũ lẫn vào kết quả hoặc chặn thao tác. Lô vừa rồi đã MarkDone nên dừng ở đây không mất gì.
@@ -522,8 +525,9 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
             await EnsureTickedMatchBatchAsync(page, ids, allowRetick: true, ct);   // lần 1: trước khi mở hộp chọn shop
             await ClickToolbarImportAsync(page);
 
-            var modal = page.Locator(".ant-modal-content:visible").Last;
-            await modal.WaitForAsync(new() { State = WaitForSelectorState.Visible, Timeout = 20000 });
+            // Hộp chọn shop = hộp đang hiện CÓ nút Import to Stores. Không lấy .ant-modal-content:visible cuối:
+            // hộp khác mở sẵn sẽ thành hộp cuối và không có checkbox shop.
+            var modal = await WaitForImportShopModalAsync(page, ct);
             await SelectImportShopsAndConfirmAsync(page, modal, [shopName], ids.Length, () => EnsureTickedMatchBatchAsync(page, ids, allowRetick: false, ct), ct);
 
             _importCount++;
@@ -1686,12 +1690,30 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         }
     }
 
+    // Sau khi bấm toolbar: chỉ nhận hộp CÓ nút Import to Stores. Mỗi vòng đóng hộp lạ rồi tìm lại, tối đa 15 giây.
+    // Hết giờ → ném (lô chưa gửi, caller không MarkDone). Không đọc checkbox trong hộp không có nút đó.
+    private async Task<ILocator> WaitForImportShopModalAsync(IPage page, CancellationToken ct)
+    {
+        var shopModal = page.Locator(".ant-modal-content:visible:has(button:has-text('Import to Stores'))");
+        var deadline = DateTime.UtcNow.AddSeconds(15);
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            await BigSellerCrawlHelper.DismissStrayModalsAsync(page, _log);
+            if (await shopModal.CountAsync() > 0)
+                return shopModal.First;
+            if (DateTime.UtcNow >= deadline)
+                throw new InvalidOperationException("Không thấy hộp có nút Import to Stores sau 15 giây — lô chưa gửi.");
+            await DelayAsync(TimeSpan.FromMilliseconds(300), ct);
+        }
+    }
+
     // Bấm 'Import to Stores' trên THANH CÔNG CỤ (cả lô) — KHÔNG phải nút từng dòng (a.action_btn) / nút trong modal.
-    // Gỡ lớp phủ hướng dẫn (vd .language_switch_guide_mask) hay CHẶN click TRƯỚC; nếu click thật vẫn bị overlay
-    // chặn (intercepts pointer events) → gỡ lại + click bằng JS (gọi thẳng handler, bỏ qua pointer-events).
+    // Trước click thật: gỡ lớp phủ hướng dẫn như cũ và đóng hộp lạ. Click thật vẫn bị chặn thì mới bấm bằng JS.
     private async Task ClickToolbarImportAsync(IPage page)
     {
         await BigSellerCrawlHelper.DismissGuideMasksAsync(page, _log);
+        await BigSellerCrawlHelper.DismissStrayModalsAsync(page, _log);
         var btn = page.Locator(
             ".bs-antd-button.mode-sucess button:has-text('Import to Stores'), " +
             ".rows .lt button:has-text('Import to Stores')").First;
@@ -1702,6 +1724,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         catch
         {
             await BigSellerCrawlHelper.DismissGuideMasksAsync(page, _log);
+            await BigSellerCrawlHelper.DismissStrayModalsAsync(page, _log);
             // Popup hướng dẫn đổi ngôn ngữ (KHÔNG phải mask/ant-modal) cũng chặn click — thử chọn Tiếng Việt/đóng.
             await BigSellerCrawlHelper.DismissLanguageGuideAsync(page, _log, CancellationToken.None);
             var ok = await page.EvaluateAsync<bool>(
@@ -1714,7 +1737,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                     return true;
                 }");
             if (!ok) throw;
-            _log("Đã bấm Import to Stores bằng JS (lớp phủ hướng dẫn chặn click thường).");
+            _log("click thường bị chặn, đã bấm Import to Stores bằng JS");
         }
     }
 
