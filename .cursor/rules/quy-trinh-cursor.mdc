@@ -1,0 +1,43 @@
+---
+description: Quy trình Cursor của repo — plan, code Grok 4.7, nghiệm thu, phản biện, phiên chính tổng hợp
+alwaysApply: true
+---
+
+# Quy trình Cursor
+
+Cursor dùng file này. Claude Code vẫn theo `D:\Projects\CLAUDE.md` và `suite/CLAUDE.md`.
+Giao tiếp tiếng Việt. Một việc một lúc. Ngoài phạm vi thì ghi vào plan rồi quay lại. Không xóa plan cũ. Không push trừ khi user yêu cầu.
+
+## Bước 0
+
+Không sửa code (hỏi, đọc hiểu, tra cứu) → trả lời thẳng, dừng.
+Có sửa code → các bước dưới. Phiên chính tự sửa chỉ khi user nói «tự làm / nhanh / đừng giao», hoặc sửa một chỗ đã biết chắc (typo, hằng số, tài liệu). Ghi rõ là tự làm.
+
+## 1. Plan
+
+Khảo sát code. Hai cách hiểu ra hai sản phẩm thì hỏi trước.
+Viết `workspace/plans/YYYY-MM-DD-<ten-khong-dau>.md` hoặc `suite/plans/...` đúng phần đang sửa. Plan có LÀM / KHÔNG LÀM, file, hành vi, tiêu chí đo được.
+Không code ở bước này. Không commit trừ khi user bảo.
+Checkout đang dở việc khác → worktree riêng, không đụng checkout đó.
+
+## 2. Code
+
+Phiên chính không viết code. Giao Task `generalPurpose`, model Grok 4.7 high (slug `grok-4.7-high-fast`). Phiên có Grok 4.7 xhigh thì dev dùng xhigh.
+Prompt tự đủ: plan, file, tiêu chí. Agent không commit trừ khi plan đã duyệt hoặc user yêu cầu.
+Sửa UI web thì agent code kiểm trên trình duyệt.
+
+## 3. Nghiệm thu và phản biện
+
+Chạy sau khi dev xong, song song, cả hai Grok 4.7 high (`grok-4.7-high-fast`):
+
+- Nghiệm thu: chấm ĐẠT / KHÔNG ĐẠT từng tiêu chí trong plan, tự chạy lệnh test và build của plan.
+- Phản biện: đọc diff, tìm lỗi logic kể cả khi test xanh.
+
+## 4. Sửa lại
+
+Tiêu chí không đạt, hoặc phản biện chỉ ra lỗi thật → giao lại dev, tối đa 2 lượt, rồi chạy lại cả hai agent.
+
+## 5. Tổng hợp
+
+Phiên chính đọc hai báo cáo, đối chiếu chỗ hai bên lệch nhau, cập nhật trạng thái plan, rồi báo user: đã làm, số đo, tiêu chí đạt hoặc không, lỗi phản biện còn lại, sổ việc ngoài phạm vi.
+Không commit, push, deploy trừ khi user hoặc plan đã duyệt yêu cầu.
