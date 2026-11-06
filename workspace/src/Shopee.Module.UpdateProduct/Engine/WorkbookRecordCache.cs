@@ -42,6 +42,41 @@ internal sealed class WorkbookRecordCache
         return new WorkbookRecordCache(map);
     }
 
+    /// <summary>
+    /// Đọc danh sách SKU của sheet (không nạp đầy record — dùng cho pre-download video trước Brave).
+    /// Trả rỗng nếu workbook lỗi, không ném.
+    /// </summary>
+    public static async Task<IReadOnlyList<string>> GetSkusAsync(
+        BigSellerWorkflowSettings wf, CancellationToken ct)
+    {
+        try
+        {
+            var skus = new List<string>();
+            if (wf.UseHubData)
+            {
+                var (client, start, end) = WorkbookSheetReader.BeginHubRead(wf);
+                var rows = await client.GetProductRecordMapAsync(wf.AccountId, wf.DataSheet, start, end, ct).ConfigureAwait(false);
+                if (rows != null)
+                {
+                    foreach (var r in rows)
+                    {
+                        if (!string.IsNullOrWhiteSpace(r.Sku)) skus.Add(r.Sku);
+                    }
+                }
+                return skus;
+            }
+
+            await WorkbookSheetReader.ForEachDataRowAsync(wf,
+                (row, _) =>
+                {
+                    var sku = WorkbookSheetReader.Cell(row, wf.SkuColumn);
+                    if (!string.IsNullOrWhiteSpace(sku)) skus.Add(sku);
+                }, ct).ConfigureAwait(false);
+            return skus;
+        }
+        catch { return []; }
+    }
+
     // Đọc workbook → map item id → record. Khóa file khi đọc (chung file giữa nhiều account): serialize với
     // lúc "Update tên SP" đang GHI cột G → tránh đọc-khi-đang-ghi (IOException/đọc lệch). Thuần, không log.
     internal static async Task<(Dictionary<string, WorkbookRecord> map, List<int> emptyRewriteRows)> LoadRecordMapAsync(

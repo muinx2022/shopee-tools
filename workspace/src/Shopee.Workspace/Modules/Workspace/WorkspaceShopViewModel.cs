@@ -35,64 +35,50 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     /// <summary>Câu cột TIẾN ĐỘ khi lượt Update chạm listing limit (hộp thoại hoặc toast).</summary>
     internal const string ListingLimitProgressText = "Đã đạt giới hạn SP của shop";
 
-    /// <summary>Đang chạy thì hiện tiến độ trực tiếp; shop vừa chạm listing limit thì câu giới hạn
-    /// (kể cả Update chưa xong và kể cả đã có số dòng); nếu đã update xong thì hiện tổng số dòng.</summary>
+    /// <summary>Đang chạy thì hiện tiến độ trực tiếp. Shop đã có số thì hai dòng Import và Update dạng đã / tổng,
+    /// kèm câu listing limit nếu lượt Update chạm giới hạn. Chưa có số thì chỉ câu giới hạn, hoặc rỗng.</summary>
     public string ProgressLine => FormatProgress(ShopLiveLine.For(Parent.Account.Id, Shop.Id));
 
     public string ProgressTooltip => FormatProgress(ShopLiveLine.TooltipFor(Parent.Account.Id, Shop.Id));
 
-    /// <summary>Chọn chữ cột TIẾN ĐỘ / tooltip: dòng live thắng; không thì cờ listing limit thắng cả khi
-    /// <paramref name="updateDone"/> sai và cả khi <paramref name="completedText"/> đã là «Đã cập nhật N dòng»;
-    /// không cờ thì chỉ trả chữ đó khi Update đã xong, còn lại rỗng.</summary>
-    internal static string ChooseProgressText(string? live, bool listingLimit, bool updateDone, string completedText)
+    /// <summary>Chọn chữ cột TIẾN ĐỘ: dòng live thắng. Không thì, khi shop đã có số Import hoặc Update,
+    /// hai dòng <c>Import: đã / tổng</c> và <c>Update: đã / tổng</c> — kể cả shop chưa được đánh dấu xong.
+    /// Chưa có số nào: câu listing limit nếu có, không thì rỗng.</summary>
+    internal static string ChooseProgressText(string? live, bool listingLimit, int importDone, int importTotal, int updateDone, int updateTotal)
     {
         if (!string.IsNullOrEmpty(live)) return live;
-        if (listingLimit) return ListingLimitProgressText;
-        return updateDone ? completedText : "";
+        if (importDone <= 0 && importTotal <= 0 && updateDone <= 0 && updateTotal <= 0)
+            return listingLimit ? ListingLimitProgressText : "";
+        var text = $"Import: {importDone} / {importTotal}\nUpdate: {updateDone} / {updateTotal}";
+        return listingLimit ? text + "\n" + ListingLimitProgressText : text;
     }
 
     private string FormatProgress(string? live)
     {
-        if (!string.IsNullOrEmpty(live)) return ChooseProgressText(live, listingLimit: false, updateDone: false, "");
-        var limit = UpdateHitListingLimit();
-        var completed = !limit && UpdateDone ? GetCompletedUpdateProgressText() : "";
-        return ChooseProgressText(null, limit, UpdateDone, completed);
-    }
-
-    private bool UpdateHitListingLimit()
-    {
+        if (!string.IsNullOrEmpty(live))
+            return ChooseProgressText(live, listingLimit: false, 0, 0, 0, 0);
         var account = Parent.Account;
         var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
-        return OpProgressStore.Shared.HasListingLimit(account.Id, UpdateCandidateSheets(resolved), AssignmentOps.Update);
+        var sheets = UpdateCandidateSheets(resolved);
+        var import = OpProgressStore.Shared.TryGetSummary(account.Id, sheets, AssignmentOps.Import);
+        var update = OpProgressStore.Shared.TryGetSummary(account.Id, sheets, AssignmentOps.Update);
+        if (update is { DoneCount: > 0 } u && (u.MinRow <= 0 || u.MaxRow <= 0))
+        {
+            WorkbookRowRangeResolver.QueueResolveIfMissing(
+                account.Id, u.Sheet, AssignmentOps.Update,
+                resolved.DataPath, resolved.DataSheet,
+                Shop.ColumnMap.ItemIdColumn, Shop.ColumnMap.LinkColumn,
+                u.DoneCount);
+        }
+        var limit = OpProgressStore.Shared.HasListingLimit(account.Id, sheets, AssignmentOps.Update);
+        return ChooseProgressText(null, limit,
+            import?.DoneCount ?? 0, import?.TargetCount ?? 0,
+            update?.DoneCount ?? 0, update?.TargetCount ?? 0);
     }
 
-    /// <summary>Cùng các khoá sheet mà cột tiến độ hỏi khi lấy chữ «Đã cập nhật … dòng».</summary>
+    /// <summary>Cùng các khoá sheet mà cột tiến độ hỏi khi lấy số Import / Update.</summary>
     private string?[] UpdateCandidateSheets(SharedWorkbookTarget resolved) =>
         new[] { resolved.ProgressKey, Shop.ShopeeDataSheet, Shop.Name };
-
-    private string GetCompletedUpdateProgressText()
-    {
-        var account = Parent.Account;
-        var resolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
-        var summary = OpProgressStore.Shared.TryGetSummary(
-            account.Id,
-            UpdateCandidateSheets(resolved),
-            AssignmentOps.Update);
-
-        if (summary is not { DoneCount: > 0 } s)
-            return "Đã cập nhật 0 dòng";
-
-        if (s.MinRow > 0 && s.MaxRow > 0)
-            return $"Đã cập nhật {s.DoneCount} dòng (từ dòng {s.MinRow} đến dòng {s.MaxRow})";
-
-        WorkbookRowRangeResolver.QueueResolveIfMissing(
-            account.Id, s.Sheet, AssignmentOps.Update,
-            resolved.DataPath, resolved.DataSheet,
-            Shop.ColumnMap.ItemIdColumn, Shop.ColumnMap.LinkColumn,
-            s.DoneCount);
-
-        return $"Đã cập nhật {s.DoneCount} dòng";
-    }
 
     /// <summary>Tooltip cho ô icon trạng thái Scrape (chỉ xem ở app Import &amp; Update).</summary>
     public string ScrapeReadOnlyTip => ScrapeDone

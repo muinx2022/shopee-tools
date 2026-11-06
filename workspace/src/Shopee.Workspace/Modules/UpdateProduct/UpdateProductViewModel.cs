@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using UpdateProduct;
 using System.IO;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -190,11 +191,6 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
     {
         if (!ValidateUpdateTarget(t, t.SelectedShop, requiresBigSellerLogin, out var problem)) { Warn(problem + ".", silent); return; }
         var a = t.Account; var s = t.SelectedShop!;
-        if (a.UsesHubData && !SharedWorkbookStore.IsActive)
-        {
-            Warn($"{a.DisplayName}: Tài khoản đang ở chế độ kho Hub — app local chỉ chạy workbook, đổi nguồn dữ liệu trong Cấu hình BigSeller.", silent);
-            return;
-        }
 
         // 1 tk BigSeller CHỈ 1 workflow tại 1 thời điểm → các shop CÙNG tk KHÔNG import/update song song.
         // TryAdd = dedup + add ATOMIC dưới lock của registry.
@@ -423,7 +419,7 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
         var missing = SharedWorkbookStore.MissingMergedProblem();
         if (missing is not null) { problem = missing; return false; }
         var resolved = SharedWorkbookStore.ResolveForUpdate(a, s);
-        if (!SharedWorkbookStore.IsActive)
+        if (!SharedWorkbookStore.IsActive && !a.UsesHubData)
         {
             if (string.IsNullOrWhiteSpace(resolved.DataSheet)) { problem = $"{a.DisplayName}/{s.DisplayName}: shop chưa gán sheet"; return false; }
             if (string.IsNullOrWhiteSpace(resolved.DataPath) || !File.Exists(resolved.DataPath)) { problem = $"{a.DisplayName}: chưa chọn file Excel hoặc file không còn — chọn lại ở Cấu hình BigSeller"; return false; }
@@ -515,12 +511,28 @@ public sealed partial class UpdateProductViewModel : ModuleViewModelBase
             OpLanes.Import, lanes, reload, ai.OpenAiApiKey,
             s.ColumnMap.LinkColumn, s.ColumnMap.PriceColumn, s.ColumnMap.SkuColumn,
             s.ColumnMap.ItemIdColumn, s.ColumnMap.ProductNameColumn, s.ColumnMap.RewrittenNameColumn,
-            a.Password, false,   // hub-mode không dùng
+            a.Password, false,   // Hub chỉ dùng cho video sync, dữ liệu SP luôn đọc từ Excel
             // Bộ 3 giá trị điền form Update — cấu hình per-shop do HUB đặt (client chỉ đọc bản đã sync về).
             // Rỗng = dùng mặc định 30069/500/"Nhanh" (hằng BigSellerShop.DefaultUpdate*).
             s.UpdateStockValue, s.UpdateWeightValue, s.UpdateShippingChannel,
             ProgressSheet: resolved.ProgressKey,
             DescriptionColumn: s.ColumnMap.DescriptionColumn);
+    }
+
+    /// <summary>
+    /// Dựng workflow settings để kiểm tra video trước khi Update mà không mở trình duyệt.
+    /// Trả null nếu tài khoản/shop chưa cấu hình hợp lệ.
+    /// </summary>
+    internal BigSellerWorkflowSettings? TryBuildWfForPreCheck(UpdateRunTargetViewModel t)
+    {
+        if (t?.SelectedShop is null) return null;
+        var s = t.SelectedShop;
+        var a = t.Account;
+        if (!ValidateUpdateTarget(t, s, requiresBigSellerLogin: false, out _)) return null;
+
+        var ai = new AiConfig();
+        var ctx = BuildContext(t, ai, kind: UpdateKind.Update, shop: s);
+        return UpdateProductRunner.BuildWorkflow(ctx);
     }
 
 }

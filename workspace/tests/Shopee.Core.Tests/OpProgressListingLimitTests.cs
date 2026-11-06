@@ -73,6 +73,22 @@ public sealed class OpProgressListingLimitTests
     }
 
     [Fact]
+    public void TargetCount_Json0KhongCoField_SoDuongCo()
+    {
+        var off = JsonSerializer.Serialize(new List<OpProgress> { new() { AccountId = "a", TargetCount = 0 } }, Indented);
+        Assert.DoesNotContain("TargetCount", off);
+
+        var on = JsonSerializer.Serialize(new List<OpProgress> { new() { AccountId = "a", TargetCount = 3703 } }, Indented);
+        Assert.Contains("\"TargetCount\": 3703", on);
+
+        var p = new OpProgress();
+        Assert.False(OpProgressStore.ApplyTargetCount(p, 0));
+        Assert.True(OpProgressStore.ApplyTargetCount(p, 3703));
+        Assert.Equal(3703, p.TargetCount);
+        Assert.False(OpProgressStore.ApplyTargetCount(p, 3703));
+    }
+
+    [Fact]
     public void AnyListingLimit_DungCacKhoaSheetUngVien()
     {
         var update = new OpProgress

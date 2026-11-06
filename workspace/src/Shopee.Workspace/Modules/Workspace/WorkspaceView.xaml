@@ -648,7 +648,7 @@
                                         <Border Grid.Row="0" BorderBrush="{StaticResource BorderLightBrush}" BorderThickness="1"
                                                 CornerRadius="6" ClipToBounds="True">
                                             <DataGrid x:Name="ShopGrid" ItemsSource="{Binding Shops}" IsReadOnly="True"
-                                                      BorderThickness="0" SelectionChanged="ShopGrid_SelectionChanged" RowHeight="40"
+                                                      BorderThickness="0" SelectionChanged="ShopGrid_SelectionChanged" RowHeight="48"
                                                       AutoGenerateColumns="False" CanUserSortColumns="False"
                                                       ColumnHeaderStyle="{StaticResource shopGridHeader}"
                                                       CellStyle="{StaticResource shopGridCell}"
@@ -676,7 +676,7 @@
                                                                 <TextBlock Text="{Binding ProgressLine}" Margin="8,0,6,0"
                                                                            VerticalAlignment="Center" FontSize="11.5"
                                                                            Foreground="{StaticResource TextSecondaryBrush}"
-                                                                           TextTrimming="CharacterEllipsis"
+                                                                           TextWrapping="Wrap"
                                                                            ToolTip="{Binding ProgressTooltip}" />
                                                             </DataTemplate>
                                                         </DataGridTemplateColumn.CellTemplate>
@@ -932,40 +932,40 @@
                                         <UniformGrid Columns="2" Margin="0,0,-6,0">
                                             <StackPanel Margin="0,0,6,6" ToolTip="Dòng Excel bắt đầu cào.">
                                                 <TextBlock Text="Từ dòng" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.StartRow}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.StartRow, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,6" ToolTip="Dòng Excel kết thúc. 0 = đến hết sheet.">
                                                 <TextBlock Text="Đến dòng (0=hết)" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.EndRow}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.EndRow, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,6" ToolTip="Số dòng mỗi lần giao cho một tài khoản Shopee."
                                                         Visibility="{Binding DataContext.ShowScrape, ElementName=Root, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="Dòng / lần" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.RowsPerAccount}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.RowsPerAccount, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,6" ToolTip="Số cửa sổ chạy song song, dùng cho mọi thao tác.">
                                                 <TextBlock Text="Số process" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.MaxProcess}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.MaxProcess, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,6" ToolTip="Nghỉ tối thiểu giữa 2 link khi scrape (giây). 0 = mặc định 120s."
                                                         Visibility="{Binding DataContext.ShowScrape, ElementName=Root, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="Nghỉ min (s)" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.RestMinSeconds}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.RestMinSeconds, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,6" ToolTip="Nghỉ tối đa giữa 2 link khi scrape (giây). 0 = mặc định 240s; nhỏ hơn min sẽ tự kéo lên bằng min."
                                                         Visibility="{Binding DataContext.ShowScrape, ElementName=Root, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="Nghỉ max (s)" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.RestMaxSeconds}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.RestMaxSeconds, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,6" ToolTip="Số tài khoản Shopee trong một khung."
                                                         Visibility="{Binding DataContext.ShowScrape, ElementName=Root, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="Số tk / khung" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.FrameSize}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding ScrapeTarget.FrameSize, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                             <StackPanel Margin="0,0,6,6" ToolTip="Số giây chờ rồi tải lại trang listing khi update."
                                                         Visibility="{Binding DataContext.ShowImportUpdate, ElementName=Root, Converter={StaticResource BoolToVis}}">
                                                 <TextBlock Text="Reload (s)" Style="{StaticResource cfgLabel}" />
-                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding UpdateTarget.ListingReloadSeconds}" />
+                                                <TextBox Style="{StaticResource cfgBox}" Text="{Binding UpdateTarget.ListingReloadSeconds, UpdateSourceTrigger=PropertyChanged}" />
                                             </StackPanel>
                                         </UniformGrid>
                                         <StackPanel Margin="0,0,0,8"

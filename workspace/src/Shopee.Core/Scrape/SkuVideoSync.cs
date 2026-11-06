@@ -59,7 +59,9 @@ public static class SkuVideoSync
 
             var bytes = await File.ReadAllBytesAsync(savedPath, ct).ConfigureAwait(false);
             if (bytes.Length == 0 || bytes.Length > MaxPushBytes) return false;
-            return await push(RemoteName(sku), bytes, ct).ConfigureAwait(false);
+            var ok = await push(RemoteName(sku), bytes, ct).ConfigureAwait(false);
+            if (ok) VideoNotFoundStore.Shared.Remove(RemoteName(sku));
+            return ok;
         }
         catch (OperationCanceledException)
         {
@@ -89,6 +91,8 @@ public static class SkuVideoSync
         var dest = LocalPath(folder, sku);
         if (File.Exists(dest)) return dest;
         if (!DiskSpaceGuard.HasFreeSpace(folder, DiskSpaceGuard.VideoMinFreeBytes)) return null;
+        var remote = RemoteName(sku);
+        if (VideoNotFoundStore.Shared.Contains(remote)) return null;
 
         var gate = DestLocks.GetOrAdd(LockKey(dest), static _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(ct).ConfigureAwait(false);
@@ -110,7 +114,11 @@ public static class SkuVideoSync
                 return null;
             }
 
-            if (bytes is null || bytes.Length == 0 || bytes.Length > MaxPushBytes) return null;
+            if (bytes is null || bytes.Length == 0 || bytes.Length > MaxPushBytes)
+            {
+                if (bytes is null) VideoNotFoundStore.Shared.Add(remote);
+                return null;
+            }
 
             var part = dest + "." + Guid.NewGuid().ToString("N") + ".part";
             try
@@ -131,6 +139,57 @@ public static class SkuVideoSync
                 TryDelete(part);
                 return null;
             }
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Kéo thẳng file từ hub xuống ổ cứng qua delegate downloadToFile (stream, không cấp phát byte[] trong RAM).
+    /// </summary>
+    public static async Task<string?> TryEnsureLocalFileAsync(
+        string? folder,
+        string? sku,
+        Func<string, string, CancellationToken, Task<bool>> downloadToFile,
+        CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(folder)) return null;
+
+        var dest = LocalPath(folder, sku);
+        if (File.Exists(dest)) return dest;
+        if (!DiskSpaceGuard.HasFreeSpace(folder, DiskSpaceGuard.VideoMinFreeBytes)) return null;
+        var remote = RemoteName(sku);
+        if (VideoNotFoundStore.Shared.Contains(remote)) return null;
+
+        var gate = DestLocks.GetOrAdd(LockKey(dest), static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            if (File.Exists(dest)) return dest;
+
+            bool ok;
+            try
+            {
+                ok = await downloadToFile(remote, dest, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (!ok)
+            {
+                VideoNotFoundStore.Shared.Add(remote);
+                return null;
+            }
+
+            return File.Exists(dest) ? dest : null;
         }
         finally
         {

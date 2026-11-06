@@ -56,7 +56,14 @@ public static class SuitePaths
     /// Đường dẫn một file cục bộ-theo-máy NGAY DƯỚI Root (KHÔNG đồng bộ): machine.json, hub-client.json.
     /// Khác ModuleDir ở chỗ không tạo thư mục con; người gọi tự bảo đảm Root tồn tại khi ghi.
     /// </summary>
-    public static string RootFile(string name) => Path.Combine(Root, name);
+    public static string RootFile(string name)
+    {
+        var primary = Path.Combine(Root, name);
+        if (File.Exists(primary)) return primary;
+        var suitePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShopeeSuite", name);
+        if (File.Exists(suitePath)) return suitePath;
+        return primary;
+    }
 
     /// <summary>Thư mục cache các file dùng chung tải từ Hub về máy này (workbook, cookie…).</summary>
     public static string HubCacheDir => ModuleDir("hub-cache");

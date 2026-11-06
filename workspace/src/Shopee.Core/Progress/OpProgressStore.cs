@@ -4,7 +4,7 @@ using Shopee.Core.Infrastructure;
 namespace Shopee.Core.Progress;
 
 /// <summary>Tóm tắt gọn tiến độ 1 op của shop (trạng thái + số dòng đã xong + khoảng dòng đầu..cuối).</summary>
-public readonly record struct OpProgressSummary(string Sheet, string Status, int DoneCount, int MinRow, int MaxRow);
+public readonly record struct OpProgressSummary(string Sheet, string Status, int DoneCount, int MinRow, int MaxRow, int TargetCount);
 
 /// <summary>Kết quả <see cref="OpProgressStore.ResetImportWithoutUpdate"/> cho 1 khoá: sheet và số id đã bỏ khỏi Import Done.</summary>
 public sealed record ImportResetSheet(string Sheet, int Removed);
@@ -37,6 +37,11 @@ public sealed class OpProgress
     /// để file cũ và round-trip từng byte giữ nguyên; file thiếu field đọc ra <c>false</c>.</summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
     public bool ListingLimit { get; set; }
+
+    /// <summary>Tổng SP mục tiêu của op này (import: số item id trong sheet; update: số dòng workbook cần update).
+    /// 0 = chưa biết — không ghi ra JSON để file cũ giữ nguyên từng byte.</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+    public int TargetCount { get; set; }
 }
 
 /// <summary>
@@ -131,12 +136,12 @@ public sealed class OpProgressStore
                 var p = _items.FirstOrDefault(x => KeyEq(x, accountId, sheet, op));
                 if (p is null) continue;
                 if (string.Equals(p.Status, LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase) && p.Done.Count > 0)
-                    return new OpProgressSummary(p.Sheet, p.Status, p.Done.Count, p.MinRow, p.MaxRow);
+                    return new OpProgressSummary(p.Sheet, p.Status, p.Done.Count, p.MinRow, p.MaxRow, p.TargetCount);
                 fallback ??= p;
             }
             return fallback is null
                 ? null
-                : new OpProgressSummary(fallback.Sheet, fallback.Status, fallback.Done.Count, fallback.MinRow, fallback.MaxRow);
+                : new OpProgressSummary(fallback.Sheet, fallback.Status, fallback.Done.Count, fallback.MinRow, fallback.MaxRow, fallback.TargetCount);
         }
     }
 
@@ -193,6 +198,28 @@ public sealed class OpProgressStore
         if (!addedNew || !string.Equals(p.Op ?? "", AssignmentOps.Import, StringComparison.Ordinal)) return;
         var upd = items.FirstOrDefault(x => KeyEq(x, p.AccountId, p.Sheet, AssignmentOps.Update));
         if (upd is not null) StopIfCompleted(upd);
+    }
+
+    /// <summary>Ghi tổng SP mục tiêu của (acc + sheet + op). 0 thì bỏ qua. Không đổi tập Done.</summary>
+    public void SetTargetCount(string accountId, string sheet, string op, int targetCount)
+    {
+        if (targetCount <= 0) return;
+        var changed = false;
+        lock (_lock)
+        {
+            var p = GetOrCreateLocked(accountId, sheet, op, "");
+            changed = ApplyTargetCount(p, targetCount);
+            if (changed) SaveLocked();
+        }
+        if (changed) Changed?.Invoke();
+    }
+
+    /// <summary>Phần thuần của <see cref="SetTargetCount"/> (test trực tiếp, không đụng file).</summary>
+    internal static bool ApplyTargetCount(OpProgress p, int targetCount)
+    {
+        if (targetCount <= 0 || p.TargetCount == targetCount) return false;
+        p.TargetCount = targetCount;
+        return true;
     }
 
     /// <summary>Cập nhật khoảng dòng (MinRow..MaxRow) đã đối chiếu từ workbook cho bản ghi sẵn có.</summary>

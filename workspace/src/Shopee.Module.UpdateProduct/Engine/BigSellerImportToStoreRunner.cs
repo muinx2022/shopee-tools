@@ -142,6 +142,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
             State = new ImportShopState(_settings.ProgressKey, _settings.ShopName, ids),
             RowById = rowById,
         };
+        OpProgressStore.Shared.SetTargetCount(_settings.AccountId, _settings.ProgressKey, AssignmentOps.Import, ids.Count);
     }
 
     private async Task<(HashSet<string> Ids, Dictionary<string, int> RowById)> LoadImportItemIdSetAsync(BigSellerWorkflowSettings target, CancellationToken ct)

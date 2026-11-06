@@ -438,10 +438,14 @@ public sealed partial class AutoRunViewModel : ObservableObject
         CurrentStatus = $"[{acc.DisplayName}] ({shopIdx + 1}/{acc.Shops.Count} - {shop.Name}) Đang Update...";
         accItem.Status = $"Update ({shop.Name})";
         Log($"[{acc.DisplayName}] Đang Update cho shop '{shop.Name}'...");
+        Log($"[{acc.DisplayName}] [VideoCheck] Kiểm tra video cho shop '{shop.Name}' trước khi mở Brave...");
 
         try
         {
-            await _workspace.Update.RunUpdateSingleAsync(acc.UpdateTarget, silent: true, externalCt: ct);
+            await _workspace.RunWithVideoPreDownloadAsync(shop, async t =>
+            {
+                await _workspace.Update.RunUpdateSingleAsync(t, silent: true, externalCt: ct);
+            }, autoStartDownload: true, externalCt: ct);
         }
         catch (OperationCanceledException) when (_skipCurrentShop) { }
         catch (Exception ex)
