@@ -1,4 +1,5 @@
 using Shopee.Core.BigSeller;
+using Shopee.Core.Coordination;
 using Shopee.Core.Scrape;
 using Shopee.Core.Progress;
 using System.Windows.Input;
@@ -117,14 +118,21 @@ public sealed partial class ShellViewModel : ObservableObject
             wsScreens.Add(wsAccounts);
         }
 
+        var wsActions = new List<object>
+        {
+            new RibbonActionItem("Dừng jobs", "IconStop", StopWorkspaceJobsCommand,
+                "Dừng các việc đang chạy (Scrape · Update)"),
+        };
+        if (WorkspaceAppConfig.ShowScrape)
+        {
+            wsActions.Add(new RibbonActionItem("Đẩy video", "IconSync", PushVideosToHubCommand,
+                "Đẩy video trong thư mục video (30 ngày qua) lên hub: chỉ file hub thiếu/khác, hoặc đẩy lại toàn bộ"));
+        }
+
         var workspaceTab = new RibbonTab("Workspace", new List<RibbonGroup>
         {
             new RibbonGroup("Màn hình", wsScreens),
-            new RibbonGroup("Hành động", new object[]
-            {
-                new RibbonActionItem("Dừng jobs", "IconStop", StopWorkspaceJobsCommand,
-                    "Dừng các việc đang chạy (Scrape · Update)"),
-            }),
+            new RibbonGroup("Hành động", wsActions),
         });
         _workspaceTab = workspaceTab;
 
@@ -246,6 +254,7 @@ public sealed partial class ShellViewModel : ObservableObject
         if (_update.IsRunning) n++;
         if (_workspace.AutoRun.IsRunning) n++;
         if (_workspace.ScrapeMulti.IsRunning) n++;
+        if (_isPushingVideos) n++;
         foreach (var acct in Shopee.Core.BigSeller.BigSellerStore.Shared.Accounts)
             if (_update.IsUpdateRunning(acct.Id)) n++;
         JobStatusText = n > 0 ? $"Đang chạy — {n} job" : "Rảnh — không có job";
@@ -274,6 +283,119 @@ public sealed partial class ShellViewModel : ObservableObject
             _update.StopAllSingle();
         if (WorkspaceAppConfig.ShowScrape && _scrape.IsBusy && _scrape.StopCommand.CanExecute(null))
             _scrape.StopCommand.Execute(null);
+        _videoPushCts?.Cancel();
+    }
+
+    private CancellationTokenSource? _videoPushCts;
+    private bool _isPushingVideos;
+
+    /// <summary>
+    /// Đẩy video trong thư mục video (30 ngày qua) lên hub. Không chạy khi đang scrape. Quét trước để biết X và Y,
+    /// rồi hỏi chế độ qua <see cref="PushVideosDialog"/>. Một lô một lần bấm (AsyncRelayCommand tự chặn bấm chồng).
+    /// </summary>
+    [RelayCommand]
+    private async Task PushVideosToHubAsync()
+    {
+        if (CoordinationRuntime.Client is null)
+        {
+            await Dialogs.InfoAsync("Chưa nối hub, không đẩy được video.");
+            return;
+        }
+        if (_scrape.IsBusy || _workspace.ScrapeMulti.IsRunning || _workspace.AutoRun.IsRunning)
+        {
+            await Dialogs.InfoAsync("Đang scrape. Đợi scrape xong rồi bấm lại.");
+            return;
+        }
+        var folder = _workspace.VideoDir;
+        if (string.IsNullOrWhiteSpace(folder) || !await Task.Run(() => Directory.Exists(folder)))
+        {
+            await Dialogs.InfoAsync("Thư mục video trống hoặc không tồn tại. Chọn thư mục video trước khi đẩy.");
+            return;
+        }
+
+        var cts = new CancellationTokenSource();
+        _videoPushCts = cts;
+        _isPushingVideos = true;
+        UiThread.Post(RefreshJobStatus);
+        try
+        {
+            await RunVideoPushAsync(folder, cts.Token);
+        }
+        finally
+        {
+            _isPushingVideos = false;
+            _videoPushCts = null;
+            cts.Dispose();
+            UiThread.Post(RefreshJobStatus);
+        }
+    }
+
+    private async Task RunVideoPushAsync(string folder, CancellationToken ct)
+    {
+        var log = _workspace.ScrapeMulti;
+
+        (IReadOnlyList<LocalVideo> All, IReadOnlyList<LocalVideo> Missing) scan;
+        try
+        {
+            scan = await HubVideoBulkPush.ScanAsync(folder, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            log.Log("Đã dừng đẩy video khi đang quét thư mục");
+            return;
+        }
+        catch (HubVideoScanException ex)
+        {
+            await Dialogs.InfoAsync(ex.Message);
+            return;
+        }
+
+        if (scan.All.Count == 0)
+        {
+            await Dialogs.InfoAsync("Thư mục không có video nào trong 30 ngày qua.");
+            return;
+        }
+
+        var dialog = new PushVideosDialog(scan.All.Count, scan.Missing.Count);
+        await WindowHost.ShowDialogAsync(dialog);
+        await dialog.WaitClosedAsync();
+        var items = dialog.Choice switch
+        {
+            PushVideosChoice.Missing => scan.Missing,
+            PushVideosChoice.All => scan.All,
+            _ => null,
+        };
+        if (items is null) return;
+
+        var total = items.Count;
+        var ok = 0;
+        var fail = 0;
+        log.Log($"Bắt đầu đẩy {total} video lên hub");
+        try
+        {
+            await HubVideoBulkPush.PushToHubAsync(items, (video, success, reason) =>
+            {
+                if (success)
+                {
+                    ok++;
+                    return;
+                }
+                fail++;
+                var file = Path.GetFileName(video.Path);
+                log.Log(reason is null
+                    ? $"Không đẩy được {file} lên hub"
+                    : $"Không đẩy được {file} lên hub ({reason})");
+            }, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            log.Log($"Đã dừng đẩy video: {ok}/{total} xong");
+            return;
+        }
+
+        var summary = $"Đã đẩy {ok}/{total} video lên hub, lỗi {fail}";
+        log.Log(summary);
+        await Dialogs.InfoAsync(summary);
     }
 
     /// <summary>Cửa sổ được kích hoạt lại: nạp DB chung, trừ khi đang có job.</summary>

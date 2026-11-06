@@ -1,0 +1,42 @@
+<Window x:Class="Shopee.Workspace.Modules.Workspace.PushVideosDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:c="clr-namespace:Shopee.Workspace.Controls"
+        Title="Đẩy video lên hub"
+        SizeToContent="WidthAndHeight" ResizeMode="NoResize"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="True"
+        Background="{StaticResource WindowBackgroundBrush}" FontFamily="{StaticResource UiFont}"
+        UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"
+        TextOptions.TextRenderingMode="ClearType">
+    <StackPanel Margin="20" Width="420">
+        <TextBlock x:Name="SummaryText" TextWrapping="Wrap" />
+
+        <Button x:Name="MissingButton" Style="{StaticResource primary}" IsDefault="True"
+                Margin="0,16,0,0" Click="OnMissing">
+            <StackPanel Orientation="Horizontal">
+                <c:PathIcon Data="{StaticResource IconSync}" />
+                <TextBlock x:Name="MissingLabel" Style="{StaticResource btnLabel}" />
+            </StackPanel>
+        </Button>
+
+        <Button x:Name="AllButton" Margin="0,10,0,0" Click="OnAll">
+            <StackPanel Orientation="Horizontal">
+                <c:PathIcon Data="{StaticResource IconRefresh}" />
+                <TextBlock x:Name="AllLabel" Style="{StaticResource btnLabel}" />
+            </StackPanel>
+        </Button>
+        <TextBlock Margin="0,4,0,0" TextWrapping="Wrap" FontSize="12"
+                   Foreground="{StaticResource TextSecondaryBrush}"
+                   Text="Ghi đè video trên hub, tính lại hạn 30 ngày." />
+
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <!-- IsCancel: Esc và nút Hủy đều ra Cancel. Đóng bằng X cũng giữ Cancel (Choice mặc định). -->
+            <Button MinWidth="90" IsCancel="True">
+                <StackPanel Orientation="Horizontal">
+                    <c:PathIcon Data="{StaticResource IconClose}" />
+                    <TextBlock Style="{StaticResource btnLabel}" Text="Hủy" />
+                </StackPanel>
+            </Button>
+        </StackPanel>
+    </StackPanel>
+</Window>
