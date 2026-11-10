@@ -360,7 +360,7 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                         {
                             (confirmed, noNewPageData) = await WaitForConfirmedPageAsync(page, cancellationToken);
                             rowCount = await GetBodyRowCountAsync(page);
-                            checkedIds = await CheckMatchingRowsOnPageAsync(page);
+                            checkedIds = await CheckMatchingRowsOnPageAsync(page, ct: cancellationToken);
                         }
                         catch (Exception ex) when (CdpErrors.IsTransientNavigationError(ex))
                         {
@@ -1352,13 +1352,23 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     private const string ImgKeyJs = @"
                 const key = src => { if (!src) return ''; const u = src.split('?')[0].replace(/\/+$/, ''); const p = u.split('/'); return p[p.length - 1] || ''; };";
 
-    // Helpers DOM checkbox hàng vxe — tick + đọc lại DÙNG CHUNG (cùng find / isChecked / toggle).
+    // Helpers DOM checkbox hàng vxe — tick + đọc lại DÙNG CHUNG (cùng find / isChecked).
     // DOM thật (03/11): td.col--checkbox > .vxe-cell > span.vxe-cell--checkbox > span.vxe-checkbox--icon.vxe-icon-checkbox-unchecked|checked.
-    // Click ưu tiên .vxe-checkbox--icon (rồi cell / input). Gom theo rowid vì fixed-left có thể nhân đôi hàng.
+    // Gom theo rowid vì fixed-left có thể nhân đôi hàng. QUAN TRỌNG: vxe vẽ mỗi hàng 2–3 lần (main + fixed-left + fixed-right); bản checkbox
+    // trong main bị visibility:hidden nhưng VẪN CÓ kích thước nên kiểm tra kích thước thôi (bản cũ) luôn chọn nhầm bản ẩn này — cả khi bấm lẫn
+    // khi đọc lại → đọc ra "chưa tick" mãi (log 06/11: Playwright báo "element is not visible"). vis phải loại visibility:hidden / display:none.
+    // KHÔNG còn hàm toggle JS: element.click() chỉ phát 1 sự kiện click
+    // không đáng tin và BigSeller/vxe không nhận (log 06/11: icon vẫn unchecked sau cả lần tick lại) — việc bấm làm ở C#
+    // bằng click chuột thật của Playwright (xem <see cref="CheckMatchingRowsOnPageAsync"/>).
     // KHÔNG đọc .vxe-cell--label / col_8 làm Shopee id (dump user: mọi dòng trùng một số) — id chỉ từ map ảnh→API.
     // isChecked mirror ImportBatchPlanner.VxeCheckboxLooksChecked.
     private const string VxeRowCheckboxJs = @"
-                const vis = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+                const vis = el => {
+                    const r = el.getBoundingClientRect();
+                    if (!(r.width > 0 && r.height > 0)) return false;
+                    const s = getComputedStyle(el);
+                    return s.visibility !== 'hidden' && s.display !== 'none';
+                };
                 const findCheckbox = tr => {
                     let cell = Array.from(tr.querySelectorAll('.vxe-cell--checkbox')).find(vis) || null;
                     let icon = cell ? cell.querySelector('.vxe-checkbox--icon') : null;
@@ -1383,11 +1393,6 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                         if (el.getAttribute && el.getAttribute('aria-checked') === 'true') return true;
                     }
                     return false;
-                };
-                const toggle = e => {
-                    if (!e) return;
-                    const t = e.icon || e.input || e.cell;
-                    if (t) t.click();
                 };";
 
     private void LogWorkbookIds(Dictionary<string, int> rowById)
@@ -1556,7 +1561,14 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     // THỊ → gom theo rowid rồi ghép. Trả về mảng shopee id vừa tick (lô import).
     // LOẠI TRỪ: mọi dòng đang tick mà không thuộc lô bị BỎ TICK (kể cả dòng không nhận ra được id), để mỗi lần Import chỉ chứa SP của đúng một lô.
     // <paramref name="only"/> != null (trang có nhiều lô theo tập shop): lô = SP trong tập đó; null: lô = mọi SP khớp trên trang.
-    private async Task<string[]> CheckMatchingRowsOnPageAsync(IPage page, HashSet<string>? only = null)
+    //
+    // Hai pha: (1) JS CHỈ đọc trạng thái + ĐÁNH DẤU (data-ws-tick=i) checkbox nào cần đổi (đang chưa tick mà cần tick, hoặc đang tick
+    // mà cần bỏ), KHÔNG bấm; (2) C# bấm từng cái bằng CLICK CHUỘT THẬT của Playwright. Lý do: element.click() trong JS chỉ phát 1 sự kiện
+    // click không đáng tin — log 06/11 cho thấy cả click vào cell (bản cũ) lẫn vào icon (bản 04/11) đều KHÔNG đổi được trạng thái vxe.
+    // Click thật đi qua kiểm tra hit-target nên popup/lớp phủ đè lên sẽ bị bắt (và được dọn) thay vì nuốt lặng.
+    // Trả về id của lô (SP muốn tick) bất kể click có ăn hay không — cổng EnsureTickedMatchBatchAsync mới là nơi xác nhận,
+    // để lỗi tick không bị nhầm thành "0 SP khớp / quét sạch".
+    private async Task<string[]> CheckMatchingRowsOnPageAsync(IPage page, HashSet<string>? only = null, CancellationToken ct = default)
     {
         Dictionary<string, string> toTick;
         lock (_apiLock)
@@ -1567,8 +1579,12 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         }
         if (toTick.Count == 0) return Array.Empty<string>();
 
-        var clicked = await page.EvaluateAsync<string[]>(
+        // Popup / lớp phủ hướng dẫn mở sẵn sẽ chặn click chuột thật → dọn TRƯỚC khi tick (cùng bộ dọn dùng trước nút Import trên toolbar).
+        await DismissTickBlockersAsync(page, ct);
+
+        var raw = await page.EvaluateAsync<string[]>(
             "(arg) => { const map = arg.map; const only = arg.only ? new Set(arg.only) : null;" + ImgKeyJs + VxeRowCheckboxJs + @"
+                document.querySelectorAll('[data-ws-tick]').forEach(el => el.removeAttribute('data-ws-tick'));
                 const byId = new Map();   // rowid -> { key, cb }
                 for (const tr of Array.from(document.querySelectorAll('tr.vxe-body--row'))) {
                     const rowid = tr.getAttribute('rowid');
@@ -1581,19 +1597,94 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                     }
                     if (!e.cb) e.cb = findCheckbox(tr);
                 }
-                const clicked = [];
+                const wanted = []; let marked = 0;
                 for (const e of byId.values()) {
                     if (!e.cb) continue;
                     const checked = isChecked(e.cb);
                     const id = e.key ? map[e.key] : null;
                     const want = !!id && (!only || only.has(id));
-                    if (want) { if (!checked) toggle(e.cb); clicked.push(id); }
-                    else if (checked) toggle(e.cb);   // loại trừ: bỏ tick MỌI dòng không thuộc lô (kể cả dòng không có trong map)
+                    if (want) wanted.push(id);
+                    // cần đổi trạng thái: muốn tick mà chưa tick, hoặc không thuộc lô mà đang tick (loại trừ MỌI dòng ngoài lô, kể cả dòng không có trong map)
+                    if (want !== checked) {
+                        const t = [e.cb.icon, e.cb.cell, e.cb.input].find(x => x && vis(x));
+                        if (t) { t.setAttribute('data-ws-tick', String(marked)); marked++; }
+                    }
                 }
-                return clicked;
+                return [String(marked), ...wanted];
             }",
             new { map = toTick, only = only?.ToArray() });
-        return clicked ?? Array.Empty<string>();
+        if (raw is null || raw.Length == 0) return Array.Empty<string>();
+
+        if (int.TryParse(raw[0], out var marked) && marked > 0)
+            await ClickMarkedTicksAsync(page, marked, ct);
+        return raw.Skip(1).ToArray();
+    }
+
+    // Bấm các checkbox đã đánh dấu data-ws-tick=0..marked-1 bằng click chuột thật (trusted). Bị lớp phủ chặn ("intercepts pointer events")
+    // → dọn popup/mask rồi thử lại đúng 1 lần cho dòng đó. 3 dòng liền thất bại → các dòng còn lại dùng click JS như bản cũ (dự phòng cuối,
+    // cũng để không treo 3s × 50 dòng). Lỗi điều hướng/hủy được ném lại cho caller; mọi lỗi khác chỉ log — cổng Ensure sẽ chặn nếu tick lệch.
+    private async Task ClickMarkedTicksAsync(IPage page, int marked, CancellationToken ct)
+    {
+        const int MaxConsecutiveRealFailures = 3;
+        int realFailed = 0, viaJs = 0, consecutive = 0;
+        string? firstError = null;
+        var dismissedOnIntercept = false;
+        var jsOnly = false;
+
+        for (var i = 0; i < marked; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            var target = page.Locator($"[data-ws-tick='{i}']").First;
+
+            if (!jsOnly)
+            {
+                var err = await TryRealClickAsync(target);
+                if (err is not null && !dismissedOnIntercept && err.Contains("intercepts pointer events", StringComparison.OrdinalIgnoreCase))
+                {
+                    dismissedOnIntercept = true;
+                    await DismissTickBlockersAsync(page, ct);
+                    err = await TryRealClickAsync(target);
+                }
+                if (err is null) { consecutive = 0; continue; }
+
+                realFailed++;
+                firstError ??= err;
+                if (++consecutive >= MaxConsecutiveRealFailures) jsOnly = true;
+            }
+
+            try { await target.EvaluateAsync("el => el.click()", null, new() { Timeout = 2000 }); viaJs++; }
+            catch (Exception ex) when (CdpErrors.IsTransientNavigationError(ex)) { throw; }
+            catch (Exception ex) { firstError ??= ex.Message; }
+        }
+
+        if (realFailed > 0)
+        {
+            var detail = (firstError ?? "").Replace("\r", "").Replace("\n", " | ");
+            if (detail.Length > 400) detail = detail[..400] + "…";
+            _log($"⚠ Click chuột thật vào checkbox lỗi {realFailed}/{marked} dòng (đã dự phòng click JS {viaJs} dòng): {detail}");
+        }
+    }
+
+    // Click chuột thật vào 1 checkbox đã đánh dấu. null = bấm xong; chuỗi = lý do thất bại. Lỗi điều hướng / hủy ném lại.
+    private static async Task<string?> TryRealClickAsync(ILocator target)
+    {
+        try
+        {
+            await target.ClickAsync(new() { Timeout = 2000 });
+            return null;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (CdpErrors.IsTransientNavigationError(ex)) { throw; }
+        catch (Exception ex) { return ex.Message; }
+    }
+
+    // Dọn thứ có thể chặn click chuột thật vào bảng: lớp phủ hướng dẫn, popup lạ (giữ hộp Import to Stores / Finish / listing limit…),
+    // popup đổi ngôn ngữ. Cùng bộ dọn dùng trước nút Import trên toolbar; best-effort, không ném (trừ hủy).
+    private async Task DismissTickBlockersAsync(IPage page, CancellationToken ct)
+    {
+        await BigSellerCrawlHelper.DismissGuideMasksAsync(page, _log);
+        await BigSellerCrawlHelper.DismissStrayModalsAsync(page, _log);
+        await BigSellerCrawlHelper.DismissLanguageGuideAsync(page, _log, ct);
     }
 
     // Đọc lại trên Crawl List các dòng ĐANG TICK: (số dòng tick — kể cả dòng không nhận ra được id, id nhận ra được theo khoá ảnh). Dùng map ảnh→id của MỌI SP
@@ -1629,7 +1720,8 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
     }
 
     // Trước khi bấm Import: các dòng đang tick PHẢI đúng bằng tập id của lô (số dòng + tập id). Lệch → ném (lỗi TRƯỚC click, chưa gửi, không MarkDone).
-    // allowRetick: sau tick lần đầu, chờ ~300ms rồi đọc; nếu 0 dòng tick → tick lại 1 lần + delay + đọc lần 2; vẫn lệch thì log chẩn đoán class rồi ném.
+    // allowRetick: sau tick lần đầu, chờ ~300ms rồi đọc; nếu lệch (0 dòng, thiếu hoặc dư) → tick lại 1 lần (idempotent: chỉ đổi dòng đang sai,
+    // gồm cả bỏ tick dòng dư) + delay + đọc lần 2; vẫn lệch thì log chẩn đoán rồi ném. Cổng KHÔNG được nới: vẫn đòi khớp đủ lô mới bấm Import.
     private async Task EnsureTickedMatchBatchAsync(IPage page, string[] batchIds, bool allowRetick, CancellationToken ct)
     {
         await DelayAsync(300, ct);
@@ -1637,24 +1729,24 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
         if (ImportBatchPlanner.TickedMatchesBatch(batchIds, ids, rows))
             return;
 
-        if (allowRetick && rows == 0)
+        if (allowRetick)
         {
-            _log($"⚠ Ensure tick: đọc lại 0 dòng đang tick (cần {batchIds.Length}) — tick lại 1 lần rồi kiểm tra…");
-            await CheckMatchingRowsOnPageAsync(page, new HashSet<string>(batchIds, StringComparer.Ordinal));
+            _log($"⚠ Ensure tick: đọc lại {rows} dòng đang tick, nhận ra {ids.Length} id (cần {batchIds.Length}) — tick lại 1 lần rồi kiểm tra…");
+            await CheckMatchingRowsOnPageAsync(page, new HashSet<string>(batchIds, StringComparer.Ordinal), ct);
             await DelayAsync(300, ct);
             (rows, ids) = await ReadTickedRowsAsync(page);
             if (ImportBatchPlanner.TickedMatchesBatch(batchIds, ids, rows))
                 return;
         }
 
-        if (rows == 0)
-            await LogTickedCheckboxDiagnosticsAsync(page);
+        await LogTickedCheckboxDiagnosticsAsync(page);
 
         throw new InvalidOperationException(
             $"Cac dong dang tick tren Crawl List ({rows} dong, {ids.Length} nhan ra id) khong khop lo import ({batchIds.Length} SP) nen KHONG bam Import.");
     }
 
-    // Khi vẫn 0 tick sau retry: log số hàng tìm được checkbox + sample className icon/cell (1–3) để soi DOM.
+    // Khi vẫn lệch sau retry: log số hàng tìm được checkbox + sample className icon/cell (1–3) để soi DOM, kèm phần tử đang nằm TRÊN
+    // checkbox đầu tiên (elementFromPoint — thấy ngay nếu popup/lớp phủ che) và số hộp thoại đang hiện.
     private async Task LogTickedCheckboxDiagnosticsAsync(IPage page)
     {
         try
@@ -1669,21 +1761,35 @@ internal sealed class BigSellerImportToStoreRunner : BigSellerBraveRunner
                         if (!e) { e = { cb: null }; byId.set(rowid, e); }
                         if (!e.cb) e.cb = findCheckbox(tr);
                     }
-                    let withCb = 0; const samples = [];
+                    let withCb = 0; const samples = []; let hit = '(không có checkbox)';
                     for (const e of byId.values()) {
                         if (!e.cb) continue;
                         withCb++;
-                        if (samples.length >= 3) continue;
-                        const iconCn = e.cb.icon ? String(e.cb.icon.className || '') : '';
-                        const cellCn = e.cb.cell ? String(e.cb.cell.className || '') : '';
-                        samples.push('icon=[' + iconCn + '] cell=[' + cellCn + '] checked=' + isChecked(e.cb));
+                        if (samples.length < 3) {
+                            const iconCn = e.cb.icon ? String(e.cb.icon.className || '') : '';
+                            const cellCn = e.cb.cell ? String(e.cb.cell.className || '') : '';
+                            samples.push('icon=[' + iconCn + '] cell=[' + cellCn + '] checked=' + isChecked(e.cb));
+                        }
+                        if (withCb === 1) {
+                            const t = e.cb.icon || e.cb.cell || e.cb.input;
+                            const r = t.getBoundingClientRect();
+                            const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+                            hit = (!top ? 'null (ngoài khung nhìn)'
+                                : top.tagName + '.' + String(top.className || '').slice(0, 80) +
+                                  (t.contains(top) || top.contains(t) ? ' (chính checkbox)' : ' (phần tử KHÁC nằm trên)')) +
+                                  ' · visibility=' + getComputedStyle(t).visibility;
+                        }
                     }
-                    return [String(byId.size), String(withCb), ...samples];
+                    const dialogs = Array.from(document.querySelectorAll('.ant-modal-wrap, [role=dialog]'))
+                        .filter(el => el.getClientRects().length > 0).length;
+                    return [String(byId.size), String(withCb), hit, String(dialogs), ...samples];
                 }");
             var rowCount = raw is { Length: > 0 } ? raw[0] : "?";
             var withCb = raw is { Length: > 1 } ? raw[1] : "?";
-            var samples = raw is { Length: > 2 } ? string.Join("; ", raw.Skip(2)) : "(không sample)";
-            _log($"⚠ Chẩn đoán checkbox Crawl List: {rowCount} rowid, {withCb} có checkbox — sample: {samples}");
+            var hit = raw is { Length: > 2 } ? raw[2] : "?";
+            var dialogs = raw is { Length: > 3 } ? raw[3] : "?";
+            var samples = raw is { Length: > 4 } ? string.Join("; ", raw.Skip(4)) : "(không sample)";
+            _log($"⚠ Chẩn đoán checkbox Crawl List: {rowCount} rowid, {withCb} có checkbox, trên checkbox đầu = {hit}, {dialogs} hộp thoại đang hiện — sample: {samples}");
         }
         catch (Exception ex)
         {
