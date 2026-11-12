@@ -49,6 +49,7 @@ import { gotoSellerCentre, doReadShopList, openShopDetail, doReadToShip, doClose
 import { doSyncOrders, doSyncOrderFinals, doPrepareNextOrder, doRedownloadSlip } from "./flow-orders.js";
 import { doSetPickupAddress, doSetPickupAddressToOther } from "./flow-address.js";
 import { doReadReturnRequests, doReadReturnRequestsMore } from "./flow-returns.js";
+import { doReadProductCount } from "./flow-product.js";
 import { doDumpKm, doChayKm } from "./flow-km.js";
 import { doDumpCombo, doChayCombo } from "./flow-combo.js";
 import { doDumpFlashSale, doChayFlashSale } from "./flow-flashsale.js";
@@ -71,6 +72,7 @@ async function handleCommand(cmd) {
     case "redownloadSlip":   await doRedownloadSlip(String(cmd.orderSn || "")); return;
     case "readReturnRequests": await doReadReturnRequests(); return;
     case "readReturnRequestsMore": await doReadReturnRequestsMore(Number(cmd.maxPages) || 0); return;
+    case "readProductCount": await doReadProductCount(); return;
     case "closeShopTab":     await doCloseShopTab(); return;
     case "detachDebugger":   await doDetachDebugger(); return;
     case "dumpKm":           await doDumpKm(); return;

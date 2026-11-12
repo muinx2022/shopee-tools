@@ -155,6 +155,8 @@ CREATE TABLE IF NOT EXISTS account_shops (
                                        -- người xem selector/UI) | 'lat_truot' (tạm thời) | 'doc_hong' (ô tổng
                                        -- có số mà 0 dòng — selector dòng có thể đã đổi). Chỉ để chẩn đoán;
                                        -- quyết định chế độ rút tồn đọng vẫn theo tra_hang_con_sot.
+    product_count INTEGER,             -- số sản phẩm hiện có trong shop (đọc ở trang Quản lý sản phẩm)
+    product_limit INTEGER,             -- giới hạn / hạn mức sản phẩm của shop
     updated_at TEXT NOT NULL,
     UNIQUE(account_id, shop_login)
 );
@@ -415,6 +417,10 @@ CREATE TABLE IF NOT EXISTS km_config (
         // sao" — 'tran' tự hết khi danh sách vơi, còn 'sap_xep'/'doc_hong' là selector/UI hỏng, cần NGƯỜI xem.
         // Không tách thì shop hỏng sắp xếp giữ cờ 1 vĩnh viễn mà nhật ký không nói được tại sao.
         EnsureColumn(conn, "account_shops", "tra_hang_sot_ly_do", "TEXT NOT NULL DEFAULT ''");
+
+        // SỐ LƯỢNG VÀ HẠN MỨC SẢN PHẨM: đọc ở trang "Tất cả sản phẩm" cuối flow check shop.
+        EnsureColumn(conn, "account_shops", "product_count", "INTEGER");
+        EnsureColumn(conn, "account_shops", "product_limit", "INTEGER");
 
         // MÃ YÊU CẦU TRẢ HÀNG khớp với đơn (đọc ở trang "Trả hàng/Hoàn tiền/Hủy" cuối flow shop) — đẩy lên cột
         // "Đơn trả hàng" của Google Sheet + hub + màn Đơn hàng. NULL = đơn chưa có yêu cầu trả hàng nào.

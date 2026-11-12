@@ -3823,7 +3823,12 @@ public partial class AccountsViewModel
             // chỉ được gọi TỪ TRONG vòng tạo chương trình, nên lệnh "Chạy thử (bridge)"/"Mở list shop" không bao
             // giờ chạm tới nó.
             onShopChuongTrinh: (loai, shopLabel, dangChay, soSanPham)
-                => GhiTienDoChuongTrinh(accountId, loai, shopLabel, dangChay, soSanPham));
+                => GhiTienDoChuongTrinh(accountId, loai, shopLabel, dangChay, soSanPham),
+            onProductCountRead: (shopLogin, tongSp, gioiHanSp) =>
+            {
+                _services.Results.SaveProductCount(accountId, shopLogin, tongSp, gioiHanSp);
+                _services.RaiseProductCountChanged(accountId, shopLogin, tongSp, gioiHanSp);
+            });
     }
 
     /// <summary>

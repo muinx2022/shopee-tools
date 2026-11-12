@@ -568,7 +568,12 @@ public partial class AccountSession : ObservableObject, IAccountSession
                             _services.Results.SetTraHangConSot(_accountId, shopLabel, conSot, lyDo),
                         // Mốc shop đã check xong gần nhất: khi chạy lại bắt đầu từ shop kế tiếp thay vì từ đầu.
                         layShopDaCheckCuoi: () => _services.Accounts.GetLastCheckedShop(_accountId),
-                        luuShopDaCheckCuoi: shopLogin => _services.Accounts.SetLastCheckedShop(_accountId, shopLogin));
+                        luuShopDaCheckCuoi: shopLogin => _services.Accounts.SetLastCheckedShop(_accountId, shopLogin),
+                        onProductCountRead: (shopLogin, tongSp, gioiHanSp) =>
+                        {
+                            _services.Results.SaveProductCount(_accountId, shopLogin, tongSp, gioiHanSp);
+                            _services.RaiseProductCountChanged(_accountId, shopLogin, tongSp, gioiHanSp);
+                        });
                     _bridge = bridge;
                     OrdersBridgeRunResult result;
                     try

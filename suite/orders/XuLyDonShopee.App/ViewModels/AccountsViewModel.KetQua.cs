@@ -286,6 +286,7 @@ public partial class AccountsViewModel
         var day = ResultDayKey;
         var shops = _services.Results.GetShops(accountId);
         var counts = _services.Results.GetPreparedByDay(accountId, day);
+        var productCounts = _services.Results.GetProductCounts(accountId);
         // MỘT lượt đọc cho cả tài khoản (y khuôn GetPreparedByDay) — hàm này chạy lại sau MỖI đơn arrange xong,
         // truy vấn theo từng dòng lưới là 12 lượt đọc mỗi đơn.
         var soSp = _services.Results.GetChuongTrinhByDay(accountId, day);
@@ -295,10 +296,12 @@ public partial class AccountsViewModel
         {
             seen.Add(shopLogin);
             var name = string.IsNullOrWhiteSpace(shopName) ? shopLogin : shopName;
+            var (pCount, pLimit) = productCounts.GetValueOrDefault(shopLogin);
             ResultRows.Add(new ShopPrepareRow(name, shopLogin, counts.GetValueOrDefault(shopLogin, 0),
                 SoSanPhamCua(soSp, shopLogin, LoaiChuongTrinh.ChuongTrinhShop),
                 SoSanPhamCua(soSp, shopLogin, LoaiChuongTrinh.Combo),
-                SoSanPhamCua(soSp, shopLogin, LoaiChuongTrinh.FlashSale)));
+                SoSanPhamCua(soSp, shopLogin, LoaiChuongTrinh.FlashSale),
+                pCount, pLimit));
         }
 
         // Shop có đơn nhưng chưa nằm trong account_shops → UNION thêm (nhãn = chính shop_login) để không sót đếm.
@@ -306,10 +309,12 @@ public partial class AccountsViewModel
         {
             if (!seen.Contains(kv.Key))
             {
+                var (pCount, pLimit) = productCounts.GetValueOrDefault(kv.Key);
                 ResultRows.Add(new ShopPrepareRow(kv.Key, kv.Key, kv.Value,
                     SoSanPhamCua(soSp, kv.Key, LoaiChuongTrinh.ChuongTrinhShop),
                     SoSanPhamCua(soSp, kv.Key, LoaiChuongTrinh.Combo),
-                    SoSanPhamCua(soSp, kv.Key, LoaiChuongTrinh.FlashSale)));
+                    SoSanPhamCua(soSp, kv.Key, LoaiChuongTrinh.FlashSale),
+                    pCount, pLimit));
             }
         }
 
@@ -799,6 +804,22 @@ public partial class AccountsViewModel
         if (SelectedRow?.Id == accountId)
         {
             LoadAddressAlertsFromLocal();
+        }
+    });
+
+    /// <summary>Phiên vừa đọc được số lượng và hạn mức sản phẩm của shop → cập nhật trực tiếp lên dòng shop tương ứng.</summary>
+    private void OnProductCountChanged(long accountId, string shopLogin, int? tongSp, int? gioiHanSp) => RunOnUi(() =>
+    {
+        if (SelectedRow?.Id != accountId || string.IsNullOrWhiteSpace(shopLogin))
+        {
+            return;
+        }
+
+        var row = ResultRows.FirstOrDefault(r => MatchesShopLabel(r, shopLogin));
+        if (row != null)
+        {
+            row.TongSoSp = tongSp;
+            row.GioiHanSp = gioiHanSp;
         }
     });
 

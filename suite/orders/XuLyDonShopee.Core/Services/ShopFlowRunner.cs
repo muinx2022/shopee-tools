@@ -134,6 +134,8 @@ internal sealed class ShopFlowRunner
     // Shop này có đang treo BANNER lỗi địa chỉ trên tab Shops không (App rót — Core không biết accountId/DB).
     // Null → coi như không shop nào có banner ⇒ hành vi y hệt trước 10/08/2026 (đường "Chạy thử" không rót).
     private readonly Func<string, bool>? _dangCoCanhBaoDiaChi;
+    // Callback thông báo khi đọc được số lượng sản phẩm và hạn mức của shop (shopLogin, tongSp, gioiHanSp).
+    private readonly Action<string, int?, int?>? _onProductCountRead;
 
     // Tập rỗng dùng khi _finalDoneSns null (tránh cấp phát mỗi shop).
     private static readonly IReadOnlySet<string> EmptyFinalSet = new HashSet<string>();
@@ -175,7 +177,8 @@ internal sealed class ShopFlowRunner
         Func<IReadOnlyList<YeuCauTraHang>, int>? demMaTraChuaBiet = null,
         Func<string, bool>? dangCoCanhBaoDiaChi = null,
         Func<string, bool>? conSotTraHang = null,
-        Action<string, bool, string>? luuConSotTraHang = null)
+        Action<string, bool, string>? luuConSotTraHang = null,
+        Action<string, int?, int?>? onProductCountRead = null)
     {
         _ch = channel;
         _log = log;
@@ -192,6 +195,7 @@ internal sealed class ShopFlowRunner
         _dangCoCanhBaoDiaChi = dangCoCanhBaoDiaChi;
         _conSotTraHang = conSotTraHang;
         _luuConSotTraHang = luuConSotTraHang;
+        _onProductCountRead = onProductCountRead;
     }
 
     /// <summary>Nhãn shop KHÔNG đặt được địa chỉ lấy hàng (null = chưa dính). Cùng khuôn cờ với
@@ -356,6 +360,25 @@ internal sealed class ShopFlowRunner
                 // đúng như trước bước. Captcha THẬT vẫn lộ ngay ở shop kế: openShopDetail rơi /verify → dừng vòng
                 // đúng chỗ, không mất mát gì.
                 _ch.CaptchaSeen = captchaTruocBuoc;
+            }
+        }
+
+        // Bước phụ: Đọc số lượng sản phẩm hiện có và hạn mức sản phẩm của shop
+        if (!string.IsNullOrWhiteSpace(shopLogin))
+        {
+            var captchaTruocBuocSp = _ch.CaptchaSeen;
+            try
+            {
+                await LaySoLuongVaGioiHanSpAsync(shopLogin, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                L("Đọc số sp shop lỗi: " + ex.ToString() + " — bỏ qua bước này, phần đã xong không bị ảnh hưởng.");
+            }
+            finally
+            {
+                _ch.CaptchaSeen = captchaTruocBuocSp;
             }
         }
 
@@ -1094,6 +1117,42 @@ internal sealed class ShopFlowRunner
         {
             L("Check đơn trả hàng: lật thêm trang lỗi: " + ex.ToString() + " — giữ phần trang đầu.");
             return (Array.Empty<DongTraHang>(), false);
+        }
+    }
+
+    /// <summary>
+    /// Bước CUỐI flow shop: extension gọi API nội bộ Seller Centre (<c>get_product_count_limit</c>) ngay trên tab shop
+    /// để đọc số sp đang có / tổng hạn mức — KHÔNG mở trang Quản lý sản phẩm (trang đó bật cả loạt popup chặn).
+    /// </summary>
+    internal async Task LaySoLuongVaGioiHanSpAsync(string shopLogin, CancellationToken ct)
+    {
+        if (_ch.CaptchaSeen)
+        {
+            L("Đọc số sp: đã dính captcha từ bước trước — bỏ bước này.");
+            return;
+        }
+
+        var tcs = _ch.ArmProductCount();
+        await _ch.SendAsync(new { action = "readProductCount" }).ConfigureAwait(false);
+        var json = await _ch.AwaitAsync(tcs, OrdersBridgeChannel.ChoChang.ProductCount, ct).ConfigureAwait(false);
+        if (_ch.CaptchaSeen)
+        {
+            L("Đọc số sp: gặp captcha/verify — bỏ bước này, đi tiếp.");
+            return;
+        }
+
+        var doc = SanPhamParser.ParseKetQua(json);
+        if (doc.TongSoSp.HasValue || doc.GioiHanSp.HasValue)
+        {
+            var vi = System.Globalization.CultureInfo.GetCultureInfo("vi-VN");
+            var spStr = doc.TongSoSp.HasValue ? doc.TongSoSp.Value.ToString("N0", vi) : "—";
+            var ghStr = doc.GioiHanSp.HasValue ? doc.GioiHanSp.Value.ToString("N0", vi) : "—";
+            L($"Số sản phẩm shop {shopLogin}: {spStr} / {ghStr}.");
+            _onProductCountRead?.Invoke(shopLogin, doc.TongSoSp, doc.GioiHanSp);
+        }
+        else
+        {
+            L($"Không đọc được số lượng sản phẩm shop {shopLogin}" + (!string.IsNullOrWhiteSpace(doc.RawText) ? $" (chuỗi: '{doc.RawText}')" : "") + ".");
         }
     }
 

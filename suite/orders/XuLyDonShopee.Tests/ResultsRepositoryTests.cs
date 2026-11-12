@@ -237,4 +237,23 @@ public class ResultsRepositoryTests
         Assert.Empty(repo.GetShops(99));
         Assert.Empty(repo.GetPreparedByDay(99, "2026-07-26"));
     }
+
+    [Fact]
+    public void SaveProductCount_Va_GetProductCounts_LuuVaDocDung()
+    {
+        using var temp = new TempDatabase();
+        var repo = new ResultsRepository(temp.Open());
+
+        repo.UpsertShops(1, new[] { new ShopListItem("111", "Shop A", "a.store"), new ShopListItem("222", "Shop B", "b.store") });
+        repo.SaveProductCount(1, "a.store", 1036, 3000);
+
+        var counts = repo.GetProductCounts(1);
+        Assert.True(counts.ContainsKey("a.store"));
+        Assert.Equal(1036, counts["a.store"].TongSp);
+        Assert.Equal(3000, counts["a.store"].GioiHanSp);
+
+        // Shop B chưa lưu số sản phẩm
+        Assert.Null(counts["b.store"].TongSp);
+        Assert.Null(counts["b.store"].GioiHanSp);
+    }
 }

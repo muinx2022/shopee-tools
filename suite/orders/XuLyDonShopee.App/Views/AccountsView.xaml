@@ -1,4 +1,4 @@
-﻿<UserControl x:Class="XuLyDonShopee.App.Views.AccountsView"
+<UserControl x:Class="XuLyDonShopee.App.Views.AccountsView"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:XuLyDonShopee.App.ViewModels"
@@ -231,27 +231,21 @@
     <!-- Bố cục: 2 cột — danh sách (trái, cao hết màn) | chi tiết + nhật ký của tài khoản đang chọn (phải). -->
     <Grid>
         <Grid.ColumnDefinitions>
-            <!-- Cột trái TỰ ĐO theo nội dung (đợt G) thay cho con số 360 đo tay — bản cũ phải đo lại hàng nút
-                 mỗi lần đổi nhãn, quên đo là nhãn "Thêm tài khoản" bị cắt cụt thành "Thêm tài khoả".
-                 Auto = ôm vừa phần rộng NHẤT trong cột. Hai thành phần bề rộng vốn KHÔNG có trần (ô tìm kiếm
-                 và danh sách tài khoản — đo với bề ngang vô hạn nên đòi đúng bề rộng chuỗi dài nhất) đã bị kẹp
-                 MaxWidth 320 ngay tại chỗ, nên phần quyết định còn lại chính là HÀNG NÚT ở đáy: đổi/ thêm nhãn
-                 nút là cột tự nới ra vừa đủ. MinWidth 300 chặn đầu dưới lúc danh sách rỗng. -->
-            <ColumnDefinition Width="Auto" MinWidth="300" />
+            <!-- Cột trái: danh sách tài khoản thu nhỏ gọn (Width 240) để nhường không gian cho form/lưới bên phải. -->
+            <ColumnDefinition Width="240" />
             <ColumnDefinition Width="*" />
         </Grid.ColumnDefinitions>
 
         <!-- ═══════════ Cột trái: danh sách ═══════════ -->
         <Border Grid.Column="0" BorderBrush="{StaticResource Border06}" BorderThickness="0,0,1,0">
-            <DockPanel Margin="24,24,20,16">
+            <DockPanel Margin="14,20,12,16">
 
                 <TextBlock DockPanel.Dock="Top" Text="Danh sách tài khoản"
                            Style="{StaticResource h1}"
-                           Margin="0,0,0,16" />
+                           Margin="0,0,0,14" />
 
-                <!-- Ô tìm kiếm. MaxWidth: cột trái đo bằng Auto → ô nhập không có trần sẽ đòi đúng bề rộng
-                     chuỗi đang gõ và kéo phình cả cột. -->
-                <Border DockPanel.Dock="Top" Style="{StaticResource field}" Margin="0,0,0,14" MaxWidth="320"
+                <!-- Ô tìm kiếm. -->
+                <Border DockPanel.Dock="Top" Style="{StaticResource field}" Margin="0,0,0,12"
                         HorizontalAlignment="Stretch">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -260,18 +254,15 @@
                         </Grid.ColumnDefinitions>
                         <TextBlock Grid.Column="0" Text="⌕" FontSize="14"
                                    Foreground="{StaticResource Text9A}"
-                                   VerticalAlignment="Center" Margin="12,0,0,0" />
-                        <TextBox Grid.Column="1" Style="{StaticResource bare}" Margin="8,0,12,0"
+                                   VerticalAlignment="Center" Margin="10,0,0,0" />
+                        <TextBox Grid.Column="1" Style="{StaticResource bare}" Margin="6,0,10,0"
                                  Text="{Binding SearchText, UpdateSourceTrigger=PropertyChanged}"
                                  b:WatermarkAssist.Watermark="Tìm theo email / ghi chú…" />
                         <Border Grid.ColumnSpan="2" Style="{StaticResource underline}" />
                     </Grid>
                 </Border>
 
-                <!-- Hàng nút dưới — cặp Thêm/Xóa cùng từ vựng với suite: Thêm = icon XANH (.success),
-                     Xóa = nút vuông icon ĐỎ (.destructive .iconOnly).
-                     3 nút để bề rộng TỰ NHIÊN (Auto) + một cột `*` co giãn ở giữa: nhãn không bao giờ bị cắt
-                     cụt nữa, và cột trái (Auto) tự nới đúng bằng hàng này khi nhãn dài ra. -->
+                <!-- Hàng nút dưới — Thêm / Kéo Hub / Xóa (gọn, vừa vặn cột 240) -->
                 <Grid DockPanel.Dock="Bottom" Margin="0,14,0,0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto" />
@@ -280,21 +271,22 @@
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
                     <Button Grid.Column="0" Style="{StaticResource success}"
-                            Command="{Binding AddCommand}">
+                            Command="{Binding AddCommand}"
+                            ToolTip="Thêm tài khoản mới">
                         <StackPanel Orientation="Horizontal">
                             <c:PathIcon Data="{DynamicResource IconAdd}" />
-                            <TextBlock Text="Thêm tài khoản" Style="{StaticResource btnLabel}" />
+                            <TextBlock Text="Thêm" Style="{StaticResource btnLabel}" />
                         </StackPanel>
                     </Button>
-                    <Button Grid.Column="1" Margin="8,0,0,0"
+                    <Button Grid.Column="1" Margin="6,0,0,0"
                             Command="{Binding KeoTuHubCommand}"
                             ToolTip="Kéo danh bạ tài khoản từ Hub về máy này (login + shop, KHÔNG kèm mật khẩu). Tài khoản mới sẽ có mật khẩu trống — mở ra nhập mật khẩu rồi bấm Chạy. Tài khoản đã có ở máy được giữ nguyên.">
                         <StackPanel Orientation="Horizontal">
                             <c:PathIcon Data="{DynamicResource IconSync}" />
-                            <TextBlock Text="Kéo TK từ Hub" Style="{StaticResource btnLabel}" />
+                            <TextBlock Text="Kéo Hub" Style="{StaticResource btnLabel}" />
                         </StackPanel>
                     </Button>
-                    <Button Grid.Column="3" Style="{StaticResource destructiveIconOnly}" Margin="8,0,0,0"
+                    <Button Grid.Column="3" Style="{StaticResource destructiveIconOnly}" Margin="6,0,0,0"
                             Command="{Binding DeleteCommand}"
                             IsEnabled="{Binding CanDelete}"
                             ToolTip="Xóa các tài khoản đang tick — không tick dòng nào thì xóa tài khoản đang chọn. Hỏi xác nhận trước khi xóa.">
@@ -316,10 +308,8 @@
                     </StackPanel>
                 </Button>
 
-                <!-- Danh sách tài khoản: mỗi dòng "[ ] Tên shop" + (khi đang chạy) chấm xanh & số chờ lấy.
-                     MaxWidth: cột trái đo bằng Auto → danh sách không có trần sẽ đòi bề rộng của DÒNG DÀI NHẤT
-                     (email + nhãn đỏ + nút) và kéo phình cả cột. -->
-                <ListBox Style="{StaticResource acctFlat}" MaxWidth="320" HorizontalAlignment="Stretch"
+                <!-- Danh sách tài khoản: mỗi dòng "[ ] Tên shop" + (khi đang chạy) chấm xanh & số chờ lấy. -->
+                <ListBox Style="{StaticResource acctFlat}" HorizontalAlignment="Stretch"
                          ItemsSource="{Binding Accounts}"
                          SelectedItem="{Binding SelectedRow}">
                     <ListBox.ItemTemplate>
@@ -387,12 +377,12 @@
             </DockPanel>
         </Border>
 
-        <!-- ═══════════ Cột chi tiết: form GIÃN hết cột + nhật ký của tài khoản đang chọn bên PHẢI ═══════════
-             Chia đều 3:2 (form 3* | log 2*) — cùng ngữ pháp với màn Chạy tự động, không hở giữa. -->
+        <!-- ═══════════ Cột chi tiết: form GIÃN rộng + nhật ký của tài khoản đang chọn bên PHẢI ═══════════
+             Form 2.5* | log 1* (kéo dãn form và lưới dữ liệu rộng hơn, nhật ký gọn gàng bên phải). -->
         <Grid Grid.Column="1">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="3*" />
-                <ColumnDefinition Width="2*" />
+                <ColumnDefinition Width="2.5*" />
+                <ColumnDefinition Width="1*" />
             </Grid.ColumnDefinitions>
 
             <!-- Cột trái: placeholder + form chi tiết (chồng nhau trong cùng ô). -->
@@ -815,7 +805,7 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
-                            <!-- Lưới 6 cột: X lỗi địa chỉ | Shop | Chuẩn bị hàng | KM | Combo | Flash Sale.
+                            <!-- Lưới 6 cột: X lỗi địa chỉ | Tên shop (Tổng số sp: xxx / yyy) | Chuẩn bị hàng | KM | Combo | Flash Sale.
                                  Tick xong nằm TRONG từng ô action (nhỏ), không còn một dấu V đầu hàng. -->
                             <DataGrid Style="{StaticResource proxy}" ClipToBounds="True"
                                       ItemsSource="{Binding ResultRows}"
@@ -838,7 +828,7 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="Shop" Binding="{Binding ShopName}" Width="*" MinWidth="140" />
+                                    <DataGridTextColumn Header="Tên shop" Binding="{Binding ShopHienThi}" Width="*" MinWidth="260" />
                                     <!-- Đang check → chữ "đang kiểm tra…"; xong → tick nhỏ + số. -->
                                     <DataGridTemplateColumn Header="Chuẩn bị hàng" Width="Auto">
                                         <DataGridTemplateColumn.CellTemplate>

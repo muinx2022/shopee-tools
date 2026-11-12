@@ -75,6 +75,9 @@ public partial class AccountsViewModel : ViewModelBase, IDisposable
         // số sản phẩm. Cũng từ thread nền của phiên → marshal về UI thread (RunOnUi).
         _services.ShopProgramChanged += OnShopProgramChanged;
 
+        // Số lượng và hạn mức sản phẩm của shop đọc được ở cuối flow check shop → cập nhật hiển thị (RunOnUi).
+        _services.ProductCountChanged += OnProductCountChanged;
+
         // Banner lỗi địa chỉ vừa ghi/đóng → nạp lại list trên tab Shops (thread nền → RunOnUi).
         _services.AddressAlertsChanged += OnAddressAlertsChanged;
 
@@ -135,6 +138,7 @@ public partial class AccountsViewModel : ViewModelBase, IDisposable
         try { _services.ShopListChanged -= OnShopListChanged; } catch { /* bỏ qua khi thoát */ }
         try { _services.ShopCheckChanged -= OnShopCheckChanged; } catch { /* bỏ qua khi thoát */ }
         try { _services.ShopProgramChanged -= OnShopProgramChanged; } catch { /* bỏ qua khi thoát */ }
+        try { _services.ProductCountChanged -= OnProductCountChanged; } catch { /* bỏ qua khi thoát */ }
         try { _services.AccountsChanged -= OnAccountsChanged; } catch { /* bỏ qua khi thoát */ }
         try { _services.Sessions.Changed -= OnSessionsChanged; } catch { /* bỏ qua khi thoát */ }
     }

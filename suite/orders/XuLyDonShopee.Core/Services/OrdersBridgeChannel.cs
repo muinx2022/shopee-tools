@@ -223,6 +223,9 @@ internal sealed class OrdersBridgeChannel : IDisposable
         /// <summary>Đọc trang đơn trả hàng (bước phụ cuối vòng).</summary>
         internal static readonly TimeSpan Returns = TimeSpan.FromSeconds(90);
 
+        /// <summary>Đọc số lượng và hạn mức sản phẩm của shop (bước phụ cuối vòng).</summary>
+        internal static readonly TimeSpan ProductCount = TimeSpan.FromSeconds(60);
+
         /// <summary>
         /// "KM của Shop" — lát cắt DÒ DOM (nút chẩn đoán).
         /// <para><b>CÙNG ngân sách với <see cref="KmChay"/>, và bắt buộc phải vậy:</b> nút dò chạy CHÍNH chuỗi 9
@@ -386,6 +389,7 @@ internal sealed class OrdersBridgeChannel : IDisposable
     private TaskCompletionSource<bool> _closeShopTcs = NewTcs<bool>();         // GĐ4: đóng tab shop, về picker xong
     private TaskCompletionSource<string?> _redownloadTcs = NewTcs<string?>();  // Tải lại phiếu 1 đơn (base64; ""/null=không lấy được)
     private TaskCompletionSource<string?> _returnsTcs = NewTcs<string?>();     // Bước cuối: JSON trang trả hàng
+    private TaskCompletionSource<string?> _productCountTcs = NewTcs<string?>();  // Bước cuối: JSON số lượng sp và hạn mức
 
     public OrdersBridgeChannel(Action<string>? log = null) => _log = log;
 
@@ -422,6 +426,7 @@ internal sealed class OrdersBridgeChannel : IDisposable
     public TaskCompletionSource<bool> ArmCloseShop() => _closeShopTcs = NewTcs<bool>();
     public TaskCompletionSource<string?> ArmRedownload() => _redownloadTcs = NewTcs<string?>();
     public TaskCompletionSource<string?> ArmReturns() => _returnsTcs = NewTcs<string?>();
+    public TaskCompletionSource<string?> ArmProductCount() => _productCountTcs = NewTcs<string?>();
     public TaskCompletionSource<string?> ArmKmDump() => _kmDumpTcs = NewTcs<string?>();
 
     /// <summary>
@@ -673,6 +678,7 @@ internal sealed class OrdersBridgeChannel : IDisposable
         _closeShopTcs = NewTcs<bool>();
         _redownloadTcs = NewTcs<string?>();
         _returnsTcs = NewTcs<string?>();
+        _productCountTcs = NewTcs<string?>();
         _kmDumpTcs = NewTcs<string?>();
         _flashDumpTcs = NewTcs<string?>();
         _kmChayTcs = NewTcs<string?>();
@@ -731,6 +737,10 @@ internal sealed class OrdersBridgeChannel : IDisposable
                     else if (kind == "returns")
                     {
                         _returnsTcs.TrySetResult(data);
+                    }
+                    else if (kind == "productCount")
+                    {
+                        _productCountTcs.TrySetResult(data);
                     }
                     else if (kind == "kmDump")
                     {
@@ -822,6 +832,7 @@ internal sealed class OrdersBridgeChannel : IDisposable
                     _closeShopTcs.TrySetResult(false);
                     _redownloadTcs.TrySetResult(null);
                     _returnsTcs.TrySetResult(null);
+                    _productCountTcs.TrySetResult(null);
                     // Hai chặng KM cũng phải được hoàn tất: hạn của chúng là 900s/240s, không đánh thức thì
                     // vòng KM đứng chờ cả 15 phút cho một trang verify đã hiện ra từ giây thứ nhất.
                     _kmChayTcs.TrySetResult(null);

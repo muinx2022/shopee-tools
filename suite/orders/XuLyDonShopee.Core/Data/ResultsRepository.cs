@@ -246,6 +246,52 @@ public class ResultsRepository
     }
 
     /// <summary>
+    /// Lưu số lượng sản phẩm hiện có và hạn mức của shop vào <c>account_shops</c>.
+    /// </summary>
+    public void SaveProductCount(long accountId, string shopLogin, int? productCount, int? productLimit)
+    {
+        if (string.IsNullOrWhiteSpace(shopLogin))
+        {
+            return;
+        }
+
+        using var conn = _db.OpenConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"UPDATE account_shops 
+            SET product_count = $cnt, product_limit = $lim, updated_at = $u
+            WHERE account_id = $a AND shop_login = $login;";
+        cmd.Parameters.AddWithValue("$cnt", (object?)productCount ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$lim", (object?)productLimit ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("$u", DateTime.UtcNow.ToString("o"));
+        cmd.Parameters.AddWithValue("$a", accountId);
+        cmd.Parameters.AddWithValue("$login", shopLogin.Trim());
+        cmd.ExecuteNonQuery();
+    }
+
+    /// <summary>
+    /// Đọc số lượng sản phẩm và hạn mức của toàn bộ shop thuộc tài khoản.
+    /// </summary>
+    public Dictionary<string, (int? TongSp, int? GioiHanSp)> GetProductCounts(long accountId)
+    {
+        using var conn = _db.OpenConnection();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = @"SELECT shop_login, product_count, product_limit FROM account_shops WHERE account_id = $a;";
+        cmd.Parameters.AddWithValue("$a", accountId);
+
+        var dict = new Dictionary<string, (int?, int?)>(StringComparer.OrdinalIgnoreCase);
+        using var reader = cmd.ExecuteReader();
+        while (reader.Read())
+        {
+            if (reader.IsDBNull(0)) continue;
+            var login = reader.GetString(0);
+            int? cnt = reader.IsDBNull(1) ? null : reader.GetInt32(1);
+            int? lim = reader.IsDBNull(2) ? null : reader.GetInt32(2);
+            dict[login] = (cnt, lim);
+        }
+        return dict;
+    }
+
+    /// <summary>
     /// +1 số đơn ĐÃ "chuẩn bị hàng" cho <c>(accountId, shopLogin, day)</c> — mỗi đơn arrange xong gọi một lần
     /// (đếm theo ĐƠN, không theo phiếu). Chưa có dòng ngày đó → tạo mới count=1; đã có → count+1. <paramref name="day"/>
     /// là chuỗi <c>yyyy-MM-dd</c> giờ địa phương. <paramref name="shopLogin"/>/<paramref name="day"/> rỗng → bỏ qua.

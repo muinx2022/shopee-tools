@@ -486,6 +486,16 @@ public class AppServices
     /// <summary>Phiên / ViewModel gọi sau khi upsert hoặc dismiss alert địa chỉ.</summary>
     public void RaiseAddressAlertsChanged(long accountId) => AddressAlertsChanged?.Invoke(accountId);
 
+    /// <summary>
+    /// Phát khi đọc được số lượng sản phẩm và hạn mức của một shop (cuối flow check shop).
+    /// Tham số: accountId, shopLogin, tongSp, gioiHanSp.
+    /// </summary>
+    public event Action<long, string, int?, int?>? ProductCountChanged;
+
+    /// <summary>Phiên gọi khi đọc xong số lượng sản phẩm và hạn mức của shop.</summary>
+    public void RaiseProductCountChanged(long accountId, string shopLogin, int? tongSp, int? gioiHanSp)
+        => ProductCountChanged?.Invoke(accountId, shopLogin, tongSp, gioiHanSp);
+
     /// <summary>Bên ngoài (vd sync shop BigSeller) gọi sau khi Insert tài khoản THÀNH CÔNG để phát <see cref="AccountsChanged"/>.</summary>
     public void RaiseAccountsChanged() => AccountsChanged?.Invoke();
 

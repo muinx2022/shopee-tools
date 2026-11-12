@@ -591,7 +591,8 @@ public sealed class OrdersBridgeSession : IDisposable
         Action<string, bool, string>? luuConSotTraHang = null,
         Action<LoaiChuongTrinh, string, bool, int?>? onShopChuongTrinh = null,
         Func<string?>? layShopDaCheckCuoi = null,
-        Action<string?>? luuShopDaCheckCuoi = null)
+        Action<string?>? luuShopDaCheckCuoi = null,
+        Action<string, int?, int?>? onProductCountRead = null)
     {
         _userDataDir = userDataDir;
         _log = log;
@@ -606,7 +607,7 @@ public sealed class OrdersBridgeSession : IDisposable
         _channel = new OrdersBridgeChannel(log);
         _flow = new ShopFlowRunner(_channel, log, invoiceDir, _province, syncCallback, finalDoneSns,
             onOrderPrepared, returnCountLast, saveReturnCount, saveReturnCodes, layDonThieuPhieu,
-            demMaTraChuaBiet, dangCoCanhBaoDiaChi, conSotTraHang, luuConSotTraHang);
+            demMaTraChuaBiet, dangCoCanhBaoDiaChi, conSotTraHang, luuConSotTraHang, onProductCountRead);
     }
 
     private void L(string m) => _log?.Invoke(m);

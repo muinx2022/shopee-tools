@@ -22,8 +22,11 @@ public sealed partial class ShopPrepareRow : ObservableObject
     /// <c>null</c> = hôm đó KHÔNG chạy loại này (xem <see cref="KmSoSanPham"/>).</param>
     /// <param name="comboSoSanPham">Như trên, cho "Combo Khuyến Mãi".</param>
     /// <param name="flashSoSanPham">Như trên, cho "Flash Sale Của Shop".</param>
+    /// <param name="tongSoSp">Số sản phẩm hiện có trong shop (xxx).</param>
+    /// <param name="gioiHanSp">Giới hạn sản phẩm của shop (yyy).</param>
     public ShopPrepareRow(string shopName, string shopLogin, int preparedCount,
-        int? kmSoSanPham = null, int? comboSoSanPham = null, int? flashSoSanPham = null)
+        int? kmSoSanPham = null, int? comboSoSanPham = null, int? flashSoSanPham = null,
+        int? tongSoSp = null, int? gioiHanSp = null)
     {
         ShopName = shopName;
         ShopLogin = shopLogin;
@@ -31,10 +34,35 @@ public sealed partial class ShopPrepareRow : ObservableObject
         KmSoSanPham = kmSoSanPham;
         ComboSoSanPham = comboSoSanPham;
         FlashSoSanPham = flashSoSanPham;
+        TongSoSp = tongSoSp;
+        GioiHanSp = gioiHanSp;
     }
 
-    /// <summary>Tên shop hiển thị ở cột "Shop" (không đổi trong đời dòng).</summary>
+    /// <summary>Tên shop (không đổi trong đời dòng).</summary>
     public string ShopName { get; }
+
+    /// <summary>Số sản phẩm hiện có trong shop (xxx).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShopHienThi))]
+    private int? _tongSoSp;
+
+    /// <summary>Giới hạn sản phẩm của shop (yyy).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShopHienThi))]
+    private int? _gioiHanSp;
+
+    /// <summary>
+    /// Chuỗi hiển thị ở cột "Tên shop": Tên shop (Tổng số sp: xxx / yyy).
+    /// </summary>
+    public string ShopHienThi
+    {
+        get
+        {
+            var sp = TongSoSp.HasValue ? TongSoSp.Value.ToString() : "—";
+            var limit = GioiHanSp.HasValue ? GioiHanSp.Value.ToString() : "—";
+            return $"{ShopName} (Tổng số sp: {sp} / {limit})";
+        }
+    }
 
     /// <summary>Khóa shop dùng khớp với nhãn phiên báo về (không đổi trong đời dòng).</summary>
     public string ShopLogin { get; }

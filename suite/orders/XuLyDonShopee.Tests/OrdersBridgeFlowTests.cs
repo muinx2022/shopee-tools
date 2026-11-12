@@ -342,6 +342,9 @@ public class OrdersBridgeFlowTests
 
             await NhanLenhAsync(rig, "syncOrders");
             await rig.GuiAsync(LoDonRong());
+            // Bước cuối mọi shop: đọc số sp / hạn mức — trả lời để flow kết thúc.
+            await NhanLenhAsync(rig, "readProductCount");
+            await rig.GuiAsync(new { action = "pageData", kind = "productCount", data = """{"tongSp": 5, "gioiHanSp": 1000}""" });
             await chay;
 
             Assert.Null(flow.PickupOkShop);
@@ -358,4 +361,43 @@ public class OrdersBridgeFlowTests
     /// <summary>Mã yêu cầu trả hàng của HÔM NAY (<c>yyMMdd</c> + đuôi) — cửa sổ lọc theo ngày yêu cầu nên mã cứng
     /// sẽ hết hạn theo thời gian, phải sinh động.</summary>
     private static string MaYeuCauHomNay() => DateTime.Now.ToString("yyMMdd") + "0TS2VYAW3";
+
+    [Fact]
+    public async Task LaySoLuongVaGioiHanSp_DocDuocSo_BaoCallback()
+    {
+        await using var rig = await BridgeTestRig.StartAsync();
+        string? docShop = null;
+        int? docTong = null;
+        int? docGioiHan = null;
+
+        var flow = new ShopFlowRunner(rig.Channel, rig.Log, invoiceDir: null, Tinh, syncCallback: null, finalDoneSns: null,
+            onOrderPrepared: null, returnCountLast: null, saveReturnCount: null, saveReturnCodes: null,
+            onProductCountRead: (shop, tong, limit) =>
+            {
+                docShop = shop;
+                docTong = tong;
+                docGioiHan = limit;
+            });
+
+        var chay = flow.LaySoLuongVaGioiHanSpAsync("shop1", CancellationToken.None);
+        using (var lenh = await rig.NhanLenhAsync(boQuaPing: true))
+        {
+            Assert.Equal("readProductCount", lenh.RootElement.GetProperty("action").GetString());
+        }
+
+        await rig.GuiAsync(new
+        {
+            action = "pageData",
+            kind = "productCount",
+            data = """{"tongSp": 1036, "gioiHanSp": 3000, "rawText": "1.036 / 3.000", "tabTatCa": true}"""
+        });
+
+        await chay;
+
+        Assert.Equal("shop1", docShop);
+        Assert.Equal(1036, docTong);
+        Assert.Equal(3000, docGioiHan);
+        // Log in số theo vi-VN (N0): 1036 → "1.036".
+        Assert.True(rig.CoLog("1.036 / 3.000"));
+    }
 }
