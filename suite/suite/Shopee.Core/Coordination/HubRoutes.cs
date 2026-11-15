@@ -79,6 +79,17 @@ public static class HubRoutes
     public const string ProductsInsertRow = "/products/rows/insert";
     public const string ProductsSkuExists = "/products/sku-exists";
 
+    // ── Kho dữ liệu SP Shopee do app Harvest cào (JSON PDP get_pc) ── (prefix /api như nhóm đơn hàng: tránh đụng
+    //    route trang Blazor)
+    /// <summary>POST: upsert tối đa <see cref="HarvestedProductLimits.MaxBatch"/> SP/lần, idempotent theo
+    /// <c>rawHash</c>. Body bắt buộc <c>clientNow</c> (thiếu → 400). Trả <c>results[{index, itemId, ok, applied, reason?}]</c> đúng thứ tự + đủ số mục của request (khoá
+    /// theo CHỈ SỐ mục, không theo itemId); mục trùng hash hoặc cũ hơn bản Hub đang giữ (<c>harvestedAt</c>) cũng là
+    /// <c>ok=true</c> → client xoá đúng mục đó khỏi hàng đợi. Lỗi Postgres lớp 22/23/54 → <c>ok=false</c> cho mục đó;
+    /// mọi lớp Postgres khác và lỗi kết nối → 500 CẢ lô (client giữ lô, gửi lại sau).</summary>
+    public const string HarvestedProductsBatch = "/api/harvested-products/batch";
+    /// <summary>GET <c>?account=&amp;sheet=</c> → số dòng nguồn đã có dữ liệu + số SP khác nhau.</summary>
+    public const string HarvestedProductsStats = "/api/harvested-products/stats";
+
     // ── Cấu hình BigSeller (client → hub upsert) ──
     /// <summary>Client đẩy (upsert) acc/shop BigSeller của máy mình lên hub — client giờ là nguồn phát sinh
     /// acc/shop; hub gộp KHÔNG XÓA (kẻo lượt pull mirror-xoá acc client vừa thêm).</summary>

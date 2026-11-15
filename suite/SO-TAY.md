@@ -563,3 +563,15 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Thấy lúc**: nghiệm thu plan `2026-11-04-xoa-video-hub-30-ngay`, rồi user bảo deploy
 - **Ở đâu**: `DELETE /files/{*name}` trong `suite/server/Shopee.Hub.Web/Api/ClientApiEndpoints.cs`
 - **Đã deploy**: backup `/opt/shopee-hub/Shopee.Hub.Web.dll.bak-20261104-101953`, health `{"ok":true,"pg":true}`, `DELETE /files/videos/no-such-probe.mp4` không token trả 401 (route có, chưa mở). App client vẫn phải phát hành thì máy mới gọi được.
+
+### P-20261115-1 · [MỞ] · NHỎ — Hub trả nguyên stack trace khi lỗi 500
+- **Thấy lúc**: phản biện GĐ1 plan `workspace/plans/2026-11-15-app-harvest-luu-du-lieu-shopee-len-hub.md`
+- **Ở đâu**: `server/Shopee.Hub.Web/Program.cs` (không có `UseExceptionHandler`)
+- **Bằng chứng**: chạy môi trường Development, body 500 của `POST /api/harvested-products/batch` chứa `at Npgsql.Internal.NpgsqlConnector…`. **Nghi ngờ** production cũng vậy, chưa xác minh.
+- **Vì sao không sửa ngay**: ảnh hưởng mọi endpoint, ngoài phạm vi GĐ1.
+
+### P-20261115-2 · [MỞ] · NHỎ — `dotnet` đầu tiên trên PATH máy dev không có SDK
+- **Thấy lúc**: GĐ1 plan harvest
+- **Ở đâu**: `C:\Program Files\dotnet\dotnet.exe`
+- **Bằng chứng**: `dotnet build` báo "No .NET SDKs were found" (exit 145); `%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe --list-sdks` có 8.0.423/8.0.424.
+- **Vì sao không sửa ngay**: cấu hình máy, không phải code.

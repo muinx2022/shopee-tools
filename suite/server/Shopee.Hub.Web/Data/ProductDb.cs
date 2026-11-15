@@ -82,6 +82,46 @@ CREATE TABLE product_sold (
 ALTER TABLE product_rows ADD COLUMN store_imported_at  timestamptz;
 ALTER TABLE product_rows ADD COLUMN store_updated_at   timestamptz;
 ALTER TABLE product_rows ADD COLUMN store_updated_name text;"),
+        // Dữ liệu SP Shopee do app Harvest cào (JSON PDP get_pc ở raw, ~60–80 KB/SP — jsonb chuẩn hoá thứ tự key +
+        // khoảng trắng nên KHÔNG tính lại được raw_hash từ raw; raw_hash = hash chuỗi client gửi) + bảng nối dòng
+        // nguồn → SP. Khoá SP theo item_id của Shopee (1 SP cào từ nhiều shop đích vẫn là 1 bản ghi). Giá VND (client
+        // đã chia 100000). harvested_at = lúc CLIENT cào (cả 2 bảng) — bản cũ hơn không ghi đè bản mới. Không có cột tồn kho/đã bán: JSON công khai luôn trả null. sources KHÔNG đặt FK sang
+        // harvested_products — ghi cùng transaction ở UpsertHarvestedAsync nên không mồ côi.
+        (4, @"
+CREATE TABLE harvested_products (
+  item_id               bigint PRIMARY KEY,
+  shop_id               bigint NOT NULL,
+  url                   text,
+  name                  text,
+  cat_id                bigint,
+  category_ids          jsonb,
+  brand_id              bigint,
+  price_min             bigint,
+  price_max             bigint,
+  price_before_discount bigint,
+  tier_count            int,
+  model_count           int,
+  image_urls            jsonb,
+  video_urls            jsonb,
+  size_chart_url        text,
+  raw                   jsonb NOT NULL,
+  raw_hash              text  NOT NULL,
+  machine_id            text,
+  harvested_at          timestamptz NOT NULL,
+  harvest_count         int   NOT NULL DEFAULT 1,
+  first_seen_at         timestamptz NOT NULL DEFAULT now(),
+  updated_at            timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE harvested_product_sources (
+  account_id   text   NOT NULL,
+  sheet        text   NOT NULL,
+  row_no       int    NOT NULL,
+  item_id      bigint NOT NULL,
+  url          text,
+  harvested_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (account_id, sheet, row_no)
+);
+CREATE INDEX ix_hps_item ON harvested_product_sources(item_id);"),
     };
 
     public ProductDb(string connString)

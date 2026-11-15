@@ -200,5 +200,27 @@ public static class ProductApiEndpoints
                 var exists = await pdb.ExistsSkuInShopAsync(acct ?? "", sheet ?? "", s, excludeRowNo ?? -1, ct);
                 return Results.Json(new ProductSkuExistsResponse(exists));
             }));
+
+        // ══ Kho dữ liệu SP Shopee do app Harvest cào (JSON PDP get_pc) ══
+
+        // ── Ghi: upsert lô SP (≤ MaxBatch, quá → 400 cả lô; mỗi mục 1 kết quả theo chỉ số, mục hỏng không làm hỏng mục khác) ──
+        // Body tối đa ~50 × 300 KB ≈ 15 MB — nằm gọn trong trần Kestrel 256 MB (Program.cs), không cần nâng riêng.
+        // machine_id: MachineId trong body, rỗng thì lấy header X-Machine-Id (như các endpoint client khác).
+        api.MapPost(HubRoutes.HarvestedProductsBatch, (HarvestedProductBatchRequest? r, HttpRequest req,
+            IServiceProvider sp, CancellationToken ct) =>
+            WithPg(sp, async pdb =>
+            {
+                if (r?.Items is null) return Results.BadRequest();
+                if (r.Items.Count > HarvestedProductLimits.MaxBatch)
+                    return Results.BadRequest(new { error = "batch-too-large", max = HarvestedProductLimits.MaxBatch });
+                // ClientNow bắt buộc: thiếu thì không quy được HarvestedAt về đồng hồ Hub → không so trước-sau được.
+                if (r.ClientNow is not { } clientNow || clientNow == default) return Results.BadRequest(new { error = "client-now" });
+                var by = string.IsNullOrWhiteSpace(r.MachineId) ? req.Headers["X-Machine-Id"].ToString() : r.MachineId;
+                return Results.Json(await pdb.UpsertHarvestedAsync(r.Items, by, clientNow, ct));
+            }));
+
+        // ── Đọc: đếm dòng nguồn đã có dữ liệu + số SP khác nhau (thiếu tham số = không lọc chiều đó) ──
+        api.MapGet(HubRoutes.HarvestedProductsStats, (string? account, string? sheet, IServiceProvider sp, CancellationToken ct) =>
+            WithPg(sp, async pdb => Results.Json(await pdb.GetHarvestedStatsAsync(account ?? "", sheet ?? "", ct))));
     }
 }
