@@ -18,7 +18,7 @@ public static class HarvestedProductLimits
 }
 
 /// <summary>1 SP đã cào. <see cref="RawJson"/> = body JSON <c>get_pc</c> dưới dạng chuỗi — phải là PDP HỢP LỆ:
-/// <c>error</c> null/vắng, <c>data.item</c> là object có <c>item_id</c> khớp <see cref="ItemId"/>. Bộ ba
+/// <c>error</c> vắng/null/số 0, <c>data.item</c> là object có <c>item_id</c> khớp <see cref="ItemId"/>. Bộ ba
 /// <see cref="AccountId"/>/<see cref="Sheet"/>/<see cref="RowNo"/> = dòng nguồn của shop đích: đủ cả ba thì nối dòng,
 /// không có trường nào thì chỉ lưu SP, có 1–2 trường thì Hub từ chối mục (<c>source-partial</c>).
 /// <see cref="HarvestedAt"/> = lúc client cào được (BẮT BUỘC) — Hub dùng để bản cào CŨ không ghi đè bản MỚI.</summary>

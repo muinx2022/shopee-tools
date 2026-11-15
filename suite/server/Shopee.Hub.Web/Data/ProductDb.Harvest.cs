@@ -38,7 +38,11 @@ public sealed partial class ProductDb
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object) return "raw-json";
             // PDP HỢP LỆ mới được ghi: Shopee trả lỗi (vd {"error":90309999,"data":null}) mà lọt vào thì ghi đè mất bản tốt.
-            if (root.TryGetProperty("error", out var err) && err.ValueKind != JsonValueKind.Null) return "raw-error";
+            // error hợp lệ = vắng, null, hoặc SỐ 0 (vài endpoint v4 trả 0 khi OK — extension GĐ2 cũng coi 0 là thành
+            // công). Mọi giá trị khác (số khác 0, chuỗi "0", false, object…) là lỗi.
+            if (root.TryGetProperty("error", out var err) && err.ValueKind != JsonValueKind.Null
+                && !(err.ValueKind == JsonValueKind.Number && err.TryGetInt64(out var maLoi) && maLoi == 0))
+                return "raw-error";
             if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object
                 || !data.TryGetProperty("item", out var item) || item.ValueKind != JsonValueKind.Object
                 || !item.TryGetProperty("item_id", out var rawId) || IdTrongRaw(rawId) is not long idTrongRaw)

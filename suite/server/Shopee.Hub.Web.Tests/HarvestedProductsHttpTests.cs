@@ -485,6 +485,30 @@ FROM harvested_products WHERE item_id = $1;", conn);
         Assert.Equal("Ao thun", d.RawTitle);
     }
 
+    /// <summary>error hợp lệ = vắng / null / SỐ 0 (vài endpoint v4 trả 0 khi OK — extension GĐ2 coi là thành công,
+    /// Hub từ chối thì SP kẹt mãi ở "lỗi đẩy"). Chuỗi "0", false, số khác 0, object → raw-error.</summary>
+    [PgFact]
+    public async Task RawError_ChiNhanVangNullHoacSo0()
+    {
+        var c = await _app.KhachCoTokenAsync();
+        var ids = Enumerable.Range(0, 7).Select(_ => IdMoi()).ToArray();
+        string Raw(long id, string? err) => "{" + (err is null ? "" : "\"error\":" + err + ",")
+            + "\"data\":{\"item\":{\"item_id\":" + id + "}}}";
+
+        var r = await PostOk(c,
+            Sp(ids[0], "h", rawJson: Raw(ids[0], "0")),
+            Sp(ids[1], "h", rawJson: Raw(ids[1], null)),          // vắng error
+            Sp(ids[2], "h", rawJson: Raw(ids[2], "\"0\"")),
+            Sp(ids[3], "h", rawJson: Raw(ids[3], "90309999")),
+            Sp(ids[4], "h", rawJson: Raw(ids[4], "false")),
+            Sp(ids[5], "h", rawJson: Raw(ids[5], "{}")),
+            Sp(ids[6], "h", rawJson: Raw(ids[6], "0.5")));
+
+        Assert.True(r.Results[0].Applied, "error:0 phải là body hợp lệ");
+        Assert.True(r.Results[1].Applied, "vắng error phải là body hợp lệ");
+        for (var i = 2; i < 7; i++) Assert.Equal("raw-error", r.Results[i].Reason);
+    }
+
     /// <summary>Lỗi Postgres KHÔNG phải của mục (ở đây 42P01 — bảng nguồn biến mất, như Hub lệch schema) → 500 CẢ lô
     /// để client giữ lô gửi lại; transaction của mục đang ghi rollback (SP không lọt vào nửa vời). Khôi phục bảng
     /// trong finally. Đổi tên bảng thay vì read-only DB: tác dụng ngay trên connection đang nằm trong pool.</summary>

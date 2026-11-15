@@ -575,3 +575,63 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `C:\Program Files\dotnet\dotnet.exe`
 - **Bằng chứng**: `dotnet build` báo "No .NET SDKs were found" (exit 145); `%LOCALAPPDATA%\Microsoft\dotnet\dotnet.exe --list-sdks` có 8.0.423/8.0.424.
 - **Vì sao không sửa ngay**: cấu hình máy, không phải code.
+
+### P-20261115-3 · [MỞ] · VỪA — Bảng `LAUNCHER_INVOKE` của shopee-scrape thiếu `checkBeforeNextLink`
+- **Thấy lúc**: GĐ2 plan `workspace/plans/2026-11-15-app-harvest-luu-du-lieu-shopee-len-hub.md`
+- **Ở đâu**: `workspace/extensions/shopee-scrape/background.js:916` đối chiếu `workspace/src/Shopee.Module.MultiBrave/Engine/RunnerExtensionRpc.cs:404-405,452`
+- **Bằng chứng**: **nghi ngờ** — khi gọi SW trực tiếp thất bại và rơi về đường popup, `CheckBeforeNextLinkAsync` nhận "Extension chưa hỗ trợ" và trả `Ok=false`; chưa đo mức ảnh hưởng thật.
+- **Vì sao không sửa ngay**: plan cấm sửa extension shopee-scrape đang chạy.
+
+### P-20261115-4 · [MỞ] · NHỎ — `shared/*.js` của workspace ghi nguồn chuẩn là script sync không tồn tại, và lệch bản suite
+- **Thấy lúc**: GĐ2 plan harvest
+- **Ở đâu**: `workspace/extensions/shopee-scrape/shared/net-detect.js:3`
+- **Bằng chứng**: header bảo chạy `extensions/sync-shared.cmd` nhưng workspace không có script này (chỉ `suite/extensions/`); bản suite thiếu `isTrafficErrorUrl` so với bản workspace (đã diff). Extension `shopee-harvest` mới chép thêm một bản nữa.
+- **Vì sao không sửa ngay**: dọn nguồn chung là việc riêng.
+
+### P-20261115-5 · [MỞ] · VỪA — Đường popup của RPC chặn 6 s, lệnh dài báo lỗi trong khi SW vẫn chạy và bị gọi lại chồng
+- **Thấy lúc**: phản biện GĐ2 plan harvest
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/RunnerExtensionRpc.cs:381`, `:469-497`
+- **Bằng chứng**: `BuildPopupInvokeExpression` race 6000 ms; khi gọi SW trực tiếp thất bại, bước scrape (chạy hàng phút) rơi xuống đường popup → C# nhận lỗi sau 6 s, vòng `attempt` gọi lại lệnh trong khi bước cũ vẫn chạy trong SW (đọc code, chưa đo thật).
+- **Vì sao không sửa ngay**: chạm engine scrape đang chạy; GĐ3 harvest sẽ tránh đường này cho bước harvest.
+
+### P-20261115-6 · [MỞ] · VỪA — `detectCaptcha` có thể báo captcha giả theo chữ trong mô tả SP
+- **Thấy lúc**: phản biện GĐ2 plan harvest
+- **Ở đâu**: `workspace/extensions/shopee-scrape/background.js` (hàm `detectCaptcha`)
+- **Bằng chứng**: **nghi ngờ** — so chữ trên clone `body` đã tách khỏi trang (`innerText` như `textContent`, gồm chữ ẩn); mô tả đồ điện tử hay có "nhấn giữ…", "trượt để…" → chờ 3 phút rồi instance dừng ở dòng đó.
+- **Vì sao không sửa ngay**: extension scrape cũ ngoài phạm vi; harvest đã đọc dữ liệu trước khi xét captcha.
+
+### P-20261115-7 · [MỞ] · NHẸ — `normalizeLink` không thêm scheme cho link dạng `shopee.vn/...`
+- **Thấy lúc**: phản biện GĐ2 plan harvest
+- **Ở đâu**: `workspace/extensions/shopee-scrape/background.js` (`normalizeLink`)
+- **Bằng chứng**: chỉ thêm `https://` cho link bắt đầu bằng `www.`; link thiếu scheme bị `tabs.update` hiểu là đường dẫn tương đối trong extension (đọc code).
+- **Vì sao không sửa ngay**: ngoài phạm vi.
+
+### P-20261115-8 · [MỞ] · VỪA — RPC bước scrape hết 600 s là gọi lại (`maxAttempts:2`) → bước chạy chồng trong SW
+- **Thấy lúc**: phản biện GĐ2 vòng 2 plan harvest
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/RunnerExtensionRpc.cs:68,81`; watchdog `SessionMonitor.cs:55` (8 phút)
+- **Bằng chứng**: đọc code — receive-timeout 600 s + 2 lần thử; bước cũ vẫn chạy trong SW khi lần gọi mới điều hướng tab. GĐ3 harvest sẽ dùng đường này (extension harvest đã có trần 540 s + chống bước chồng).
+- **Vì sao không sửa ngay**: engine scrape đang chạy; GĐ3 xử lý riêng cho harvest.
+
+### P-20261115-9 · [MỞ] · NHẸ — `writeState`/`__launcherStopRun` đọc-sửa-ghi `runnerState` không nguyên tử
+- **Thấy lúc**: phản biện GĐ2 vòng 2 plan harvest
+- **Ở đâu**: `workspace/extensions/shopee-harvest/background.js:60-66,890-896` (chép từ `shopee-scrape`)
+- **Bằng chứng**: đọc code — `setDisplayState` chen giữa có thể bị ghi đè bằng `lastCompletedRow` cũ → resume lùi dòng, cào lại (không mất dữ liệu).
+- **Vì sao không sửa ngay**: hành vi chung của 2 extension, không ảnh hưởng dữ liệu.
+
+### P-20261115-10 · [MỞ] · VỪA — Dấu hiệu lỗi mạng dò trên innerText trang SP có thể báo nhầm `proxyError`
+- **Thấy lúc**: phản biện GĐ2 vòng 3 plan harvest
+- **Ở đâu**: `workspace/extensions/shopee-scrape/shared/net-detect.js:52-62` (harvest chép nguyên)
+- **Bằng chứng**: **nghi ngờ** — "site can" khớp cả "web**site can**…", "no internet" có thể nằm trong mô tả router; so với `document.body.innerText` của trang SP → dừng instance như lỗi proxy.
+- **Vì sao không sửa ngay**: nguồn chung `shared/`, cần sửa đồng bộ cả scrape.
+
+### P-20261115-11 · [MỞ] · NHẸ — Regex itemId C# không neo `-i.`, tên SP kiểu "…Wi.2.4G…" ra sai itemId
+- **Thấy lúc**: phản biện GĐ2 vòng 3 plan harvest
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/ShopeeApiDataHelper.cs:70`
+- **Bằng chứng**: `i\.(\d+)\.(\d+)` khớp lần đầu trong cả URL; `isShopeeProductUrl` thì neo `-i\.` (đọc code). GĐ3 harvest dùng bản đã neo.
+- **Vì sao không sửa ngay**: helper đang dùng cho scrape-multi; sửa ở việc riêng.
+
+### P-20261115-12 · [MỞ] · NHẸ — `__launcherAbortStep` tới trước khi bước bắt đầu thì bị mất
+- **Thấy lúc**: phản biện GĐ2 vòng 4 plan harvest
+- **Ở đâu**: `workspace/extensions/shopee-harvest/background.js:569` (kế thừa `shopee-scrape`)
+- **Bằng chứng**: đọc code — bước mới đặt lại `abortRequested = false`, nên lệnh huỷ gửi trước đó không có tác dụng.
+- **Vì sao không sửa ngay**: hành vi chung với scrape; GĐ3 C# nên huỷ bằng cách không gọi bước kế thay vì dựa vào abort sớm.

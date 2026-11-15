@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shopee Harvest Runner</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #0f172a;
+      --panel: #111827;
+      --panel-2: #1f2937;
+      --text: #e5e7eb;
+      --muted: #9ca3af;
+      --line: #374151;
+      --accent: #10b981;
+    }
+
+    body {
+      margin: 0;
+      width: 340px;
+      background:
+        radial-gradient(circle at top left, rgba(52, 211, 153, 0.18), transparent 34%),
+        radial-gradient(circle at bottom right, rgba(4, 120, 87, 0.2), transparent 32%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", Arial, sans-serif;
+    }
+
+    .wrap { padding: 14px; }
+
+    h1 {
+      margin: 0 0 10px;
+      font-size: 18px;
+      line-height: 1.2;
+    }
+
+    .sub {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .card {
+      background: rgba(17, 24, 39, 0.9);
+      border: 1px solid rgba(55, 65, 81, 0.95);
+      border-radius: 14px;
+      padding: 12px;
+    }
+
+    .card + .card { margin-top: 10px; }
+
+    .card-title {
+      margin: 0 0 6px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    label {
+      display: block;
+      margin: 10px 0 6px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .readonly {
+      width: 100%;
+      box-sizing: border-box;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 10px 11px;
+      font-size: 13px;
+      min-height: 38px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .progress-track {
+      height: 4px;
+      background: var(--line);
+      border-radius: 2px;
+      margin: 10px 0 0;
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 2px;
+      width: 0%;
+      transition: width 0.35s ease;
+    }
+
+    .status {
+      margin-top: 10px;
+      padding: 10px 11px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(31, 41, 55, 0.7);
+      min-height: 44px;
+      font-size: 12px;
+      line-height: 1.5;
+      white-space: pre-line;
+    }
+
+    .pdp-list {
+      margin-top: 6px;
+      max-height: 120px;
+      overflow-y: auto;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .pdp-item { padding: 2px 0; word-break: break-all; }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 10px;
+    }
+
+    button {
+      border: 1px solid rgba(16, 185, 129, 0.5);
+      background: rgba(16, 185, 129, 0.18);
+      color: #d1fae5;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    button:disabled { opacity: 0.45; cursor: default; }
+
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 8px 0 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .hint {
+      margin-top: 10px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      color: #d1fae5;
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Shopee Harvest Runner <span class="badge">View</span></h1>
+    <p class="sub">Chỉ hiển thị trạng thái. Điều khiển chạy / dừng / sheet / dòng trên app <strong>Shopee Harvest</strong>.</p>
+
+    <div class="card">
+      <label>Sheet</label>
+      <div id="sheetDisplay" class="readonly">—</div>
+
+      <div class="row">
+        <div>
+          <label>Từ dòng</label>
+          <div id="startRowDisplay" class="readonly">—</div>
+        </div>
+        <div>
+          <label>Đến dòng</label>
+          <div id="endRowDisplay" class="readonly">—</div>
+        </div>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-fill" id="progressFill"></div>
+      </div>
+
+      <div id="status" class="status">Đang chờ launcher…</div>
+      <div id="statsLine" class="hint"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Dữ liệu SP đã bắt trên tab Shopee</div>
+      <div id="pdpSummary" class="hint" style="margin-top:0">Đang đọc…</div>
+      <div id="pdpDiag" class="hint" style="margin-top:4px; white-space:pre-line"></div>
+      <div id="pdpList" class="pdp-list"></div>
+      <div class="hint" style="margin-top:6px">Xuất JSON luôn cắt dữ liệu cá nhân (data.account → {}, địa chỉ giao hàng → null). Mục nào cắt lỗi sẽ không được xuất.</div>
+      <div class="actions">
+        <button id="exportBtn" disabled>Xuất JSON</button>
+        <button id="refreshBtn">Đọc lại</button>
+      </div>
+      <div id="exportStatus" class="hint"></div>
+    </div>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -68,7 +68,31 @@ Thử 3 SP: 2 áo thun nữ (100017›100099›100352, 16 và 9 model) + 1 lọ 
   | Khác | `item.condition`, `item.estimated_days`, `item.is_pre_order`, `item.shop_location`, `shop_detailed.{shopid,name}`, `product_review` | |
 - **Không có** trong JSON công khai: tồn kho (`stock`/`normal_stock` = null, chỉ có `stock_display = "IN STOCK"`,
   `has_stock`), số đã bán (null), cân nặng, kích thước gói, SKU người bán.
-- Chưa gặp: SP **không biến thể** (`tier_variations` rỗng?), SP có ảnh trong mô tả → kiểm ở chốt chặn GĐ2.
+- Chưa gặp: SP có ảnh trong mô tả.
+- **Chạy thật bằng extension (2026-11-15, user, Brave đã đăng nhập)** — fixture ở
+  `workspace/tests/Shopee.Core.Tests/Fixtures/pdp/` (đã cắt `data.account` + `delivery_address`):
+  - `pdp-khong-bien-the.json`: SP **không biến thể** có `tier_variations = [{"name":"","options":[""]}]` (KHÔNG rỗng),
+    1 model `name:""`, `tier_index:[0]`, model `price_before_discount = 0` (0 = không giảm → dùng `price`).
+    `size_chart = ""` (chuỗi rỗng, không phải null) nhưng có `size_chart_info` dạng bảng (cột Size/Height/Weight).
+  - `pdp-1tang-70model-4capdm.json`: danh mục **4 cấp** (không cố định 3), 1 tầng biến thể **70 lựa chọn / 70 model**
+    (bước up phải kiểm giới hạn số lựa chọn của Shopee), `rich_text_description` có giá trị.
+  - `pdp-danurl-1tang-6model-anhsg.json` (bản extension sau sửa): **mở bằng cách dán URL** → hook vẫn bắt được
+    (rủi ro "chỉ bắt khi click" đã loại). Ảnh có tiền tố `sg-11134201-…` lẫn `vn-11134207-…` trong cùng SP — đã thử
+    `https://down-vn.img.susercontent.com/file/{id}` với cả id `sg-` lẫn `vn-` đều trả 200 image/jpeg. Danh mục 4 cấp; `item_has_video:false`, không video.
+  - `pdp-video-1tang-11model-2capdm.json`: có **video** (`product_images.video`, 35 s, chỉ 1 format `V720P` +
+    `default_format.url` dạng `mms.vod.susercontent.com/…default.mp4`); danh mục chỉ **2 cấp**; 17 thuộc tính;
+    `brand` null dù tiêu đề ghi thương hiệu.
+  - `pdp-2tang-8model.json`: **2 tầng** "Màu sắc" (4, có ảnh) × "Hộp" (2, `images: null`) = 8 model; model `name` =
+    "Màu,Hộp", `tier_index` = [i,j]; có video. → ảnh lựa chọn chỉ ở tầng 1; tầng 2 `images` null.
+  - `pdp-motaanh-brand-voucher.json` (extension vòng 5, Shopee Mall): **mô tả có ảnh** — đoạn
+    `{"type":1,"img_id":"sg-11134202-…","ratio":1}` xen giữa đoạn chữ `type:0` (có cả trong `item.rich_text_description`
+    lẫn `data.product_description`); `item.description` (chữ thuần) KHÔNG chứa ảnh → bước up phải dựng mô tả từ
+    `paragraph_list`. Có `brand`/`brand_id` thật. Có `data.shop_vouchers[]` kèm `signature`, `customer_reference_id`.
+  - **Trường phụ thuộc người xem / thời điểm** (làm `raw_hash` đổi liên tục, không cần cho đăng SP): `data.shop_vouchers`,
+    `data.top_banner`, `data.coin_info`, `data.product_review.liked`, toàn bộ kênh/phí/ngày giao trong
+    `data.product_shipping` (trừ `shipping_fee_info.ship_from_location`). GĐ4 bỏ các khối này trước khi tính hash.
+  - **Riêng tư:** ngoài `data.account`, JSON còn `data.product_shipping.delivery_address` = địa chỉ + toạ độ của tài
+    khoản đang đăng nhập → phải cắt trước khi tính hash / đẩy Hub / lưu fixture.
 
 ## 2. Phạm vi
 
@@ -106,16 +130,19 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    Tên extension khác ("Shopee Harvest Runner") để C# nhận diện đúng.
 2. Content script `pdp-hook.js` khai trong manifest: `world: "MAIN"`, `run_at: "document_start"`, `matches` các host
    Shopee. Bọc `fetch` + `XMLHttpRequest`, bắt response của `/api/v4/pdp/get_pc` (đã xác nhận trang tự gọi), lưu vào
-   `window.__shopeeHarvestPdp[itemId] = {url, at, body}` — chỉ giữ bản có `error == null` và `data.item.item_id` khớp.
+   kho ở content script ISOLATED (xem "Hook ít dấu vết" bên dưới) — chỉ giữ bản có `error` null/vắng/0 và
+   `data.item.item_id` khớp; bản có mã lỗi khác thì ghi lại mã lỗi theo itemId.
    Không sửa request, không chặn response (trang phải chạy y như thường).
 3. Hàm RPC `__launcherExecuteHarvestStep(link)` trong background: mở link → chờ trang → nếu verify/captcha/lỗi mạng/không
    phải trang SP thì trả đúng cờ như bước scrape → không thì chờ tối đa 30 s tới khi có PDP khớp `itemId` của link →
    trả `{ok, captcha, proxyError, notProduct, itemId, shopId, pageUrl, json, source}`. Thêm cờ probe `hasHarvestStep`
    để SW cũ cache bị nhận ra.
-   - **Dự phòng:** quá 30 s chưa bắt được mà trang SP vẫn bình thường → gọi thẳng **một lần**
-     `fetch('/api/v4/pdp/get_pc?item_id=&shop_id=&tz_offset_in_minutes=420&detail_level=0', {credentials:'include'})`
-     trong world MAIN, `source = "fetch"`. Không gọi thẳng làm đường chính (dễ bị gắn cờ bot); đếm số lần dùng dự phòng
-     vào log để theo dõi.
+   - **Dự phòng (đổi sau phản biện GĐ2):** quá 30 s chưa bắt được, trang SP vẫn bình thường và Shopee không từ chối →
+     `chrome.tabs.reload` **một lần** để trang tự gọi lại get_pc với đủ chữ ký anti-bot, chờ thêm ≤30 s,
+     `source = "hook-reload"`. **Không** gọi thẳng get_pc (thiếu header ký, dễ bị gắn cờ). Shopee trả `error` cho
+     get_pc → không dự phòng; mã thuộc `blockErrorCodes` (mặc định `[90309999]`, payload đè được) → `trafficError` +
+     `blocked`; mã khác → lỗi dòng kèm `pdpError`. `"error":0` coi là thành công (Hub cũng nhận).
+   - Hook ít dấu vết: bọc bằng `Proxy`, store giữ ở content script world ISOLATED (không đặt lên `window` của trang).
 4. **Chốt chặn GĐ2 (bắt buộc):** chạy thật trên 3 link bằng Brave đã đăng nhập: **1 SP không biến thể** (chưa gặp
    lúc khảo sát), 1 SP 2 tầng biến thể có video, 1 SP có ảnh trong mô tả nếu tìm được. Lưu JSON thu được (đã bỏ
    cookie/token nếu có; khối `account` thay bằng `{}`) làm fixture tại `workspace/tests/Shopee.Core.Tests/Fixtures/pdp/*.json`.
@@ -133,6 +160,20 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
      `lastCompletedRow`; callback ném lỗi thì dòng KHÔNG được tính xong;
    - không có JSON sau 30 s (trang SP bình thường) → `AddFailedRow` như lỗi scrape; captcha/proxy/watchdog/xoay tài
      khoản/nghỉ giữa link giữ nguyên logic hiện có.
+   - Lưu ý từ GĐ2: probe đang cứng `hasScrapeStep` (`RunnerExtensionRpc.cs:392,524`, `RunnerSwLifecycle.cs:503`) và tên
+     "Shopee Data Runner" (`BraveProfileManager.cs:207`) → tham số hoá. Payload bước harvest **không** để extension tự ghi
+     `lastCompletedRow` (C# ghi sau khi outbox lưu xong). Bước harvest chạy > 6 s nên **không được** rơi xuống đường
+     popup 6 s của RPC (`RunnerExtensionRpc.cs:381`) rồi bị gọi lại chồng. Bỏ `PageCdpHelper.ClearShopeeApiDataAsync`
+     trước mỗi bước. Kết quả bước có `trafficError`/`blocked` khi Shopee chặn get_pc → dừng tài khoản như ca traffic error;
+     **cầu dao**: N dòng liên tiếp (vd 3) cùng có `pdpError` (mã chưa biết) → xử như traffic (xoay IP/tài khoản), để
+     mã chặn mới không đốt cả sheet thành dòng lỗi; `superseded` → bỏ qua kết quả, không ghi lỗi dòng;
+     regex itemId của C# (`ShopeeApiDataHelper.TryExtractShopeeItemId`) chưa neo `-i.` → dùng bản đã neo;
+     extension neo itemId cả đầu lẫn đuôi `(?:^|[/\-])i\.(\d+)\.(\d+)(?=$|[?#&/])` → link trong sổ dính đuôi lạ
+     (vd `…i.1.2%7DD`) sẽ ra `notProduct`: C# **phải làm sạch link** (`ShopeeApiDataHelper.CanonicalProductUrl`)
+     trước khi gửi bước; `superseded`/`aborted` không bao giờ tính là dòng đã xong;
+     log/cảnh báo khi tỉ lệ `source = "hook-reload"` cao.
+   - Harvest dùng chung khoá `runnerState`/`lastCompletedRow` với Scrape và `ExtensionProgressReader` chọn thư mục
+     extension ghi gần nhất trong profile → **bắt buộc** profile Brave riêng cho Harvest (GĐ5) hoặc đổi khoá.
 3. Tiến độ riêng: `CoordOp.Harvest` (Hub ledger + lease phải nhận op này — sửa phía Hub nếu đang whitelist op) và file
    `harvest-progress.json` / `harvest-targets.json` riêng.
 
@@ -140,8 +181,10 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
 
 1. `ShopeePdpParser` — từ JSON `get_pc` rút các trường theo bảng đường dẫn ở mục 1 (itemId, shopId, tên, cat_id +
    category ids, brand_id, giá min/max/trước giảm đã chia 100000, số tầng biến thể, số model, URL ảnh, URL video lấy từ
-   `product_images.video`, URL bảng size). Chịu được: `tier_variations` rỗng/null, `brand` null, `size_chart` null,
-   `video` null. Test bằng các fixture GĐ2.
+   `product_images.video`, URL bảng size). Chịu được: `tier_variations` rỗng/null **hoặc dạng SP không biến thể
+   `[{"name":"","options":[""]}]` (→ `tier_count = 0`)**, `brand` null, `size_chart` null **hoặc ""**, `video` null,
+   model `price_before_discount = 0` (→ lấy `price`), danh mục 3–4+ cấp, **`item.attributes = null`**
+   (`pdp-1tang-4model-1anh.json`), `rich_text_description` null hoặc có giá trị. Test bằng các fixture GĐ2.
 2. `HarvestOutbox` — SQLite (`Microsoft.Data.Sqlite`, theo khuôn `SearchTaskStore`) tại thư mục dữ liệu app:
    `pending(item_id, account_id, sheet, row_no, url, json, raw_hash, created_at, attempts, last_error)`.
    `onProductHarvested` ghi vào đây (đồng bộ, xong mới tính dòng hoàn thành) → **không mất dữ liệu khi Hub sập**.
@@ -159,9 +202,11 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    - 400 `batch-too-large` hoặc 413 → chia nhỏ lô. 400 khác (`client-now`, body hỏng) là lỗi code client → đánh dấu
      lỗi cả lô, ghi log rõ, không lặp gửi lại.
    - Trước khi tính `raw_hash`: bỏ ký tự `\u0000` và surrogate UTF-16 lẻ (vd emoji bị cắt đôi) khỏi JSON và các trường
-     text (Postgres không nhận), và **xoá khối `data.account`** (thông tin tài khoản Shopee đang đăng nhập, không được
-     đưa lên Hub).
-   - Hub từ chối `error` khác null; khảo sát 2026-11-15 thấy bản thành công có `"error":null` — chốt chặn GĐ2 xác nhận lại.
+     text (Postgres không nhận), **xoá khối `data.account`** và **`data.product_shipping.delivery_address`** (thông tin
+     + địa chỉ tài khoản Shopee đang đăng nhập, không được đưa lên Hub; extension đã cắt sẵn, C# cắt thêm một lớp);
+     đồng thời bỏ các khối phụ thuộc người xem/thời điểm (danh sách ở mục 1 "Trường phụ thuộc người xem") để cùng một
+     SP cào lại không đổi `raw_hash` vô cớ.
+   - Hub từ chối `error` khác null và khác số 0 (`"error":0` = thành công); 6 fixture thật đều có `"error":null`.
 3. `HarvestOutboxWorker` — mỗi 10 s lấy ≤50 bản ghi đẩy `POST /api/harvested-products/batch`, xoá đúng các item Hub báo
    đã nhận; lỗi mạng thì lùi dần (tối đa 5'), không chặn vòng cào. Đẩy nốt khi đóng app (có giới hạn thời gian).
 
@@ -225,3 +270,20 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
   lỗi mục chỉ lớp SQLSTATE 22/23/54, còn lại 500; mốc cào quy về giờ Hub và kẹp ≤ giờ Hub; bản cũ / trùng hash không ghi.
 - 4 vòng phản biện (lỗi chính đã sửa: xoá nhầm theo itemId, lô độc kẹt vĩnh viễn, JSON lỗi Shopee ghi đè bản tốt, bản
   cũ ghi đè bản mới, lệch đồng hồ máy). Test Hub 307/307 (35 test Harvest chạy Postgres thật).
+- Bổ sung sau GĐ2: Hub nhận `"error":0` là hợp lệ (308/308).
+
+### GĐ2 — Extension `workspace/extensions/shopee-harvest` (2026-11-15): XONG
+
+- File: `manifest.json` (2 content script: `pdp-hook.js` MAIN + `pdp-store.js` ISOLATED, document_start), `pdp-core.js`
+  (thuần: itemId neo `(?:^|[/\-])i\.(\d+)\.(\d+)(?=$|[?#&/])`, `checkPdpBody`, `redactPrivate` đóng an toàn),
+  `background.js` (`__launcherExecuteHarvestStep`, probe `hasHarvestStep`), `popup.*` (chẩn đoán + Xuất JSON luôn cắt
+  riêng tư), `shared/*` (giống hệt scrape), `tests/*.test.mjs` (106 test Node: `node --test
+  "extensions/shopee-harvest/tests/*.test.mjs"` từ `workspace/`).
+- Kết quả bước trả C#: `ok, scrapeOk, harvestOk, captcha, proxyError, trafficError, blocked, notProduct, aborted,
+  superseded, message, tabId, pageUrl, itemId, shopId, json (đã cắt account + delivery_address), source
+  ("hook"|"hook-reload"), pdpError, capturedUrl, capturedAt`. Payload tuỳ chọn `blockErrorCodes`. Bước KHÔNG tự ghi
+  `lastCompletedRow`; trần tổng 540 s; dự phòng = reload 1 lần; mã chặn mặc định `[90309999]`.
+- Chạy thật trên Brave (user): click và **dán URL mở thẳng** đều bắt được; trang Shopee chạy bình thường. 7 fixture thật
+  ở `workspace/tests/Shopee.Core.Tests/Fixtures/pdp/` (đã cắt riêng tư).
+- 5 vòng nghiệm thu + 4 vòng phản biện. Rủi ro chấp nhận (ghi đầu `pdp-hook.js`): dò `toString` từ realm khác,
+  phép thử vòng `__proto__`, khung stack `chrome-extension://`.
