@@ -85,7 +85,8 @@ public static class HubRoutes
     /// <c>rawHash</c>. Body bắt buộc <c>clientNow</c> (thiếu → 400). Trả <c>results[{index, itemId, ok, applied, reason?}]</c> đúng thứ tự + đủ số mục của request (khoá
     /// theo CHỈ SỐ mục, không theo itemId); mục trùng hash hoặc cũ hơn bản Hub đang giữ (<c>harvestedAt</c>) cũng là
     /// <c>ok=true</c> → client xoá đúng mục đó khỏi hàng đợi. Lỗi Postgres lớp 22/23/54 → <c>ok=false</c> cho mục đó;
-    /// mọi lớp Postgres khác và lỗi kết nối → 500 CẢ lô (client giữ lô, gửi lại sau).</summary>
+    /// lỗi phía Hub (mất kết nối Postgres, lớp 53/57/08/40) → 503 <c>pg-unavailable</c> CẢ lô; lớp còn lại → 500 CẢ lô.
+    /// Client giữ lô, lùi dần; chỉ SP gửi lẻ bị 500 lặp (có SP khác vào xen giữa) mới bị đánh lỗi.</summary>
     public const string HarvestedProductsBatch = "/api/harvested-products/batch";
     /// <summary>GET <c>?account=&amp;sheet=</c> → số dòng nguồn đã có dữ liệu + số SP khác nhau.</summary>
     public const string HarvestedProductsStats = "/api/harvested-products/stats";

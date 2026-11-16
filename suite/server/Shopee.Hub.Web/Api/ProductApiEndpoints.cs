@@ -26,6 +26,33 @@ public static class ProductApiEndpoints
         return await body(pdb);
     }
 
+    /// <summary><see cref="WithPg"/> cho nhóm harvested-products: lỗi PHÍA HUB/POSTGRES → 503 <c>pg-unavailable</c> thay vì
+    /// 500, vì client outbox coi 500 lặp ở riêng một SP là dấu hiệu MỤC hỏng (đủ lần thì đánh lỗi mục), còn 503 chỉ là lùi
+    /// dần. Gồm: NpgsqlException không phải PostgresException (mở kết nối hỏng, socket đứt, timeout, cạn pool) và
+    /// PostgresException lớp 53 (hết tài nguyên: đầy kết nối 53300, đầy đĩa, hết RAM), 57 (operator: tắt máy, huỷ lệnh),
+    /// 08 (kết nối), 40 (deadlock / serialization). Lớp 22/23/54 đã được <see cref="ProductDb.UpsertHarvestedAsync"/> xử
+    /// lý THEO MỤC (ok=false) nên không tới đây. Còn lại (lớp khác, <c>NpgsqlOperationInProgressException</c> = dùng một
+    /// kết nối cho hai lệnh cùng lúc — lỗi CODE Hub) giữ đường cũ → 500. Chỉ dùng cho route harvest.</summary>
+    internal static async Task<IResult> WithPgHarvest(IServiceProvider sp, Func<ProductDb, Task<IResult>> body)
+    {
+        try
+        {
+            return await WithPg(sp, body);
+        }
+        catch (Npgsql.NpgsqlException ex) when (IsHubSidePgFault(ex))
+        {
+            return Results.Json(new { error = "pg-unavailable" }, statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    }
+
+    /// <summary>Lỗi Postgres/Npgsql là chuyện của Hub (503), không phải của dữ liệu gửi lên. Xem <see cref="WithPgHarvest"/>.</summary>
+    internal static bool IsHubSidePgFault(Npgsql.NpgsqlException ex) => ex switch
+    {
+        Npgsql.NpgsqlOperationInProgressException => false,
+        Npgsql.PostgresException pg => pg.SqlState.Length >= 2 && pg.SqlState[..2] is "53" or "57" or "08" or "40",
+        _ => true,
+    };
+
     public static void MapProductApi(this WebApplication app)
     {
         var api = app.MapGroup("").RequireAuthorization("Client");
@@ -208,7 +235,7 @@ public static class ProductApiEndpoints
         // machine_id: MachineId trong body, rỗng thì lấy header X-Machine-Id (như các endpoint client khác).
         api.MapPost(HubRoutes.HarvestedProductsBatch, (HarvestedProductBatchRequest? r, HttpRequest req,
             IServiceProvider sp, CancellationToken ct) =>
-            WithPg(sp, async pdb =>
+            WithPgHarvest(sp, async pdb =>
             {
                 if (r?.Items is null) return Results.BadRequest();
                 if (r.Items.Count > HarvestedProductLimits.MaxBatch)
@@ -221,6 +248,6 @@ public static class ProductApiEndpoints
 
         // ── Đọc: đếm dòng nguồn đã có dữ liệu + số SP khác nhau (thiếu tham số = không lọc chiều đó) ──
         api.MapGet(HubRoutes.HarvestedProductsStats, (string? account, string? sheet, IServiceProvider sp, CancellationToken ct) =>
-            WithPg(sp, async pdb => Results.Json(await pdb.GetHarvestedStatsAsync(account ?? "", sheet ?? "", ct))));
+            WithPgHarvest(sp, async pdb => Results.Json(await pdb.GetHarvestedStatsAsync(account ?? "", sheet ?? "", ct))));
     }
 }

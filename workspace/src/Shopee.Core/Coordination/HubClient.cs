@@ -19,12 +19,20 @@ public sealed class HubClient : IDisposable
     private readonly string _machineId;
     public string BaseUrl { get; }
 
-    public HubClient(HubClientConfig cfg, string machineId)
+    public HubClient(HubClientConfig cfg, string machineId) : this(cfg, machineId, null) { }
+
+    /// <summary>Cho TEST: mọi request đi qua <paramref name="handler"/> giả (null = handler mặc định như bản thường).
+    /// Handler dùng chung cho 2 client nên không để HttpClient tự dispose nó.</summary>
+    internal HubClient(HubClientConfig cfg, string machineId, HttpMessageHandler? handler)
     {
         BaseUrl = (cfg.BaseUrl ?? "").TrimEnd('/');
         _machineId = machineId ?? "";
-        _http = new HttpClient { BaseAddress = new Uri(BaseUrl), Timeout = TimeSpan.FromSeconds(8) };
-        _bulkHttp = new HttpClient { BaseAddress = new Uri(BaseUrl), Timeout = TimeSpan.FromMinutes(5) };
+        _http = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
+        _http.BaseAddress = new Uri(BaseUrl);
+        _http.Timeout = TimeSpan.FromSeconds(8);
+        _bulkHttp = handler is null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
+        _bulkHttp.BaseAddress = new Uri(BaseUrl);
+        _bulkHttp.Timeout = TimeSpan.FromMinutes(5);
         if (!string.IsNullOrWhiteSpace(cfg.ApiToken))
         {
             _http.DefaultRequestHeaders.TryAddWithoutValidation("X-Api-Token", cfg.ApiToken);
@@ -418,6 +426,36 @@ public sealed class HubClient : IDisposable
         var r = await _bulkHttp.PostAsJsonAsync(HubRoutes.OrdersPush, req, ct);
         r.EnsureSuccessStatusCode();
         return await r.Content.ReadFromJsonAsync<OrdersPushResult>(ct);
+    }
+
+    // ── Kho dữ liệu SP Harvest: đẩy lô SP đã cào (outbox → Hub) ──
+    // Dùng _bulkHttp (timeout dài): lô ≤50 SP × 60–120 KB JSON ≈ vài MB qua tunnel. KHÔNG ném theo mã HTTP — worker
+    // outbox cần phân biệt 400 batch-too-large / 400 khác / 413 / 500 / 503 / 401 để chọn hành động; chỉ lỗi MẠNG
+    // (HttpRequestException) và timeout (TaskCanceledException khi ct chưa huỷ) mới ném.
+    /// <summary>POST lô lên <see cref="HubRoutes.HarvestedProductsBatch"/>. Trả mã HTTP; <c>Body</c> = phản hồi đã parse
+    /// khi 2xx (null nếu body không đọc được); <c>ErrorCode</c> = trường <c>error</c> trong body JSON của phản hồi lỗi
+    /// (vd <c>batch-too-large</c>, <c>client-now</c>, <c>pg-not-ready</c>) nếu có.</summary>
+    public async Task<(HttpStatusCode Status, HarvestedProductBatchResponse? Body, string? ErrorCode)> PostHarvestedBatchAsync(
+        HarvestedProductBatchRequest request, CancellationToken ct = default)
+    {
+        using var r = await _bulkHttp.PostAsJsonAsync(HubRoutes.HarvestedProductsBatch, request, ct);
+        if (r.IsSuccessStatusCode)
+        {
+            try { return (r.StatusCode, await r.Content.ReadFromJsonAsync<HarvestedProductBatchResponse>(ct), null); }
+            catch (JsonException) { return (r.StatusCode, null, null); }
+            catch (NotSupportedException) { return (r.StatusCode, null, null); }
+        }
+        string? code = null;
+        try
+        {
+            var text = await r.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String)
+                code = e.GetString();
+        }
+        catch (JsonException) { /* body không phải JSON (proxy/Cloudflare) → không có mã */ }
+        return (r.StatusCode, null, code);
     }
 
     /// <summary>Dữ liệu thống kê đơn dùng chung từ Hub cho khoảng <c>[fromUtc, toUtcExclusive)</c> — hai MỐC UTC

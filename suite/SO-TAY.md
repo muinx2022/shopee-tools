@@ -653,3 +653,9 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/ScrapeRunner.cs:289-319`
 - **Bằng chứng**: đọc code — vùng phủ chưa qua dòng lỗi cuối khối → patch work → mỗi lần một Brave mới + Cooldown; 3 lần kẹt mới `RowSkipped`. Có sẵn từ Scrape, Harvest thừa hưởng.
 - **Vì sao không sửa ngay**: hành vi chung của engine, cần việc riêng có số liệu chạy thật.
+
+### P-20261116-4 · [MỞ] · NHẸ — Lô lớn timeout (5' hoặc 524 qua proxy) không làm nhỏ lô
+- **Thấy lúc**: phản biện GĐ4 vòng 3 plan harvest
+- **Ở đâu**: `workspace/src/Shopee.Core/Harvest/HarvestOutboxWorker.cs` (nhánh lỗi thoáng qua)
+- **Bằng chứng**: **nghi ngờ** — uplink rất chậm (~0,4 Mbps) với lô ~15 MB có thể timeout mãi mà worker vẫn gửi lại lô 50 mục; chưa dựng ca.
+- **Vì sao không sửa ngay**: cần số liệu đường truyền thật của các máy.

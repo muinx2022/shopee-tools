@@ -175,7 +175,15 @@ internal sealed class HarvestRowProcessor
                 step.Source ?? "",
                 step.HarvestedAtOr(row.ReceivedAt));
             var saveError = await Book.SaveAsync(_options.Sink, harvested, cancellationToken).ConfigureAwait(false);
-            if (saveError is not null)
+            if (saveError is HarvestItemRejectedException rejected)
+            {
+                // JSON của RIÊNG SP này không xử lý được → lỗi dòng như notProduct, sang dòng kế; KHÔNG dừng job (dừng
+                // thì "Tiếp tục" kẹt đúng dòng này mãi).
+                var reason = "Dữ liệu SP không xử lý được: " + rejected.Message;
+                Book.RowFailed(rowNumber, reason);
+                _log($"Dòng {rowNumber}: {reason}");
+            }
+            else if (saveError is not null)
             {
                 // Chưa lưu được = dòng CHƯA xong (sổ không đụng LastCompletedRow/NextRunRow, không ghi bỏ qua). Lỗi chỗ
                 // lưu là hạ tầng MÁY, không phải lỗi tk: phase error + thông điệp có tiền tố HarvestSinkFailure →
@@ -184,11 +192,13 @@ internal sealed class HarvestRowProcessor
                 _config.LastRunnerMessage = HarvestSinkFailure.Message(rowNumber, saveError);
                 return new(HarvestRowNext.Stop, decision.Action, false, tabId);
             }
-
-            saved = true;
-            _log(step.Captcha
-                ? $"Đã giải captcha và lấy dữ liệu SP {step.ItemId} - dòng {rowNumber} ({step.Source})."
-                : $"Đã lấy dữ liệu SP {step.ItemId} - dòng {rowNumber} ({step.Source}).");
+            else
+            {
+                saved = true;
+                _log(step.Captcha
+                    ? $"Đã giải captcha và lấy dữ liệu SP {step.ItemId} - dòng {rowNumber} ({step.Source})."
+                    : $"Đã lấy dữ liệu SP {step.ItemId} - dòng {rowNumber} ({step.Source}).");
+            }
             if (_sourceMonitor.Record(step.Source) is { } reloadRatio)
                 _log($"⚠ Tỉ lệ phải tải lại trang mới bắt được get_pc cao: {reloadRatio:P0} trong 20 dòng gần nhất " +
                     "— trang ít tự gọi get_pc lần đầu, mỗi dòng tốn thêm một lần tải.");
@@ -302,6 +312,12 @@ internal sealed class HarvestRowBook
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
+        }
+        catch (HarvestItemRejectedException ex)
+        {
+            // Dữ liệu CỦA DÒNG hỏng (tất định) — không phải hạ tầng: dòng pdpError đang chờ giữ nguyên, caller ghi lỗi
+            // dòng (RowFailed sẽ cắt chuỗi pdpError như mọi lỗi dòng khác).
+            return ex;
         }
         catch (Exception ex)
         {

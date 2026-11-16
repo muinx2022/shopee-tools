@@ -89,7 +89,8 @@ Thử 3 SP: 2 áo thun nữ (100017›100099›100352, 16 và 9 model) + 1 lọ 
     lẫn `data.product_description`); `item.description` (chữ thuần) KHÔNG chứa ảnh → bước up phải dựng mô tả từ
     `paragraph_list`. Có `brand`/`brand_id` thật. Có `data.shop_vouchers[]` kèm `signature`, `customer_reference_id`.
   - **Trường phụ thuộc người xem / thời điểm** (làm `raw_hash` đổi liên tục, không cần cho đăng SP): `data.shop_vouchers`,
-    `data.top_banner`, `data.coin_info`, `data.product_review.liked`, toàn bộ kênh/phí/ngày giao trong
+    `data.top_banner`, `data.coin_info`, `data.product_review.liked`, `data.product_price.final_price_info`,
+    `data.product_price.final_price_vouchers`, `data.price_breakdown`, `data.button_group`, toàn bộ kênh/phí/ngày giao trong
     `data.product_shipping` (trừ `shipping_fee_info.ship_from_location`). GĐ4 bỏ các khối này trước khi tính hash.
   - **Riêng tư:** ngoài `data.account`, JSON còn `data.product_shipping.delivery_address` = địa chỉ + toạ độ của tài
     khoản đang đăng nhập → phải cắt trước khi tính hash / đẩy Hub / lưu fixture.
@@ -200,9 +201,13 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    Quy tắc client (chốt sau phản biện GĐ1 vòng 3):
    - `ok=true` → xoá mục (đếm `applied` để thống kê).
    - `ok=false` → đánh dấu lỗi, giữ lại; UI có nút **"Đẩy lại mục lỗi"** đưa các mục này về hàng chờ.
-   - 5xx, 503 `pg-not-ready`, 401, timeout, mất mạng → giữ nguyên lô, lùi dần (tối đa 5'), **không đặt trần** số lần.
-   - Cùng một lô bị 500 liên tiếp ≥3 lần → **chia đôi** lô để cô lập mục gây lỗi; chỉ khi lô còn 1 mục mới tính trần
-     (vd 20 lần) rồi đánh dấu lỗi mục đó.
+   - MỌI phản hồi khác 200 (5xx kể cả 500, 503 `pg-not-ready`/`pg-unavailable`, 401, timeout, mất mạng) → giữ nguyên
+     lô, **lùi dần CHUNG** cho cả worker (tối đa 5'), **không đặt trần** số lần; 200 thì reset.
+   - (Chốt sau phản biện GĐ4 vòng 2 — bỏ cơ chế chia đôi/ghim vì gây kẹt vĩnh viễn.) Lô nhiều mục bị 500 → mọi mục
+     thành **nghi vấn**; chọn lô **xen kẽ**: sau một lô thường gửi MỘT mục nghi vấn một mình (xoay vòng), lô thường
+     không bao giờ bị nghi vấn chặn. Mục nghi vấn gửi lẻ bị 500 chỉ được đếm khi có một 200 xảy ra **sau** lần 500 gần
+     nhất của chính nó (không thì có thể Hub đang sập); đủ 5 lần có bằng chứng → `failed`. Mục độc nằm một mình
+     trong hàng thì không bao giờ bị `failed`, chỉ lùi dần (chấp nhận).
    - 400 `batch-too-large` hoặc 413 → chia nhỏ lô. 400 khác (`client-now`, body hỏng) là lỗi code client → đánh dấu
      lỗi cả lô, ghi log rõ, không lặp gửi lại.
    - Trước khi tính `raw_hash`: bỏ ký tự `\u0000` và surrogate UTF-16 lẻ (vd emoji bị cắt đôi) khỏi JSON và các trường
@@ -235,6 +240,8 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    `ProductScraped`, video trong VM; `HttpCoordinationHub` hiện chỉ fold ledger `scrape` → cần fold riêng cho harvest
    nếu muốn tiếp quản xuyên máy; **nối báo "fatal" của job harvest lên Hub** (`TakeJobFatal`/`AssignmentWorker` hiện
    chỉ xử op `scrape`; Hub `OpFamily` chưa có `harvest`) — nếu không, job dừng vì sink lỗi không hiện "failed" trên Hub.
+   **Chặn chạy 2 bản `ShopeeHarvest.exe` cùng máy** (dùng chung `harvest-outbox.db` → 2 worker đẩy trùng). Khởi tạo
+   outbox/worker theo "Báo cáo thực thi GĐ4"; `Nudge()` sau mỗi lần lưu; khi đóng app `StopAsync` + `FlushAsync`.
 
 ## 4. Tiêu chí nghiệm thu
 
@@ -314,3 +321,23 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
   harvest gửi `BigsellerId=""`. Harvest bỏ Product Copy (không kiểm, không nạp), bypass bigseller, token BigSeller,
   NeedLogin, video, `HasCookie`.
 - Test workspace 290 + 821, build Release 0 warning. 2 vòng nghiệm thu + 2 vòng phản biện + lượt dọn.
+
+### GĐ4 — Outbox client + đẩy Hub (2026-11-16): XONG (chưa chạy thật — cần exe GĐ5 + Hub deploy)
+
+- `workspace/src/Shopee.Core/Harvest/`: `HarvestPayloadCleaner` (bỏ `\0`/surrogate lẻ, cắt riêng tư lớp 2, bỏ khối
+  phụ thuộc người xem; số giữ nguyên văn; MaxDepth 64; `raw_hash` = SHA-256 chuỗi sạch), `ShopeePdpParser` (đúng trên
+  7 fixture), `HarvestItemRejectedException` (JSON không xử lý được → engine coi là lỗi dòng), `HarvestOutbox :
+  IHarvestSink` (SQLite WAL, UNIQUE account/sheet/row, upsert theo `harvested_at`, cột `version` chống xoá oan, BUSY
+  thử lại ≤10 s, `EnsureReadyAsync` ghi thử + đĩa ≥500 MB, `user_version=1`, đường dẫn
+  `<SuitePaths.Root>\harvest\harvest-outbox.db`), `HarvestOutboxWorker` (lùi dần chung ±20% nhiễu, mục nghi vấn gửi
+  xen kẽ, 5 lần 500 có bằng chứng → failed, mồ côi lùi theo Attempts, 413 chia/nới, Requeue, Flush, thống kê bền
+  `counters`).
+- `HubClient.PostHarvestedBatchAsync`; DTO + route chép sang workspace (`HarvestedProductDtos.cs`, sửa thì sửa cả 2).
+- Hub: `SourceUrl` → `harvested_product_sources.url`; `WithPgHarvest` → 503 `pg-unavailable` cho lỗi phía
+  Hub/Postgres (mất kết nối, lớp 53/57/08/40).
+- GĐ5 khởi tạo: `var box = new HarvestOutbox(HarvestOutbox.DefaultDbPath(), log)`; `var w = new
+  HarvestOutboxWorker(box, () => CoordinationRuntime.Client, log: …)`; `w.Start()`; `w.Nudge()` sau mỗi lần lưu;
+  `w.GetStatsAsync()` → `(Pending, Failed, PushedTotal, AppliedTotal)`, event `w.Changed`; `w.RequeueFailedAsync()`;
+  đóng app `await w.StopAsync(); await w.FlushAsync(timeout)`.
+- Test: workspace 292 + 905, Hub 310 (Postgres thật). 3 vòng nghiệm thu + 3 vòng phản biện (vòng 2 bắt lỗi NẶNG kẹt
+  hàng đợi vĩnh viễn → thay thiết kế ghim/chia đôi bằng nghi vấn xen kẽ).

@@ -12,7 +12,7 @@ public static class HarvestedProductLimits
     public const int MaxBatch = 50;
     /// <summary>Độ dài tối đa của <see cref="HarvestedProductItem.AccountId"/> / <see cref="HarvestedProductItem.Sheet"/>.</summary>
     public const int MaxKeyLength = 256;
-    /// <summary>Độ dài tối đa của <see cref="HarvestedProductItem.Url"/>.</summary>
+    /// <summary>Độ dài tối đa của <see cref="HarvestedProductItem.Url"/> / <see cref="HarvestedProductItem.SourceUrl"/>.</summary>
     public const int MaxUrlLength = 2048;
 
 }
@@ -21,12 +21,15 @@ public static class HarvestedProductLimits
 /// <c>error</c> vắng/null/số 0, <c>data.item</c> là object có <c>item_id</c> khớp <see cref="ItemId"/>. Bộ ba
 /// <see cref="AccountId"/>/<see cref="Sheet"/>/<see cref="RowNo"/> = dòng nguồn của shop đích: đủ cả ba thì nối dòng,
 /// không có trường nào thì chỉ lưu SP, có 1–2 trường thì Hub từ chối mục (<c>source-partial</c>).
-/// <see cref="HarvestedAt"/> = lúc client cào được (BẮT BUỘC) — Hub dùng để bản cào CŨ không ghi đè bản MỚI.</summary>
+/// <see cref="HarvestedAt"/> = lúc client cào được (BẮT BUỘC) — Hub dùng để bản cào CŨ không ghi đè bản MỚI.
+/// <see cref="Url"/> = link SP ĐÃ làm sạch (cột <c>harvested_products.url</c>); <see cref="SourceUrl"/> (tuỳ chọn) = link
+/// GỐC của dòng nguồn (cột <c>harvested_product_sources.url</c> — bước up đối chiếu với link hiện tại của dòng), vắng
+/// thì Hub dùng <see cref="Url"/>.</summary>
 public sealed record HarvestedProductItem(
     long ItemId, long ShopId, string? Url, string? Name, long? CatId, long[]? CategoryIds, long? BrandId,
     long? PriceMin, long? PriceMax, long? PriceBeforeDiscount, int? TierCount, int? ModelCount,
     string[]? ImageUrls, string[]? VideoUrls, string? SizeChartUrl, string? RawJson, string? RawHash,
-    string? AccountId, string? Sheet, int? RowNo, DateTimeOffset? HarvestedAt);
+    string? AccountId, string? Sheet, int? RowNo, DateTimeOffset? HarvestedAt, string? SourceUrl = null);
 
 /// <summary>Lô SP đẩy lên Hub. <see cref="MachineId"/> ghi vào cột machine_id của SP (rỗng → Hub lấy header
 /// <c>X-Machine-Id</c>). <see cref="ClientNow"/> = giờ máy client LÚC GỬI (BẮT BUỘC, thiếu → 400 cả lô): Hub quy mọi

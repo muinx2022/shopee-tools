@@ -422,6 +422,42 @@ public sealed class HarvestModeEngineTests
     }
 
     [Fact]
+    public async Task Processor_SinkRejectsItem_RowFailedAndContinues_NotStopJob()
+    {
+        var x = Proc(new HarvestItemRejectedException("JSON PDP không xử lý được: depth 80"));
+        x.Cfg.LastCompletedRow = 6;
+        x.Cfg.NextRunRow = 7;
+        x.P.Book.AddPdpError(5, "77", "pdp 5");   // chuỗi pdpError đang chờ: lỗi dòng khác cắt chuỗi → ghi
+
+        var o = await Handle(x, Step(ok: true), 7);
+
+        Assert.Equal((HarvestRowNext.Done, false), (o.Next, o.Saved));   // sang dòng kế, không Stop
+        Assert.NotEqual("error", x.Cfg.RunnerPhase);
+        Assert.False(Shopee.Core.Harvest.HarvestSinkFailure.Is(x.Cfg.LastRunnerMessage));
+        var failed = x.Cfg.SnapshotFailedRows();
+        Assert.Equal(new[] { 5, 7 }, failed.Select(r => r.Row).OrderBy(r => r));
+        Assert.Contains(failed, r => r.Row == 7 && r.Reason.Contains("không xử lý được"));
+        Assert.Equal(6, x.Cfg.LastCompletedRow);                           // sổ "đã lưu" không đụng
+        Assert.Contains(x.Log, l => l.Contains("Dòng 7"));
+        Assert.Equal(ScrapeFailureAction.None,
+            ScrapeFailurePolicy.Decide(ScrapeRunner.Classify(x.Cfg).Errored, false, ScrapeRunner.Classify(x.Cfg).Reason));
+    }
+
+    [Fact]
+    public async Task RowBook_SinkRejects_ReturnsError_KeepsPendingPdpForRowFailed()
+    {
+        var cfg = Cfg();
+        var book = new HarvestRowBook(cfg);
+        book.AddPdpError(5, "77", "pdp");
+
+        var err = await book.SaveAsync(new FakeSink(new HarvestItemRejectedException("x")), Item(6), CancellationToken.None);
+
+        Assert.IsType<HarvestItemRejectedException>(err);
+        Assert.Equal(new[] { 5 }, book.PendingPdpRows);   // không bỏ như lỗi hạ tầng: caller RowFailed sẽ ghi
+        Assert.Null(cfg.LastCompletedRow);
+    }
+
+    [Fact]
     public async Task Processor_SinkThrows_StopsJobAsInfraFailure_RowNotCounted()
     {
         var x = Proc(new IOException("disk full"));

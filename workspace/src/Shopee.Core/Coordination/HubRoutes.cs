@@ -79,6 +79,17 @@ public static class HubRoutes
     public const string ProductsInsertRow = "/products/rows/insert";
     public const string ProductsSkuExists = "/products/sku-exists";
 
+    // ── Kho dữ liệu SP Shopee do app Harvest cào (JSON PDP get_pc) ── (prefix /api như nhóm đơn hàng: tránh đụng
+    //    route trang Blazor). Bản chép từ suite/suite/Shopee.Core/Coordination/HubRoutes.cs — sửa thì sửa cả hai.
+    /// <summary>POST: upsert tối đa <see cref="HarvestedProductLimits.MaxBatch"/> SP/lần, idempotent theo
+    /// <c>rawHash</c>. Body bắt buộc <c>clientNow</c> (thiếu → 400). Trả <c>results[{index, itemId, ok, applied, reason?}]</c>
+    /// đúng thứ tự + đủ số mục của request; lỗi Postgres lớp 22/23/54 → <c>ok=false</c> cho mục đó; lỗi phía Hub (mất kết
+    /// nối Postgres, lớp 53/57/08/40) → 503 <c>pg-unavailable</c> CẢ lô; lớp còn lại → 500 CẢ lô. Client giữ lô, lùi dần;
+    /// chỉ SP gửi lẻ bị 500 lặp (có SP khác vào xen giữa) mới bị đánh lỗi. Client: <see cref="Harvest.HarvestOutboxWorker"/>.</summary>
+    public const string HarvestedProductsBatch = "/api/harvested-products/batch";
+    /// <summary>GET <c>?account=&amp;sheet=</c> → số dòng nguồn đã có dữ liệu + số SP khác nhau.</summary>
+    public const string HarvestedProductsStats = "/api/harvested-products/stats";
+
     // ── Cấu hình BigSeller (client → hub upsert) ──
     /// <summary>Client đẩy (upsert) acc/shop BigSeller của máy mình lên hub — client giờ là nguồn phát sinh
     /// acc/shop; hub gộp KHÔNG XÓA (kẻo lượt pull mirror-xoá acc client vừa thêm).</summary>

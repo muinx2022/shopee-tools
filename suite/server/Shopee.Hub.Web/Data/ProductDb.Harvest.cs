@@ -26,6 +26,7 @@ public sealed partial class ProductDb
         if (it.AccountId is { Length: > HarvestedProductLimits.MaxKeyLength }) return "account-too-long";
         if (it.Sheet is { Length: > HarvestedProductLimits.MaxKeyLength }) return "sheet-too-long";
         if (it.Url is { Length: > HarvestedProductLimits.MaxUrlLength }) return "url-too-long";
+        if (it.SourceUrl is { Length: > HarvestedProductLimits.MaxUrlLength }) return "source-url-too-long";
         if (it.RowNo is < 1) return "row-no";
         // Bộ ba dòng nguồn: đủ cả ba hoặc không có gì. Thiếu 1–2 = client ghép sai → lặng lẽ bỏ nối dòng là mất dấu.
         var soTruongNguon = (string.IsNullOrWhiteSpace(it.AccountId) ? 0 : 1) + (string.IsNullOrWhiteSpace(it.Sheet) ? 0 : 1)
@@ -83,8 +84,10 @@ public sealed partial class ProductDb
 
     /// <summary>Lỗi Postgres là lỗi TẤT ĐỊNH CỦA MỤC (gửi lại y nguyên lần nào cũng hỏng → Ok=false cho mục đó):
     /// chỉ lớp 22 (dữ liệu, vd \u0000 jsonb không nhận), 23 (ràng buộc), 54 (vượt giới hạn, vd index row quá lớn).
-    /// MỌI lớp khác (25006 DB read-only, 55P03 khoá, XX000, 42 lệch schema, 08 kết nối, 40 deadlock…) là chuyện của
-    /// Hub chứ không phải của mục → ném ra 500 cả lô; client giữ lô, lùi dần, chia đôi lô khi 500 lặp lại. Đoán nhầm theo
+    /// MỌI lớp khác là chuyện của Hub chứ không phải của mục → ném ra ngoài, CẢ lô không ghi: lớp 53/57/08/40 (hết tài
+    /// nguyên, operator, kết nối, deadlock) và lỗi kết nối Npgsql → 503 <c>pg-unavailable</c>
+    /// (<c>ProductApiEndpoints.WithPgHarvest</c>); lớp còn lại (25006 read-only, 55P03 khoá, XX000, 42 lệch schema…) → 500.
+    /// Client giữ lô, lùi dần; 500 lặp ở riêng một SP gửi lẻ (có SP khác vào giữa các lần) mới bị đánh lỗi. Đoán nhầm theo
     /// hướng này chỉ tốn lượt gửi lại; đoán nhầm hướng kia là client xoá mất dữ liệu.</summary>
     internal static bool IsItemFaultPg(string sqlState) =>
         sqlState.Length >= 2 && sqlState[..2] is "22" or "23" or "54";
@@ -187,7 +190,8 @@ WHERE item_id = $1 AND raw_hash = $2 AND harvested_at < $3;";
                     cmd.Parameters.AddWithValue(it.Sheet!);
                     cmd.Parameters.AddWithValue(rowNo);
                     cmd.Parameters.AddWithValue(it.ItemId);
-                    cmd.Parameters.Add(Param(it.Url));
+                    // Dòng nguồn giữ link GỐC của dòng (SourceUrl); client cũ chưa gửi thì lấy link đã làm sạch.
+                    cmd.Parameters.Add(Param(string.IsNullOrWhiteSpace(it.SourceUrl) ? it.Url : it.SourceUrl));
                     cmd.Parameters.Add(ParamTs(at));
                     await cmd.ExecuteNonQueryAsync(ct);
                 }

@@ -740,6 +740,81 @@ FROM harvested_products WHERE item_id = $1;", conn);
         Assert.True(r.Results[4].Applied);
     }
 
+    /// <summary>SourceUrl (link GỐC của dòng) vào <c>harvested_product_sources.url</c>; <c>harvested_products.url</c> vẫn
+    /// là link đã làm sạch. Client cũ không gửi SourceUrl → dòng nguồn lấy Url. SourceUrl quá dài → từ chối mục.</summary>
+    [PgFact]
+    public async Task SourceUrl_VaoDongNguon_UrlSachVaoSp_VangThiLayUrl()
+    {
+        var c = await _app.KhachCoTokenAsync();
+        var acct = "acc-" + Guid.NewGuid().ToString("N");
+        long a = IdMoi(), b = IdMoi();
+        const string goc = "https://shopee.vn/Ao-thun-i.123456.1%7DD?sp_atk=x";
+
+        var r = await PostOk(c,
+            Sp(a, "h", acct: acct, sheet: "S", rowNo: 1) with { SourceUrl = goc },
+            Sp(b, "h", acct: acct, sheet: "S", rowNo: 2),
+            Sp(IdMoi(), "h", acct: acct, sheet: "S", rowNo: 3)
+                with { SourceUrl = "https://shopee.vn/" + new string('a', HarvestedProductLimits.MaxUrlLength) });
+
+        Assert.True(r.Results[0].Ok);
+        Assert.True(r.Results[1].Ok);
+        Assert.Equal("source-url-too-long", r.Results[2].Reason);
+        await using var conn = await _app.MoDbAsync();
+        async Task<string> Doc(string sql, object p)
+        {
+            await using var cmd = new NpgsqlCommand(sql, conn);
+            cmd.Parameters.AddWithValue(p);
+            return (string)(await cmd.ExecuteScalarAsync())!;
+        }
+        Assert.Equal(goc, await Doc("SELECT url FROM harvested_product_sources WHERE account_id = $1 AND row_no = 1;", acct));
+        Assert.Equal($"https://shopee.vn/product/123456/{a}", await Doc("SELECT url FROM harvested_products WHERE item_id = $1;", a));
+        Assert.Equal($"https://shopee.vn/product/123456/{b}",
+            await Doc("SELECT url FROM harvested_product_sources WHERE account_id = $1 AND row_no = 2;", acct));
+    }
+
+    /// <summary>Lỗi PHÍA HUB (mất kết nối Postgres; PostgresException lớp 53/57/08/40) → 503 pg-unavailable, để client
+    /// không coi là "mục hỏng" (500 lặp ở một SP → đánh lỗi SP). Lớp khác và NpgsqlOperationInProgressException vẫn ném
+    /// (→ 500). Gọi thẳng lớp bọc với ProductDb THẬT đã sẵn sàng: không dựng được cảnh socket đứt / đầy kết nối đúng lúc qua
+    /// HTTP thật (Npgsql mở kết nối mới cho mỗi request, Postgres test luôn sống).</summary>
+    [PgFact]
+    public async Task LoiPhiaHub_Thi503PgUnavailable_LoiKhacVanNem()
+    {
+        await _app.KhachCoTokenAsync();
+
+        var r = await Api.ProductApiEndpoints.WithPgHarvest(_app.Services,
+            _ => throw new NpgsqlException("Exception while reading from stream", new IOException("socket đứt")));
+
+        var sc = Assert.IsAssignableFrom<Microsoft.AspNetCore.Http.IStatusCodeHttpResult>(r);
+        Assert.Equal(503, sc.StatusCode);
+        var val = Assert.IsAssignableFrom<Microsoft.AspNetCore.Http.IValueHttpResult>(r).Value;
+        Assert.Contains("pg-unavailable", System.Text.Json.JsonSerializer.Serialize(val));
+
+        // Hết chờ / cạn pool (NpgsqlException bọc TimeoutException) cũng là Hub hỏng → 503.
+        var t = await Api.ProductApiEndpoints.WithPgHarvest(_app.Services,
+            _ => throw new NpgsqlException("The connection pool has been exhausted", new TimeoutException()));
+        Assert.Equal(503, Assert.IsAssignableFrom<Microsoft.AspNetCore.Http.IStatusCodeHttpResult>(t).StatusCode);
+
+        // Postgres còn sống nhưng hết tài nguyên / bị operator ngắt / deadlock → lỗi phía Hub → 503.
+        foreach (var state in new[] { "53300", "53100", "53200", "57P01", "57014", "08006", "40P01", "40001" })
+        {
+            var pr = await Api.ProductApiEndpoints.WithPgHarvest(_app.Services,
+                _ => throw new PostgresException("x", "FATAL", "FATAL", state));
+            Assert.True(503 == Assert.IsAssignableFrom<Microsoft.AspNetCore.Http.IStatusCodeHttpResult>(pr).StatusCode, state);
+        }
+        // Lớp khác (lệch schema 42, lỗi nội bộ XX) = lỗi code/triển khai Hub → vẫn ném (500).
+        foreach (var state in new[] { "42P01", "XX000", "25006" })
+        {
+            var ex = await Assert.ThrowsAsync<PostgresException>(() => Api.ProductApiEndpoints.WithPgHarvest(_app.Services,
+                _ => throw new PostgresException("x", "ERROR", "ERROR", state)));
+            Assert.Equal(state, ex.SqlState);
+        }
+        // Dùng một kết nối cho hai lệnh cùng lúc = lỗi CODE Hub → ném tiếp (500), không giả làm "Pg mất kết nối".
+        await Assert.ThrowsAsync<NpgsqlOperationInProgressException>(() => Api.ProductApiEndpoints.WithPgHarvest(_app.Services,
+            _ => throw new NpgsqlOperationInProgressException(new NpgsqlCommand("SELECT 1"))));
+        var ok = await Api.ProductApiEndpoints.WithPgHarvest(_app.Services, _ => Task.FromResult(Microsoft.AspNetCore.Http.Results.Ok()));
+        Assert.Equal(200, Assert.IsAssignableFrom<Microsoft.AspNetCore.Http.IStatusCodeHttpResult>(ok).StatusCode);
+    }
+
     [PgFact]
     public async Task KhongCoToken_Thi401()
     {
