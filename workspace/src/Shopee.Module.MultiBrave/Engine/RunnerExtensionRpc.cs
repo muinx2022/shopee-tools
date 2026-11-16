@@ -9,7 +9,7 @@ namespace OpenMultiBraveLauncherV3;
 /// worker (flat session) hoặc qua cầu popup <c>chrome.runtime.sendMessage</c>, phân loại lỗi tạm thời và
 /// map kết quả về record. Phần tìm/đánh thức/giữ SW nằm ở <see cref="RunnerSwLifecycle"/>.
 /// </summary>
-internal static class RunnerExtensionRpc
+internal static partial class RunnerExtensionRpc
 {
     public sealed record ScrapeStepResult(
         bool ScrapeOk,
@@ -385,12 +385,17 @@ internal static class RunnerExtensionRpc
         "})()";
 
     private static string BuildServiceWorkerMethodExpression(string method, string payloadExpression) =>
+        BuildServiceWorkerMethodExpression(method, payloadExpression, RunnerModeProfile.Current);
+
+    internal static string BuildServiceWorkerMethodExpression(
+        string method, string payloadExpression, RunnerModeProfile profile) =>
         method switch
         {
-            // Yêu cầu CẢ executeScrapeStep LẪN applyFormConfig: SW cũ (cache trong profile, thiếu hàm mới)
-            // sẽ trượt probe → EnsureRunnerExtensionReadyAsync leo thang chrome.runtime.reload() dựng SW mới.
-            "probe" => "({ hasScrapeStep: typeof globalThis.__launcherExecuteScrapeStep === 'function' && typeof globalThis.__launcherApplyFormConfig === 'function' })",
+            // Yêu cầu CẢ hàm bước LẪN applyFormConfig (biểu thức theo chế độ — xem RunnerModeProfile): SW cũ (cache
+            // trong profile, thiếu hàm mới) sẽ trượt probe → EnsureRunnerExtensionReadyAsync leo thang reload SW.
+            "probe" => profile.ProbeExpression,
             "executeScrapeStep" => $"(async () => globalThis.__launcherExecuteScrapeStep({payloadExpression}))()",
+            "executeHarvestStep" => $"(async () => globalThis.__launcherExecuteHarvestStep({payloadExpression}))()",
             "setDisplayState" => $"(async () => globalThis.__launcherSetDisplayState({payloadExpression}))()",
             "getRunnerState" => "(async () => globalThis.__launcherGetRunnerState())()",
             "applyFormConfig" => $"(async () => globalThis.__launcherApplyFormConfig({payloadExpression}))()",
@@ -516,16 +521,21 @@ internal static class RunnerExtensionRpc
         return MakeTransientExtensionErrorResult();
     }
 
-    private static bool IsReadyProbeResult(JsonElement evalResult)
+    private static bool IsReadyProbeResult(JsonElement evalResult) =>
+        IsReadyProbeResult(evalResult, RunnerModeProfile.Current.ProbeFlag);
+
+    /// <summary>Probe "sẵn sàng" = cờ của ĐÚNG chế độ (hasScrapeStep / hasHarvestStep) là true. SW của extension chế
+    /// độ kia không có cờ này → không sẵn sàng.</summary>
+    internal static bool IsReadyProbeResult(JsonElement evalResult, string probeFlag)
     {
         if (!evalResult.TryGetProperty("result", out var result) ||
             !result.TryGetProperty("value", out var value) ||
             value.ValueKind != JsonValueKind.Object ||
-            !value.TryGetProperty("hasScrapeStep", out var hasScrapeStep) ||
-            hasScrapeStep.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
+            !value.TryGetProperty(probeFlag, out var hasStep) ||
+            hasStep.ValueKind is not JsonValueKind.True and not JsonValueKind.False)
             return false;
 
-        return hasScrapeStep.GetBoolean();
+        return hasStep.GetBoolean();
     }
 
     private static JsonElement MakeTransientExtensionErrorResult() =>

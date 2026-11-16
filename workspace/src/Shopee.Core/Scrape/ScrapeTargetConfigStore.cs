@@ -29,16 +29,24 @@ public sealed class ScrapeTargetConfig
 /// </summary>
 public sealed class ScrapeTargetConfigStore
 {
-    private static readonly Lazy<ScrapeTargetConfigStore> _shared = new(() => new ScrapeTargetConfigStore());
+    private static readonly Lazy<ScrapeTargetConfigStore> _shared = new(() => new ScrapeTargetConfigStore("scrape-targets.json"));
     public static ScrapeTargetConfigStore Shared => _shared.Value;
 
-    private static readonly string FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), "scrape-targets.json");
+    /// <summary>Cấu hình đích của chế độ Harvest — file RIÊNG (<c>harvest-targets.json</c>), không đụng cấu hình scrape.</summary>
+    private static readonly Lazy<ScrapeTargetConfigStore> _harvest = new(() => new ScrapeTargetConfigStore("harvest-targets.json"));
+    public static ScrapeTargetConfigStore Harvest => _harvest.Value;
+
+    internal string FilePath { get; }
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
     private readonly object _lock = new();
     private readonly List<ScrapeTargetConfig> _items = [];
 
-    private ScrapeTargetConfigStore() => Load();
+    private ScrapeTargetConfigStore(string fileName)
+    {
+        FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), fileName);
+        Load();
+    }
 
     public void Load()
     {

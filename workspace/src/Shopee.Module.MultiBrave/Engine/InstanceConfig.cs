@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Shopee.Modules.MultiBrave;
 
 namespace OpenMultiBraveLauncherV3;
 
@@ -47,6 +48,11 @@ public sealed class InstanceConfig
     /// /products/*). TÁCH khỏi <see cref="AccountId"/> (vốn là khoá auto-login BigSeller trong scrape) để
     /// KHÔNG chạm luồng đăng nhập hiện có — cờ này chỉ đổi NGUỒN DỮ LIỆU link.</summary>
     public string HubAccountId { get; set; } = "";
+
+    /// <summary>Chế độ của lượt chạy (Scrape = hành vi cũ). RIÊNG-LƯỢT-CHẠY: ScrapeRunner đặt khi dựng config, KHÔNG
+    /// persist (JsonIgnore) để file cấu hình cũ/mới giữ nguyên hình dạng.</summary>
+    [JsonIgnore]
+    public RunnerMode Mode { get; set; } = RunnerMode.Scrape;
 
     /// <summary>Khoảng nghỉ giữa 2 link, tính bằng GIÂY — trước đây là 2 hằng cứng trong LauncherRunnerLoop.
     /// Nguồn: cấu hình Scrape của máy hoặc tham số Hub giao cho lượt việc; quy đổi giây→ms CHỈ ở
@@ -105,6 +111,13 @@ public sealed class InstanceConfig
             if (_failedRows.Any(x => x.Row == row)) return;
             _failedRows.Add((row, string.IsNullOrWhiteSpace(reason) ? "không cào được" : reason.Trim()));
         }
+    }
+
+    /// <summary>Gỡ 1 dòng khỏi sổ bỏ qua — dòng đó vừa làm LẠI thành công (Harvest: dòng lỗi trước khi đổi IP/tài
+    /// khoản được chạy lại). Không gỡ thì khi vùng phủ vượt qua nó, runner báo bỏ qua một dòng đã có dữ liệu. Thread-safe.</summary>
+    public void RemoveFailedRow(int row)
+    {
+        lock (_failedRowsLock) _failedRows.RemoveAll(x => x.Row == row);
     }
 
     /// <summary>Bản sao sổ dòng bỏ qua (để runner diff ra phần MỚI rồi báo ra ngoài). Thread-safe.</summary>

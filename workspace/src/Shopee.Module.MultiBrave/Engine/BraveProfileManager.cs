@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Shopee.Core.Infrastructure;
+using Shopee.Modules.MultiBrave;
 
 namespace OpenMultiBraveLauncherV3;
 
@@ -92,8 +93,11 @@ internal static class BraveProfileManager
         string? proxyServer,
         Action<string>? log = null,
         string? sourceUserData = null,
-        bool loadRunnerExtension = true)
+        bool loadRunnerExtension = true,
+        RunnerMode mode = RunnerMode.Scrape)
     {
+        var harvest = mode == RunnerMode.Harvest;
+        var profile = RunnerModeProfile.For(mode);
         // Khối 6 cờ nền cửa sổ (BraveArgs.Window) + remote-debugging-port, rồi cờ RIÊNG scrape giữ nguyên thứ tự gốc.
         var parts = Shopee.Toolkit.Browser.BraveArgs.Window(userDataDir)
             .RemoteDebuggingPort(cdpPort)
@@ -119,24 +123,26 @@ internal static class BraveProfileManager
             // server thấy "1 token / 1 IP / nhiều Brave" (BigSeller dung thứ kiểu này) → bền phiên hơn nhiều.
             // (localhost/127.* Chromium tự bypass mặc định nên API dữ liệu local 127.0.0.1 vẫn đi thẳng.)
             parts.Add($"--proxy-server={proxyServer}");
-            parts.Add("--proxy-bypass-list=*.bigseller.com;bigseller.com;*.bigseller.pro;bigseller.pro");
+            // Harvest không dùng BigSeller → không có lý do cho bigseller đi IP máy; mọi traffic theo proxy instance.
+            if (!harvest)
+                parts.Add("--proxy-bypass-list=*.bigseller.com;bigseller.com;*.bigseller.pro;bigseller.pro");
         }
 
         string? runnerPath = null;
         if (loadRunnerExtension)
         {
-            runnerPath = RunnerExtensionPaths.ResolveLoadDirectory();
+            runnerPath = RunnerExtensionPaths.ResolveLoadDirectory(mode);
             if (runnerPath is null)
                 throw new InvalidOperationException(
-                    "Không tìm thấy extension 'Shopee Data Runner' (thiếu background.js). " +
-                    "Cần có thư mục 'extensions/shopee-scrape/' cạnh app (đã bundle) hoặc trong repo.");
+                    $"Không tìm thấy extension '{profile.ExtensionDisplayName}' (thiếu background.js). " +
+                    $"Cần có thư mục 'extensions/{profile.ExtensionFolder}/' cạnh app (đã bundle) hoặc trong repo.");
         }
 
         var extPaths = CollectExtensionLoadPaths(runnerPath);
 
         // Nạp THÊM các extension người dùng đã cài trong Brave mặc định (vd ext "product copy" của
         // BigSeller) vào profile scrape — vì profile scrape là bản tách riêng, không có sẵn ext đã cài.
-        var userExts = CollectUserExtensions(sourceUserData);
+        var userExts = CollectUserExtensions(sourceUserData, mode);
         foreach (var (dir, _) in userExts)
             extPaths.Add(dir);
         if (userExts.Count > 0)
@@ -144,7 +150,7 @@ internal static class BraveProfileManager
 
         // Scrape BẮT BUỘC có extension "Product Copy" của BigSeller (cài trong Brave mặc định) → nếu
         // thiếu thì dừng ngay, báo người dùng cài extension cho Brave trước (login flow không cần nên bỏ qua).
-        if (loadRunnerExtension)
+        if (loadRunnerExtension && !harvest)
         {
             var hasProductCopy = userExts.Any(e => e.name.Contains("Product Copy", StringComparison.OrdinalIgnoreCase));
             if (!hasProductCopy)
@@ -172,8 +178,10 @@ internal static class BraveProfileManager
     }
 
     /// <summary>Liệt kê các extension người dùng đã cài trong Brave mặc định (sourceUserData) để
-    /// nạp vào profile scrape qua --load-extension. Bỏ qua theme và chính "Shopee Data Runner".</summary>
-    private static List<(string dir, string name)> CollectUserExtensions(string? sourceUserData)
+    /// nạp vào profile scrape qua --load-extension. Bỏ qua theme và chính "Shopee Data Runner".
+    /// Harvest: bỏ thêm runner của mình ("Shopee Harvest Runner") và extension BigSeller "Product Copy" — harvest không
+    /// dùng BigSeller và đã bỏ proxy-bypass bigseller, nạp Product Copy thì nó gọi BigSeller qua IP proxy Shopee.</summary>
+    internal static List<(string dir, string name)> CollectUserExtensions(string? sourceUserData, RunnerMode mode = RunnerMode.Scrape)
     {
         var result = new List<(string, string)>();
         if (string.IsNullOrWhiteSpace(sourceUserData))
@@ -206,6 +214,10 @@ internal static class BraveProfileManager
                 name = ResolveLocalizedName(name, versionDir, root);
                 if (name.Contains("Shopee Data Runner", StringComparison.OrdinalIgnoreCase))
                     continue; // tránh nạp trùng runner (đã load qua bản bundle)
+                if (mode == RunnerMode.Harvest &&
+                    (name.Contains(RunnerModeProfile.Harvest.ExtensionDisplayName, StringComparison.OrdinalIgnoreCase) ||
+                     name.Contains("Product Copy", StringComparison.OrdinalIgnoreCase)))
+                    continue;
                 result.Add((versionDir, string.IsNullOrWhiteSpace(name) ? Path.GetFileName(extIdDir) : name));
             }
             catch { }

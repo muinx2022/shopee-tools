@@ -161,8 +161,7 @@ public sealed class HttpCoordinationHub : ICoordinationHub, IUpdateAckSink, IDis
     {
         try
         {
-            var req = new LeaseAcquireRequest(
-                key.Id, key.BigsellerId, key.ShopId, key.Sheet, OpStr(key.Op), _machineId, Host, force);
+            var req = BuildLeaseRequest(key, _machineId, Host, force);
             var resp = await _client.AcquireAsync(req, ct);
             if (!resp.Granted) return new LeaseAttempt(AcquireResult.Blocked(resp.BlockedByHostname), null);
             var handle = new LeaseHandle(this, key);
@@ -453,6 +452,14 @@ public sealed class HttpCoordinationHub : ICoordinationHub, IUpdateAckSink, IDis
     internal Task ReleaseLeaseAsync(CoordKey key) => _client.ReleaseLeaseAsync(key.Id, _machineId);
 
     internal static string OpStr(CoordOp op) => op.ToString().ToLowerInvariant();
+
+    /// <summary>Dựng request xin lease. Khoá (<see cref="CoordKey.Id"/>) LUÔN chứa bigsellerId nên vẫn duy nhất theo
+    /// (bigseller, shop, op). Riêng <see cref="CoordOp.Harvest"/> gửi trường <c>BigsellerId</c> RỖNG: Hub
+    /// (<c>AccountOwnersLocked</c>/<c>AcquireLease</c>) bỏ qua lease có bigseller_id rỗng khi xét "acc BigSeller đang
+    /// do máy nào giữ" → lease harvest không ghim acc BigSeller về một máy (harvest không dùng cookie BigSeller).</summary>
+    internal static LeaseAcquireRequest BuildLeaseRequest(CoordKey key, string machineId, string host, bool force) =>
+        new(key.Id, key.Op == CoordOp.Harvest ? "" : key.BigsellerId, key.ShopId, key.Sheet, OpStr(key.Op),
+            machineId, host, force);
 }
 
 /// <summary>Handle khoá đang giữ: heartbeat nền mỗi 30s; Dispose = nhả khoá.</summary>

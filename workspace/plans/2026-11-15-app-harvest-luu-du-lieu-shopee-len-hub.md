@@ -185,6 +185,10 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    `[{"name":"","options":[""]}]` (→ `tier_count = 0`)**, `brand` null, `size_chart` null **hoặc ""**, `video` null,
    model `price_before_discount = 0` (→ lấy `price`), danh mục 3–4+ cấp, **`item.attributes = null`**
    (`pdp-1tang-4model-1anh.json`), `rich_text_description` null hoặc có giá trị. Test bằng các fixture GĐ2.
+   **Lưu ý từ GĐ3:** cài `IHarvestSink` (`workspace/src/Shopee.Core/Harvest/IHarvestSink.cs`); `SaveAsync` trả về bình
+   thường = đã ghi bền, ném = chưa ghi (engine dừng job, không bỏ dòng); **phải có giới hạn thời gian** (pha `saving`
+   không được watchdog canh); **idempotent theo (account, sheet, row)** — engine có thể gửi lại cùng dòng sau khi
+   Brave/process chết giữa lúc lưu và ghi tiến độ. `HarvestedItem.SourceLink` (link gốc) → `harvested_product_sources.url`.
 2. `HarvestOutbox` — SQLite (`Microsoft.Data.Sqlite`, theo khuôn `SearchTaskStore`) tại thư mục dữ liệu app:
    `pending(item_id, account_id, sheet, row_no, url, json, raw_hash, created_at, attempts, last_error)`.
    `onProductHarvested` ghi vào đây (đồng bộ, xong mới tính dòng hoàn thành) → **không mất dữ liệu khi Hub sập**.
@@ -224,6 +228,13 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    tách profile Brave riêng (như `IsScrapeOnly` → `SetManagedSubRoot`, dùng sub-root khác `profiles`).
 3. UI: dùng lại màn Workspace chế độ scrape-only, đổi nhãn (Cào → Lấy dữ liệu), ẩn mọi thứ BigSeller-login/video;
    thêm 3 số: đã lưu Hub / chờ đẩy / lỗi đẩy; cửa sổ thống kê dùng tiến độ Harvest.
+4. **Lưu ý từ GĐ3** (cách dựng runner, xem "Báo cáo thực thi GĐ3"): gọi `MultiBraveRuntime.SetMode(RunnerMode.Harvest)`
+   lúc khởi động process (exe riêng — một process không chạy được cả hai chế độ); `new ScrapeRunner(..., mode:
+   RunnerMode.Harvest) { Harvest = new HarvestRunOptions(sink, shopId) }`; dùng `ScrapeProgressStore.Harvest`,
+   `ScrapeTargetConfigStore.Harvest`, `CoordKey(..., CoordOp.Harvest)`; bỏ kiểm `HasCookie`, `BigSellerNeedLogin`,
+   `ProductScraped`, video trong VM; `HttpCoordinationHub` hiện chỉ fold ledger `scrape` → cần fold riêng cho harvest
+   nếu muốn tiếp quản xuyên máy; **nối báo "fatal" của job harvest lên Hub** (`TakeJobFatal`/`AssignmentWorker` hiện
+   chỉ xử op `scrape`; Hub `OpFamily` chưa có `harvest`) — nếu không, job dừng vì sink lỗi không hiện "failed" trên Hub.
 
 ## 4. Tiêu chí nghiệm thu
 
@@ -287,3 +298,19 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
   ở `workspace/tests/Shopee.Core.Tests/Fixtures/pdp/` (đã cắt riêng tư).
 - 5 vòng nghiệm thu + 4 vòng phản biện. Rủi ro chấp nhận (ghi đầu `pdp-hook.js`): dò `toString` từ realm khác,
   phép thử vòng `__proto__`, khung stack `chrome-extension://`.
+
+### GĐ3 — Engine chế độ Harvest (2026-11-16): XONG (chưa chạy thật — cần exe GĐ5)
+
+- `RunnerMode { Scrape, Harvest }` (`Shopee.Module.MultiBrave/RunnerMode.cs`), mode toàn process
+  `MultiBraveRuntime.SetMode`; `RunnerModeProfile` (thư mục/tên extension, cờ probe) — bản Scrape giữ nguyên từng chữ.
+- Vòng Harvest: `Engine/HarvestRunnerLoop.cs` (gọi bước, nghỉ giữa link) + `Engine/HarvestRowProcessor.cs` (bảng kết
+  quả → hành động, `IHarvestRowHost`, `HarvestRowBook`); RPC `Engine/RunnerExtensionRpc.Harvest.cs` (timeout 600 s,
+  chỉ gửi lại khi chắc chưa tới extension, không đường popup 6 s).
+- `Shopee.Core/Harvest/`: `IHarvestSink` (`EnsureReadyAsync`, `SaveAsync`) + `HarvestedItem` (có `Url` đã làm sạch và
+  `SourceLink` gốc, `HarvestedAt` từ `capturedAt`), `HarvestStepResult`, `HarvestStepPolicy` + `HarvestPdpBreaker`
+  (chỉ đếm cùng mã; nhớ mã "SP chết" chỉ khi tái diễn ngay sau đổi IP), `HarvestLinks.CleanProductUrl` (neo `-i.`).
+- Sink lỗi → tiền tố "Lưu dữ liệu lỗi: " → `StopJob` (nhả tài khoản, không kẹt, không bỏ dòng); sink chưa sẵn sàng →
+  dừng trước khi mở Brave. Tiến độ riêng `harvest-progress.json` / `harvest-targets.json`, `CoordOp.Harvest`; lease
+  harvest gửi `BigsellerId=""`. Harvest bỏ Product Copy (không kiểm, không nạp), bypass bigseller, token BigSeller,
+  NeedLogin, video, `HasCookie`.
+- Test workspace 290 + 821, build Release 0 warning. 2 vòng nghiệm thu + 2 vòng phản biện + lượt dọn.

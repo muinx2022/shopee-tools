@@ -1,3 +1,4 @@
+using Shopee.Core.Harvest;
 using Shopee.Core.Proxy;
 
 namespace Shopee.Modules.MultiBrave;
@@ -9,7 +10,7 @@ public enum ScrapeFailureAction
     None,
     /// <summary>Captcha → LOẠI tk khỏi khung (đổi tk khác, phần dở vá).</summary>
     Quarantine,
-    /// <summary>Lỗi HẠ TẦNG TOÀN CỤC (key proxy chết) → DỪNG cả job: đổi tk vô ích, vá/bỏ dòng chỉ tổ thủng dữ liệu.</summary>
+    /// <summary>Lỗi HẠ TẦNG TOÀN CỤC (key proxy chết; Harvest: lưu dữ liệu lỗi) → DỪNG cả job: đổi tk vô ích, vá/bỏ dòng chỉ tổ thủng dữ liệu.</summary>
     StopJob,
     /// <summary>Lỗi tạm của một tk (proxy lẻ/đứt) → cho tk nghỉ, vá phần dở bằng tk khác.</summary>
     Cooldown,
@@ -24,6 +25,9 @@ public static class ScrapeFailurePolicy
     public static ScrapeFailureAction Decide(bool errored, bool isCaptcha, string? reason)
     {
         if (!errored) return ScrapeFailureAction.None;
+        // Harvest: sink (outbox) lỗi = hạ tầng máy, không phải lỗi tk → dừng job như key proxy chết. Scrape không bao
+        // giờ sinh tiền tố này nên không đổi hành vi.
+        if (HarvestSinkFailure.Is(reason)) return ScrapeFailureAction.StopJob;
         if (isCaptcha) return ScrapeFailureAction.Quarantine;
         if (ProxyFailure.IsFleetWideProxyFailure(reason)) return ScrapeFailureAction.StopJob;
         return ScrapeFailureAction.Cooldown;
@@ -32,6 +36,8 @@ public static class ScrapeFailurePolicy
     /// <summary>Lý do NGẮN, người-đọc-hiểu-ngay để báo 'failed' lên hub (hiện thẳng trên ô ở trang Giao việc).</summary>
     public static string FleetWideReason(string? reason)
     {
+        // Lý do sink có thể là thông điệp lỗi dài nhiều dòng (exception SQLite…) → một dòng, ≤120 ký tự cho ô Hub.
+        if (HarvestSinkFailure.Is(reason)) return HarvestSinkFailure.ShortReason(reason!);
         if (reason is not null && reason.Contains("KEY_NOT_FOUND", StringComparison.OrdinalIgnoreCase))
             return "key proxy không tồn tại (KEY_NOT_FOUND) — sửa key rồi chạy lại";
         if (reason is not null && reason.Contains("KEY_EXPIRED", StringComparison.OrdinalIgnoreCase))

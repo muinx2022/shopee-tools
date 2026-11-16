@@ -18,6 +18,10 @@ public static class AssignmentOps
     /// <summary>Search KHÔNG ghi ledger và KHÔNG đụng cookie BigSeller (không tính "bận theo acc") — nhiều
     /// nhánh phải tách riêng op này, xem <c>HubDatabase.OpFamily</c> + <c>AssignmentWorker.ReconcileInflightAsync</c>.</summary>
     public const string Search = "search";
+    /// <summary>App Shopee Harvest (lấy JSON SP Shopee lưu Hub, không BigSeller): khoá lease/ledger riêng. Lease op
+    /// này gửi <c>BigsellerId</c> RỖNG (xem <c>HttpCoordinationHub.BuildLeaseRequest</c>) để Hub không tính nó vào
+    /// "chủ sở hữu acc BigSeller" — harvest không đụng cookie BigSeller.</summary>
+    public const string Harvest = "harvest";
 
     /// <summary>KHÔNG phải op assignment: nhãn dòng PHIÊN ĐƠN HÀNG trên trang Giao việc (dòng đó không có
     /// assignment, huỷ bằng lệnh tới máy). Xem <c>DispatchViewLogic.OrdersOperation</c>.</summary>

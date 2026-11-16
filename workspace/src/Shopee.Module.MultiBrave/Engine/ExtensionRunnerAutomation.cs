@@ -58,6 +58,20 @@ internal static class ExtensionRunnerAutomation
         RunnerExtensionRpc.ExecuteScrapeStepAsync(
             cdpPort, profileRoot, link, rowNumber, statusText, instanceName, sku, tabId, cancellationToken);
 
+    /// <summary>Bước Harvest (extension shopee-harvest) — đường RPC riêng, không gọi lại chồng (xem RunnerExtensionRpc.Harvest).</summary>
+    public static Task<Shopee.Core.Harvest.HarvestStepResult> ExecuteHarvestStepAsync(
+        int cdpPort,
+        DirectoryInfo profileRoot,
+        string link,
+        int rowNumber,
+        string statusText,
+        string instanceName,
+        int? tabId,
+        IReadOnlyList<long>? blockErrorCodes,
+        CancellationToken cancellationToken = default) =>
+        RunnerExtensionRpc.ExecuteHarvestStepAsync(
+            cdpPort, profileRoot, link, rowNumber, statusText, instanceName, tabId, blockErrorCodes, cancellationToken);
+
     public static Task<RunnerExtensionRpc.BeforeNextLinkCheckResult> CheckBeforeNextLinkAsync(
         int cdpPort,
         DirectoryInfo profileRoot,

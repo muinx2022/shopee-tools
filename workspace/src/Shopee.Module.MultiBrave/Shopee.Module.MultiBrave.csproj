@@ -16,4 +16,8 @@
     <PackageReference Include="Microsoft.Playwright" Version="1.60.0" />
     <!-- DPAPI đã dời về Core (WindowsOsCrypt) — ChromiumCookieReader gọi qua PlatformServices.OsCrypt. -->
   </ItemGroup>
+  <ItemGroup>
+    <!-- Test các hàm thuần internal của engine (hồ sơ chế độ Scrape/Harvest, phân loại kết quả RPC…). -->
+    <InternalsVisibleTo Include="Shopee.Workspace.Tests" />
+  </ItemGroup>
 </Project>

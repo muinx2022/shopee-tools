@@ -1,13 +1,18 @@
-﻿namespace OpenMultiBraveLauncherV3;
+﻿using Shopee.Modules.MultiBrave;
+
+namespace OpenMultiBraveLauncherV3;
 
 internal static class RunnerExtensionPaths
 {
-    public const string ExtensionDisplayName = "Shopee Data Runner";
+    /// <summary>Tên extension (manifest) của chế độ process: "Shopee Data Runner" (Scrape) / "Shopee Harvest Runner".</summary>
+    public static string ExtensionDisplayName => RunnerModeProfile.Current.ExtensionDisplayName;
 
     /// <summary>Thư mục unpacked extension đủ file (background.js) để --load-extension.</summary>
-    public static string? ResolveLoadDirectory()
+    public static string? ResolveLoadDirectory() => ResolveLoadDirectory(MultiBraveRuntime.Mode);
+
+    public static string? ResolveLoadDirectory(RunnerMode mode)
     {
-        foreach (var dir in CandidateDirectories())
+        foreach (var dir in CandidateDirectories(mode))
         {
             if (File.Exists(Path.Combine(dir, "background.js")))
                 return dir;
@@ -16,19 +21,22 @@ internal static class RunnerExtensionPaths
         return null;
     }
 
-    public static string? TryGetLoadedExtensionId()
+    public static string? TryGetLoadedExtensionId() => TryGetLoadedExtensionId(MultiBraveRuntime.Mode);
+
+    public static string? TryGetLoadedExtensionId(RunnerMode mode)
     {
-        var dir = ResolveLoadDirectory();
+        var dir = ResolveLoadDirectory(mode);
         return dir is null ? null : UnpackedExtensionId.FromPath(dir);
     }
 
-    private static IEnumerable<string> CandidateDirectories()
+    internal static IEnumerable<string> CandidateDirectories(RunnerMode mode)
     {
-        yield return Path.Combine(AppContext.BaseDirectory, "extensions", "shopee-scrape");
+        var folder = RunnerModeProfile.For(mode).ExtensionFolder;
+        yield return Path.Combine(AppContext.BaseDirectory, "extensions", folder);
 
         var repo = FindRepoRoot();
         if (repo is not null)
-            yield return Path.Combine(repo, "extensions", "shopee-scrape");
+            yield return Path.Combine(repo, "extensions", folder);
     }
 
     private static string? FindRepoRoot()

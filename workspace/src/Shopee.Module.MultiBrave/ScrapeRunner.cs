@@ -80,9 +80,24 @@ public sealed class ScrapeRunner
     /// <summary>Id tk BigSeller mà runner này chạy cho (chỉ đọc) — để handler ngoài lọc đúng runner của tk mình quan tâm.</summary>
     public string BigSellerAccountId => _bigSellerAccountId;
 
+    /// <summary>Chế độ của runner (mặc định Scrape). Phải trùng <see cref="MultiBraveRuntime.Mode"/> của process.</summary>
+    public RunnerMode Mode => _mode;
+    private readonly RunnerMode _mode;
+
+    /// <summary>Tham số lượt Harvest (sink, shop đích, cầu dao, mã chặn) — BẮT BUỘC khi <see cref="Mode"/> = Harvest,
+    /// bỏ qua ở Scrape.</summary>
+    public HarvestRunOptions? Harvest { get; set; }
+
     public ScrapeRunner(string workbookPath, string videoOutputDir, string? braveExe = null, string sourceUserData = "", string bigSellerAccountName = "",
-        string bigSellerAccountId = "", bool useHubData = false, Shopee.Core.Scrape.ScrapeRestWindow? restWindow = null)
+        string bigSellerAccountId = "", bool useHubData = false, Shopee.Core.Scrape.ScrapeRestWindow? restWindow = null,
+        RunnerMode mode = RunnerMode.Scrape)
     {
+        // Phần tra cứu extension tĩnh của engine (thư mục nạp, probe, đọc tiến độ) theo chế độ PROCESS — runner khác
+        // chế độ process sẽ nạp nhầm extension. Chặn sớm thay vì chạy sai.
+        if (mode != MultiBraveRuntime.Mode)
+            throw new InvalidOperationException(
+                $"ScrapeRunner chế độ {mode} nhưng process đang ở chế độ {MultiBraveRuntime.Mode} — gọi MultiBraveRuntime.SetMode trước.");
+        _mode = mode;
         _restWindow = restWindow ?? Shopee.Core.Scrape.ScrapeRestWindow.Default;
         // Workbook giữ PER-INSTANCE (mang qua InstanceConfig) để chạy song song nhiều BigSeller mỗi
         // workbook khác nhau. VideoOutputDir dùng chung mọi BigSeller nên vẫn để static.
@@ -110,6 +125,28 @@ public sealed class ScrapeRunner
         int rowsPerChunk, string? bigSellerCookieFile, CancellationToken ct)
     {
         if (segments.Count == 0 || workerCount <= 0) return;
+        if (_mode == RunnerMode.Harvest && Harvest?.Sink is null)
+            throw new InvalidOperationException("Chế độ Harvest cần ScrapeRunner.Harvest (sink lưu dữ liệu).");
+        if (_mode == RunnerMode.Harvest)
+        {
+            // Kiểm chỗ lưu TRƯỚC khi mở Brave / mượn tài khoản / xin IP: hỏng thì dừng job ngay như lỗi hạ tầng, khỏi
+            // đốt tài khoản rồi mới phát hiện ở dòng đầu tiên.
+            try
+            {
+                await Harvest!.Sink.EnsureReadyAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                var reason = Shopee.Core.Harvest.HarvestSinkFailure.NotReadyMessage(ex);
+                InstanceLog?.Invoke("Auto", $"⛔ DỪNG JOB: {reason}");
+                JobFatal?.Invoke(reason);
+                return;
+            }
+        }
         var per = Math.Max(1, rowsPerChunk);
         var workers = Math.Max(1, workerCount);
         var work = new WorkAllocator(segments, per, workers);
@@ -252,8 +289,9 @@ public sealed class ScrapeRunner
                         if (doneFatal >= from) RowsCompleted?.Invoke(from, Math.Min(doneFatal, to));
                         // MỘT dòng log mức job (worker nào chạm trước thì ghi) — không spam mỗi tk một dòng.
                         if (Interlocked.CompareExchange(ref jobFatal[0], res.Reason, null) is null)
-                            InstanceLog?.Invoke("Auto",
-                                "⛔ DỪNG JOB: key proxy hết hạn — mọi tk Shopee dùng chung key này. Gia hạn key rồi chạy lại. "
+                            InstanceLog?.Invoke("Auto", Shopee.Core.Harvest.HarvestSinkFailure.Is(res.Reason)
+                                ? $"⛔ DỪNG JOB: {res.Reason} — lỗi chỗ lưu của máy này, không phải lỗi tk. Sửa rồi Tiếp tục (không dòng nào bị bỏ)."
+                                : "⛔ DỪNG JOB: key proxy hết hạn — mọi tk Shopee dùng chung key này. Gia hạn key rồi chạy lại. "
                                 + $"[{res.Reason}]");
                         try { jobCts.Cancel(); } catch { }   // các khối P1/P2… đang chạy cũng dừng theo
                         break;
@@ -338,7 +376,7 @@ public sealed class ScrapeRunner
         };
     }
 
-    private readonly record struct ChunkResult(bool Errored, string Reason, int LastCompletedRow, bool IsCaptcha, bool NeedLogin = false);
+    internal readonly record struct ChunkResult(bool Errored, string Reason, int LastCompletedRow, bool IsCaptcha, bool NeedLogin = false);
 
     /// <summary>Dòng cuối ĐÃ scrape xong của 1 chunk (đọc từ cfg do engine ghi per-row). Toán nằm ở
     /// <see cref="Shopee.Core.Scrape.ScrapeChunkMath.ClampLastDone"/> (thuần, có test) — nhớ: giá trị LỚN HƠN
@@ -430,7 +468,9 @@ public sealed class ScrapeRunner
                     needLoginStreak?.RecordRowCompleted();
                 }
             };
-            if (!string.IsNullOrWhiteSpace(cookieFile)) session.SetBigSellerCookieFile(cookieFile);
+            if (_mode == RunnerMode.Harvest)
+                session.HarvestOptions = Harvest;   // Harvest: không cookie BigSeller
+            else if (!string.IsNullOrWhiteSpace(cookieFile)) session.SetBigSellerCookieFile(cookieFile);
             // Import session Shopee đã đăng nhập (profile Edge của tk) → khỏi login form → tránh captcha.
             session.SetShopeeSessionProfileDir(spec.ShopeeProfileDir);
             session.ApplyConfig(cfg);
@@ -476,10 +516,14 @@ public sealed class ScrapeRunner
     }
 
     /// <summary>Phân loại kết quả từ InstanceConfig sau khi runner kết thúc.</summary>
-    private static ChunkResult Classify(InstanceConfig cfg)
+    internal static ChunkResult Classify(InstanceConfig cfg)
     {
         var phase = cfg.RunnerPhase ?? "";
         var msg = cfg.LastRunnerMessage ?? "";
+        // Harvest: lưu dữ liệu lỗi → giữ NGUYÊN thông điệp (có tiền tố) để ScrapeFailurePolicy ra StopJob; đứng trước
+        // các luật đọc chữ "captcha"/"proxy" (thông điệp lỗi đĩa có thể chứa bất kỳ chữ nào). Scrape không có tiền tố này.
+        if (Shopee.Core.Harvest.HarvestSinkFailure.Is(msg))
+            return new ChunkResult(true, msg, 0, false);
         var captcha = cfg.CaptchaError
             || msg.Contains("captcha", StringComparison.OrdinalIgnoreCase)
             || msg.Contains("verify", StringComparison.OrdinalIgnoreCase);
@@ -526,6 +570,7 @@ public sealed class ScrapeRunner
             EndRow = to,
             NextRunRow = from,
             AutoCloseProfileOnFinish = true,
+            Mode = _mode,
         };
         cfg.EnsureProfileRelativePath();
         return cfg;
@@ -542,6 +587,9 @@ public sealed class ScrapeRunner
         ScrapeAccountSpec spec, IReadOnlyList<string> urls, Action<string> log,
         Func<string, string?, Task> onResult, CancellationToken ct)
     {
+        // Nguồn JSON ở đây là localStorage do Product Copy (BigSeller) ghi — Harvest không nạp Product Copy.
+        if (_mode != RunnerMode.Scrape)
+            throw new InvalidOperationException("FetchShopeeApiJsonAsync (cào lại JSON qua Product Copy) chỉ dùng ở chế độ Scrape.");
         if (urls.Count == 0) return true;
         BraveInstanceSession? session = null;
         var cfg = BuildConfig(spec, 1, 1);

@@ -1,5 +1,6 @@
 using Shopee.Core.BigSeller;
 using Shopee.Core.Proxy;
+using Shopee.Modules.MultiBrave;
 
 namespace OpenMultiBraveLauncherV3;
 
@@ -13,6 +14,10 @@ internal sealed partial class BraveInstanceSession
     private CancellationTokenSource? _runnerLoopCts;
     private Task? _runnerLoopTask;
     private volatile bool _runnerLoopActive;
+
+    /// <summary>Tham số lượt chạy Harvest (ScrapeRunner gán khi <c>config.Mode == Harvest</c>). Scrape: null.</summary>
+    public HarvestRunOptions? HarvestOptions { get; set; }
+    private Shopee.Core.Harvest.HarvestPdpBreaker? _harvestBreaker;
 
     private CancellationTokenSource? _swPinnerCts;
     private Task? _swPinnerTask;
@@ -97,14 +102,23 @@ internal sealed partial class BraveInstanceSession
                     throw new InvalidOperationException(
                         "Không đăng nhập được Shopee (captcha/OTP hoặc sai tài khoản) — bỏ qua instance này.");
 
+                // Harvest: không BigSeller → bỏ auto-login, nạp cookie, ghi ngược token, tự login lại khi mất phiên.
+                var harvest = _config!.Mode == RunnerMode.Harvest;
+                var harvestOptions = harvest
+                    ? HarvestOptions ?? throw new InvalidOperationException("Chế độ Harvest thiếu HarvestOptions (sink).")
+                    : null;
+
                 // Phase 4c: TỰ đăng nhập BigSeller đầu phiên (mint token tươi KHỚP IP proxy Brave này) nếu chưa
                 // fresh (TTL) + có mật khẩu. Chạy TRƯỚC bước nạp cookie-file: thành công → token mới nằm trong
                 // browser + xuất ra file; bước nạp cookie ngay dưới thấy "browser có token sống" nên GIỮ (không
                 // đè token cũ). Lane không tự login (fresh/khác) vẫn nạp token mới từ file → cùng IP acc nên hợp lệ.
-                await _bigSeller.TryAutoLoginAsync(loopToken).ConfigureAwait(false);
+                if (!harvest)
+                {
+                    await _bigSeller.TryAutoLoginAsync(loopToken).ConfigureAwait(false);
 
-                // Import BigSeller cookie (nếu account có cấu hình) — qua CDP local, KHÔNG qua proxy instance.
-                await _bigSeller.ImportCookiesIfConfiguredAsync(loopToken).ConfigureAwait(false);
+                    // Import BigSeller cookie (nếu account có cấu hình) — qua CDP local, KHÔNG qua proxy instance.
+                    await _bigSeller.ImportCookiesIfConfiguredAsync(loopToken).ConfigureAwait(false);
+                }
 
                 _runnerLoopActive = true;
                 Log("Bắt đầu chạy (launcher điều khiển)…");
@@ -119,6 +133,42 @@ internal sealed partial class BraveInstanceSession
                 {
                     try
                     {
+                        if (harvest)
+                        {
+                            // Cùng các móc warmup/pinner/captcha như Scrape (nhân bản 3 lambda dưới).
+                            await HarvestRunnerLoop.RunAsync(
+                                _cdpPort,
+                                profileRoot,
+                                _config!,
+                                harvestOptions!,
+                                // Cầu dao sống theo PHIÊN (một khối dòng): giữ qua các lần đổi IP/mở lại profile để
+                                // mã pdpError đã bật một lần không bật lại.
+                                _harvestBreaker ??= new Shopee.Core.Harvest.HarvestPdpBreaker(harvestOptions!.PdpErrorBreakerThreshold),
+                                Log,
+                                () => { RefreshRunStatusFromConfig(); ExtensionProgressSynced?.Invoke(); },
+                                loopToken,
+                                onBeforeExtensionReady: async () =>
+                                {
+                                    StopSwPinner();
+                                    await Task.Delay(400, loopToken).ConfigureAwait(false);
+                                    if (WarmupAcquire is not null)
+                                    {
+                                        await WarmupAcquire(loopToken).ConfigureAwait(false);
+                                        warmupHeld = true;
+                                    }
+                                },
+                                onAfterExtensionReady: () =>
+                                {
+                                    StartSwPinner();
+                                    ReleaseWarmup();
+                                    return Task.CompletedTask;
+                                },
+                                onCaptchaState: c =>
+                                {
+                                    if (_config is not null) { _config.CaptchaError = c; RefreshRunStatusFromConfig(); }
+                                }).ConfigureAwait(false);
+                        }
+                        else
                         await LauncherRunnerLoop.RunAsync(
                             _cdpPort,
                             profileRoot,
@@ -202,7 +252,7 @@ internal sealed partial class BraveInstanceSession
                         // GIẾT phiên → "log in BigSeller first". Đây CHÍNH là lý do thỉnh thoảng 1 instance (vd
                         // 1/8 Brave) bị "login first" khi chạy nhiều Brave/1 tk: nó tình cờ restart extension
                         // giữa chừng rồi nạp đè token cũ. App cũ KHÔNG re-import khi restart nên không bị.
-                        if (_bigSeller.HasCookieFile)
+                        if (!harvest && _bigSeller.HasCookieFile)
                             await _bigSeller.ImportCookiesIfConfiguredAsync(loopToken).ConfigureAwait(false);
                         proxyAttempt--;
                         continue;
@@ -212,7 +262,8 @@ internal sealed partial class BraveInstanceSession
                     // token mới khớp IP proxy này) rồi CHẠY TIẾP từ dòng dừng, thay vì bỏ cả job. Chỉ khi có
                     // mật khẩu + còn lượt; xoá TTL để ép login lại. `continue` chạy lại vòng runner; điểm tiếp
                     // tục do `config.GetEffectiveRunRow()` quyết (dòng dừng gần nhất) — KHÔNG có cờ nào khác.
-                    if (!loopToken.IsCancellationRequested
+                    if (!harvest
+                        && !loopToken.IsCancellationRequested
                         && string.Equals(_config?.RunnerPhase, "needlogin", StringComparison.OrdinalIgnoreCase)
                         && bigSellerReloginTries < maxBigSellerReloginTries
                         && _bigSeller.HasPassword())

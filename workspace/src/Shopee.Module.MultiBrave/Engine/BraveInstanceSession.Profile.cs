@@ -33,7 +33,8 @@ internal sealed partial class BraveInstanceSession
     private string BuildBraveArguments(string userDataDir, string? proxyServer) =>
         BraveProfileManager.BuildBraveArguments(
             _cdpPort, userDataDir, proxyServer, Log, _sourceUserData,
-            loadRunnerExtension: _extensionAutomationEnabled);
+            loadRunnerExtension: _extensionAutomationEnabled,
+            mode: _config?.Mode ?? Shopee.Modules.MultiBrave.RunnerMode.Scrape);
 
     /// <summary>
     /// ĐƯỜNG THỰC THI DUY NHẤT để dựng Brave lên cho profile này — dùng cho CẢ khởi động lần đầu

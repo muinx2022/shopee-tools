@@ -14,7 +14,7 @@ internal static class LauncherRunnerLoop
     private static readonly Random RestRandom = new();
 
     /// <summary>Dòng "Bigseller Account: … | Shopee Account: …" hiển thị trên overlay thông báo.</summary>
-    private static string BuildAccountHeader(InstanceConfig config)
+    internal static string BuildAccountHeader(InstanceConfig config)
     {
         var bigSeller = string.IsNullOrWhiteSpace(config.BigSellerAccountName) ? "?" : config.BigSellerAccountName.Trim();
         return $"Bigseller Account: {bigSeller} | Shopee Account: {ShopeeAccountName(config)}";
@@ -646,7 +646,7 @@ internal static class LauncherRunnerLoop
         }
     }
 
-    private static async Task TryShowOverlayAsync(
+    internal static async Task TryShowOverlayAsync(
         int cdpPort,
         DirectoryInfo profileRoot,
         int? tabId,
@@ -671,7 +671,7 @@ internal static class LauncherRunnerLoop
     /// Chờ <paramref name="totalMs"/>, nhưng chia thành nhịp ngẫu nhiên 12–35s, sau mỗi nhịp cuộn trang
     /// Shopee hiện tại để giả lập người dùng đang xem. Best-effort, tôn trọng cancellation (nút Dừng).
     /// </summary>
-    private static async Task SimulateBrowsingDuringRestAsync(
+    internal static async Task SimulateBrowsingDuringRestAsync(
         int cdpPort,
         string pageUrlHint,
         int totalMs,
@@ -700,7 +700,7 @@ internal static class LauncherRunnerLoop
         }
     }
 
-    private static async Task PushDisplayStateAsync(
+    internal static async Task PushDisplayStateAsync(
         int cdpPort,
         DirectoryInfo profileRoot,
         InstanceConfig config,
@@ -823,7 +823,7 @@ internal static class LauncherRunnerLoop
         return new VideoDownloadResult(r.SavedPath ?? "");
     }
 
-    private static string ExtractSkuFromRow(Dictionary<string, object?> row, int rowNumber)
+    internal static string ExtractSkuFromRow(Dictionary<string, object?> row, int rowNumber)
     {
         foreach (var key in row.Keys)
         {
@@ -849,7 +849,7 @@ internal static class LauncherRunnerLoop
     }
 
     /// <summary>Lần đầu: nhờ vòng ngoài kiểm tra proxy và lấy IP mới. Lần sau: đóng tài khoản, đổi tài khoản khác.</summary>
-    private static void MarkTrafficBlock(InstanceConfig config, int rowNumber)
+    internal static void MarkTrafficBlock(InstanceConfig config, int rowNumber)
     {
         config.CaptchaError = false;
         if (!config.TrafficRechecked)

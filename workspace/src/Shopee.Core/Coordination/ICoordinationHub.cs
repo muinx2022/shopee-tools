@@ -4,8 +4,9 @@ namespace Shopee.Core.Coordination;
 
 /// <summary>Thao tác có thể khoá/điều phối trên một (tài khoản BigSeller + shop). Tên viết-thường của từng
 /// hằng PHẢI khớp <see cref="AssignmentOps"/> — <c>HttpCoordinationHub.OpStr</c> gửi lên Hub bằng
-/// <c>ToLowerInvariant()</c>, lệch một chữ là khoá lease/ledger không khớp việc Hub giao.</summary>
-public enum CoordOp { Scrape, Import, Update, Rewrite }
+/// <c>ToLowerInvariant()</c>, lệch một chữ là khoá lease/ledger không khớp việc Hub giao.
+/// <see cref="Harvest"/> (app Shopee Harvest) có khoá + ledger RIÊNG, không trùng tiến độ <see cref="Scrape"/>.</summary>
+public enum CoordOp { Scrape, Import, Update, Rewrite, Harvest }
 
 /// <summary>
 /// Khoá định danh một đơn vị việc: (BigSellerAccount.Id, BigSellerShop.Id, op). Mang kèm Sheet

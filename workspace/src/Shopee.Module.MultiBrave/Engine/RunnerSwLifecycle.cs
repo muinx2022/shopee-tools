@@ -57,7 +57,7 @@ internal static class RunnerSwLifecycle
         var expectedId = RunnerExtensionPaths.TryGetLoadedExtensionId()
             ?? RunnerExtensionTargets.TryGetRunnerExtensionIdFromProfile(profileRoot)
             ?? throw new InvalidOperationException(
-                "Không tìm thấy thư mục extension Shopee Data Runner — build lại launcher.");
+                $"Không tìm thấy thư mục extension {RunnerExtensionPaths.ExtensionDisplayName} — build lại launcher.");
 
         // Theo dõi CDP unreachable để chờ browser hồi lại sau khi bị đóng/restart.
         // Khi Brave tắt, đừng coi ngay là lỗi chết của extension; cho phép phiên được tái nối nếu
@@ -118,7 +118,7 @@ internal static class RunnerSwLifecycle
             if ((DateTime.UtcNow - lastLog).TotalSeconds >= 5)
             {
                 var idList = ids.Count > 0 ? string.Join(", ", ids) : "(không tìm thấy)";
-                log?.Invoke($"Đang chờ extension Shopee Data Runner trên CDP… [IDs: {idList}]");
+                log?.Invoke($"Đang chờ extension {RunnerExtensionPaths.ExtensionDisplayName} trên CDP… [IDs: {idList}]");
                 lastLog = DateTime.UtcNow;
             }
 
@@ -138,7 +138,7 @@ internal static class RunnerSwLifecycle
                     return id;
                 }
                 log?.Invoke($"  Probe {id[..8]}…: {probeMsg}");
-                if (probeMsg.Contains("hasScrapeStep=false", StringComparison.OrdinalIgnoreCase) &&
+                if (probeMsg.Contains($"{RunnerModeProfile.Current.ProbeFlag}=false", StringComparison.OrdinalIgnoreCase) &&
                     DateTime.UtcNow - lastWake >= TimeSpan.FromSeconds(4))
                 {
                     noResponseStreak = 0;
@@ -190,7 +190,7 @@ internal static class RunnerSwLifecycle
 
                         log?.Invoke($"  → SW vẫn không phản hồi sau {noResponseStreak} lần mở popup [json/list: {swSummary}] — mở lại profile để nạp lại extension…");
                         throw new InvalidOperationException(
-                            "Service worker extension Shopee Data Runner không phản hồi qua CDP sau nhiều lần thử — mở lại profile.");
+                            $"Service worker extension {RunnerExtensionPaths.ExtensionDisplayName} không phản hồi qua CDP sau nhiều lần thử — mở lại profile.");
                     }
 
                     log?.Invoke("  → Mở lại popup extension tươi (SW chưa phản hồi)…");
@@ -500,8 +500,10 @@ internal static class RunnerSwLifecycle
             if (val is null)
                 return (false, "evaluate trả về null");
 
-            var ok = val.Value.TryGetProperty("hasScrapeStep", out var hook) && hook.GetBoolean();
-            return (ok, ok ? "OK" : $"hasScrapeStep=false (val={val.Value})");
+            // Cờ probe theo chế độ process: hasScrapeStep (shopee-scrape) / hasHarvestStep (shopee-harvest).
+            var flag = RunnerModeProfile.Current.ProbeFlag;
+            var ok = val.Value.TryGetProperty(flag, out var hook) && hook.GetBoolean();
+            return (ok, ok ? "OK" : $"{flag}=false (val={val.Value})");
         }
         catch (OperationCanceledException)
         {

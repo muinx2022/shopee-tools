@@ -635,3 +635,21 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/extensions/shopee-harvest/background.js:569` (kế thừa `shopee-scrape`)
 - **Bằng chứng**: đọc code — bước mới đặt lại `abortRequested = false`, nên lệnh huỷ gửi trước đó không có tác dụng.
 - **Vì sao không sửa ngay**: hành vi chung với scrape; GĐ3 C# nên huỷ bằng cách không gọi bước kế thay vì dựa vào abort sớm.
+
+### P-20261116-1 · [MỞ] · VỪA — `checkBeforeNextLink` chờ captcha tới 3 phút nhưng C# chỉ chờ 20 s, thử lại 4 lần → gọi chồng
+- **Thấy lúc**: phản biện GĐ3 plan harvest
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/RunnerExtensionRpc.cs:184-185`; `workspace/extensions/shopee-harvest/background.js:405-465` (cùng khuôn `shopee-scrape`)
+- **Bằng chứng**: đọc code — receive-timeout mặc định 20 s, `maxAttempts:4`, cửa popup đua 6 s, trong khi extension có thể đang chờ người giải captcha.
+- **Vì sao không sửa ngay**: chung cho Scrape; cần việc riêng có chạy thật.
+
+### P-20261116-2 · [MỞ] · NHẸ — Lease harvest có `bigseller_id` rỗng nên không hiện trên dashboard Hub
+- **Thấy lúc**: phản biện GĐ3 plan harvest
+- **Ở đâu**: `suite/server/Shopee.Hub.Web/Components/Shared/AcctDashboard.razor:105`, `DispatchRowsBuilder`
+- **Bằng chứng**: đọc code — lease lọc theo bigseller; harvest cố ý gửi rỗng để không ghim tài khoản BigSeller.
+- **Vì sao không sửa ngay**: hiển thị Hub cho harvest là việc riêng (sau GĐ5).
+
+### P-20261116-3 · [MỞ] · VỪA — Dòng lỗi ở đuôi khối gây vá lại tới 3 lần (mở Brave + Cooldown tài khoản) rồi mới bỏ qua
+- **Thấy lúc**: phản biện GĐ3 vòng 2 plan harvest
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/ScrapeRunner.cs:289-319`
+- **Bằng chứng**: đọc code — vùng phủ chưa qua dòng lỗi cuối khối → patch work → mỗi lần một Brave mới + Cooldown; 3 lần kẹt mới `RowSkipped`. Có sẵn từ Scrape, Harvest thừa hưởng.
+- **Vì sao không sửa ngay**: hành vi chung của engine, cần việc riêng có số liệu chạy thật.

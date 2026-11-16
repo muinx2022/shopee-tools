@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Shopee.Modules.MultiBrave;
 
 namespace OpenMultiBraveLauncherV3;
 
@@ -40,12 +41,23 @@ internal static class ExtensionProgressReader
         new(@"lastMessage[^\w""]{0,16}""([^""]{8,200})", RegexOptions.Compiled);
 
     public static bool TryRead(DirectoryInfo profileRoot, out ExtensionRunnerState state) =>
-        TryReadBestFromProfile(profileRoot, out state, out _);
+        TryRead(profileRoot, out state, OnlyExtensionIdForMode(MultiBraveRuntime.Mode));
+
+    internal static bool TryRead(DirectoryInfo profileRoot, out ExtensionRunnerState state, string? onlyExtensionId) =>
+        TryReadBestFromProfile(profileRoot, out state, out _, onlyExtensionId);
+
+    /// <summary>Thư mục storage được phép đọc theo chế độ. Scrape: null = mọi extension (hành vi cũ — chọn thư mục ghi
+    /// gần nhất). Harvest: CHỈ extension shopee-harvest — profile dùng chung (hoặc còn sót) storage của shopee-scrape
+    /// cùng khoá runnerState/lastCompletedRow, đọc nhầm là nhận tiến độ scrape thành tiến độ harvest. Không phân giải
+    /// được ID thì trả chuỗi rỗng = không đọc gì (an toàn hơn đọc nhầm).</summary>
+    internal static string? OnlyExtensionIdForMode(RunnerMode mode) =>
+        mode == RunnerMode.Harvest ? RunnerExtensionPaths.TryGetLoadedExtensionId(RunnerMode.Harvest) ?? "" : null;
 
     private static bool TryReadBestFromProfile(
         DirectoryInfo profileRoot,
         out ExtensionRunnerState state,
-        out string? extensionId)
+        out string? extensionId,
+        string? onlyExtensionId = null)
     {
         state = new ExtensionRunnerState();
         extensionId = null;
@@ -60,6 +72,10 @@ internal static class ExtensionProgressReader
 
         foreach (var extDir in Directory.EnumerateDirectories(settingsRoot))
         {
+            if (onlyExtensionId is not null &&
+                !string.Equals(Path.GetFileName(extDir), onlyExtensionId, StringComparison.OrdinalIgnoreCase))
+                continue;
+
             if (!TryReadRunnerStateFromExtensionDir(extDir, out var candidate, out var latestWrite))
                 continue;
 

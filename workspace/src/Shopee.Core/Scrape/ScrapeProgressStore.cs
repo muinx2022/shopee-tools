@@ -51,12 +51,17 @@ public sealed class ScrapeProgress
 /// </summary>
 public sealed class ScrapeProgressStore
 {
-    private static readonly Lazy<ScrapeProgressStore> _shared = new(() => new ScrapeProgressStore());
+    private static readonly Lazy<ScrapeProgressStore> _shared = new(() => new ScrapeProgressStore("scrape-progress.json"));
     public static ScrapeProgressStore Shared => _shared.Value;
 
-    private static readonly string FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), "scrape-progress.json");
+    /// <summary>Tiến độ của chế độ Harvest — CÙNG khuôn nhưng file RIÊNG (<c>harvest-progress.json</c>): dòng đã lấy
+    /// JSON không được đánh dấu là dòng đã cào BigSeller và ngược lại.</summary>
+    private static readonly Lazy<ScrapeProgressStore> _harvest = new(() => new ScrapeProgressStore("harvest-progress.json"));
+    public static ScrapeProgressStore Harvest => _harvest.Value;
+
+    internal string FilePath { get; }
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
-    private static DateTime GetFileWriteUtc() => File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : DateTime.MinValue;
+    private DateTime GetFileWriteUtc() => File.Exists(FilePath) ? File.GetLastWriteTimeUtc(FilePath) : DateTime.MinValue;
 
     private readonly object _lock = new();
     private readonly List<ScrapeProgress> _items = [];
@@ -64,7 +69,11 @@ public sealed class ScrapeProgressStore
 
     public event Action? Changed;
 
-    private ScrapeProgressStore() => Load();
+    private ScrapeProgressStore(string fileName)
+    {
+        FilePath = Path.Combine(SuitePaths.ModuleDir("shared"), fileName);
+        Load();
+    }
 
     private static bool KeyEq(ScrapeProgress p, string accountId, string sheet) =>
         p.AccountId == accountId && string.Equals(p.Sheet ?? "", sheet ?? "", StringComparison.OrdinalIgnoreCase);
