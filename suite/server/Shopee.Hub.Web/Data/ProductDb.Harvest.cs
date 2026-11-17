@@ -230,6 +230,28 @@ SELECT (SELECT count(*) FROM harvested_product_sources
         return new HarvestedProductStats(rd.GetInt64(0), rd.GetInt64(1));
     }
 
+    // ── Đọc: các itemId ĐÃ có dữ liệu còn hạn (app Harvest bỏ qua, không mở trang) ───────────────────────────────
+    // Mốc "lần lấy gần nhất" = harvested_at: upsert ghi bản mới (hash khác, không cũ hơn) thì đặt bằng mốc mới; hash TRÙNG
+    // thì sqlBumpAt nhích lên GREATEST(cũ, mới) — nên lấy lại một SP (kể cả JSON y hệt) luôn làm mới mốc này. KHÔNG dùng
+    // updated_at (hash trùng không đụng tới). Không đọc raw. ids rỗng → rỗng (không chạm DB).
+    public async Task<List<HarvestedKnownItem>> GetHarvestedKnownAsync(IReadOnlyList<long> itemIds, int maxAgeDays, CancellationToken ct)
+    {
+        if (itemIds.Count == 0) return [];
+        const string sql = @"
+SELECT item_id, harvested_at FROM harvested_products
+WHERE item_id = ANY($1) AND harvested_at >= now() - make_interval(days => $2)
+ORDER BY item_id;";
+        await using var conn = await _dataSource.OpenConnectionAsync(ct);
+        await using var cmd = new NpgsqlCommand(sql, conn);
+        cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Array | NpgsqlDbType.Bigint, Value = itemIds.ToArray() });
+        cmd.Parameters.Add(Param((int?)maxAgeDays));
+        var list = new List<HarvestedKnownItem>(itemIds.Count);
+        await using var rd = await cmd.ExecuteReaderAsync(ct);
+        while (await rd.ReadAsync(ct))
+            list.Add(new HarvestedKnownItem(rd.GetInt64(0), rd.GetFieldValue<DateTimeOffset>(1)));
+        return list;
+    }
+
     // Kiểu khai TƯỜNG MINH: tham số null không mang kiểu thì Postgres phải tự đoán theo ngữ cảnh.
     private static NpgsqlParameter Param(long? v) =>
         new() { NpgsqlDbType = NpgsqlDbType.Bigint, Value = v.HasValue ? v.Value : DBNull.Value };

@@ -246,6 +246,19 @@ public static class ProductApiEndpoints
                 return Results.Json(await pdb.UpsertHarvestedAsync(r.Items, by, clientNow, ct));
             }));
 
+        // ── Đọc: itemId nào ĐÃ có dữ liệu còn hạn (≤ MaxItems, đếm cả id trùng; không trả raw) — app Harvest bỏ qua SP đã có ──
+        api.MapPost(HubRoutes.HarvestedProductsKnown, (HarvestedKnownRequest? r, IServiceProvider sp, CancellationToken ct) =>
+            WithPgHarvest(sp, async pdb =>
+            {
+                if (r?.ItemIds is null) return Results.BadRequest(new { error = "item-ids-required" });
+                if (r.ItemIds.Count > HarvestedKnownLimits.MaxItems)
+                    return Results.BadRequest(new { error = "too-many-ids", max = HarvestedKnownLimits.MaxItems });
+                if (r.MaxAgeDays is not (>= 1 and <= HarvestedKnownLimits.MaxAgeDays))
+                    return Results.BadRequest(new { error = "max-age-days", max = HarvestedKnownLimits.MaxAgeDays });
+                var ids = r.ItemIds.Where(i => i > 0).Distinct().ToList();
+                return Results.Json(new HarvestedKnownResponse(await pdb.GetHarvestedKnownAsync(ids, r.MaxAgeDays.Value, ct)));
+            }));
+
         // ── Đọc: đếm dòng nguồn đã có dữ liệu + số SP khác nhau (thiếu tham số = không lọc chiều đó) ──
         api.MapGet(HubRoutes.HarvestedProductsStats, (string? account, string? sheet, IServiceProvider sp, CancellationToken ct) =>
             WithPgHarvest(sp, async pdb => Results.Json(await pdb.GetHarvestedStatsAsync(account ?? "", sheet ?? "", ct))));

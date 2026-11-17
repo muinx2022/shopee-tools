@@ -274,11 +274,11 @@ public sealed class HarvestOutboxTests : IDisposable
     }
 
     [Fact]
-    public async Task Schema_UserVersion3_VersionLaThiEnsureReadyNem()
+    public async Task Schema_UserVersion4_VersionLaThiEnsureReadyNem()
     {
         var box = new HarvestOutbox(DbPath);
         await box.EnsureReadyAsync(CancellationToken.None);
-        Assert.Equal(3L, ReadUserVersion());
+        Assert.Equal(4L, ReadUserVersion());
 
         using (var con = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = DbPath, Pooling = false }.ToString()))
         {

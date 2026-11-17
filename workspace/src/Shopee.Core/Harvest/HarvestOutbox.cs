@@ -23,10 +23,11 @@ internal sealed record HarvestOutboxEntry(long Id, long Version, HarvestedProduc
 /// (<see cref="HarvestPayloadCleaner"/>), <c>raw_hash</c>, và các cột tóm tắt đã parse sẵn (<c>item_dto</c> = JSON của
 /// <see cref="HarvestedProductItem"/> thiếu <c>rawJson</c>) — parse lúc LƯU để lỗi parse lộ ra ngay ở dòng đó chứ không
 /// nằm chờ trong hàng đợi. <c>status</c> = <c>pending</c> | <c>failed</c> (Hub từ chối mục — chờ người bấm "Đẩy lại mục
-/// lỗi"). Bảng <c>counters</c>: số đã đẩy / đã ghi cộng dồn. Bảng <c>done</c>: tập khoá SP ĐÃ LẤY XONG theo target
-/// (<see cref="HarvestDoneTarget"/>, <see cref="HarvestItemKey"/>) — ghi CÙNG giao dịch với lần lưu SP, KHÔNG xoá khi Hub đã nhận;
-/// app dựng lại tiến độ từ đây mỗi lần chạy (<see cref="HarvestDoneRebuild"/>). Bảng <c>failed</c>: khoá SP lỗi VĨNH VIỄN theo
-/// target (<see cref="RecordPermanentFailureAsync"/>) — dựng lại không lên lịch, lưu thành công thì tự xoá.</para>
+/// lỗi"). Bảng <c>counters</c>: số đã đẩy / đã ghi cộng dồn. Bảng <c>done</c>: tập khoá SP ĐÃ LẤY XONG, TOÀN CỤC theo khoá SP
+/// (<see cref="HarvestItemKey"/>; schema v4 — SP đã lưu ở file / sheet nào cũng tính là đã có) — ghi CÙNG giao dịch với lần lưu
+/// SP, KHÔNG xoá khi Hub đã nhận; app dựng lại tiến độ từ đây mỗi lần chạy (<see cref="HarvestDoneRebuild"/>). Bảng <c>failed</c>:
+/// khoá SP lỗi VĨNH VIỄN, cũng toàn cục (<see cref="RecordPermanentFailureAsync"/>) — dựng lại không lên lịch, lưu thành công
+/// thì tự xoá.</para>
 /// <para>Đồng thời: WAL + <c>busy_timeout</c>; ghi trong process đi qua một cổng tuần tự; BUSY/LOCKED (process khác giữ
 /// khoá) tự thử lại tới <see cref="BusyBudget"/> rồi mới ném. <c>synchronous=FULL</c>: <see cref="SaveAsync"/> trả về là
 /// đã xuống đĩa, mất điện cũng không mất.</para>
@@ -44,8 +45,9 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
     /// <summary>Phiên bản schema (<c>PRAGMA user_version</c>). DB có version LỚN hơn → <see cref="EnsureReadyAsync"/> ném.
     /// v2: khoá <c>pending</c> đổi từ (account_id, sheet, row_no) sang (account_id, sheet, item_id) — migration dựng lại bảng
     /// (<see cref="MigrateV1ToV2"/>). Bảng <c>done</c> / <c>failed</c> thêm bằng <c>CREATE TABLE IF NOT EXISTS</c>.
-    /// v3: <c>failed</c> thêm <c>hits</c> (số LƯỢT chạy khác nhau thấy lỗi) + <c>last_run_id</c> (<see cref="MigrateV2ToV3"/>).</summary>
-    public const int SchemaVersion = 3;
+    /// v3: <c>failed</c> thêm <c>hits</c> (số LƯỢT chạy khác nhau thấy lỗi) + <c>last_run_id</c> (<see cref="MigrateV2ToV3"/>).
+    /// v4: <c>done</c> / <c>failed</c> bỏ cột <c>target</c> — toàn cục theo khoá SP (<see cref="MigrateV3ToV4"/> gộp các target).</summary>
+    public const int SchemaVersion = 4;
 
     /// <summary>Khoá lỗi vĩnh viễn chỉ được bỏ qua khi đã thấy ở ít nhất chừng này LƯỢT chạy khác nhau (lỗi một lần lẻ — tài
     /// khoản / mạng trục trặc lúc đó — thì lượt sau vẫn thử lại).</summary>
@@ -107,16 +109,16 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
     /// đang giữ CỦA CÙNG SP (về lại <c>pending</c>, xoá đếm thử/lỗi, row_no = dòng mới); bản CŨ hơn bị bỏ qua (vẫn trả bình
     /// thường). SP khác cùng số dòng là dòng riêng — không đè. Gửi lại cùng mục bao nhiêu lần cũng ra một dòng → idempotent. JSON không xử lý được → ném <see cref="HarvestItemRejectedException"/>
     /// (chưa lưu; engine ghi lỗi dòng rồi đi tiếp). Lỗi khác (đĩa, khoá quá ngân sách…) = hạ tầng → engine dừng job.
-    /// Có <see cref="HarvestedItem.DoneTarget"/> → trong CÙNG giao dịch: khoá SP vào tập đã xong CHỈ KHI pending đang giữ một
-    /// bản của chính SP này (bản vừa ghi, hoặc bản mới hơn đã có — bản này cũ hơn nên bị bỏ qua), và gỡ các khoá đó khỏi tập lỗi
-    /// vĩnh viễn.</summary>
+    /// <see cref="HarvestedItem.RecordDone"/> → trong CÙNG giao dịch: khoá SP vào tập đã xong (toàn cục) CHỈ KHI pending đang giữ
+    /// một bản của chính SP này (bản vừa ghi, hoặc bản mới hơn đã có — bản này cũ hơn nên bị bỏ qua), và gỡ các khoá đó khỏi tập
+    /// lỗi vĩnh viễn.</summary>
     public Task SaveAsync(HarvestedItem item, CancellationToken cancellationToken) => Task.Run(() =>
     {
         cancellationToken.ThrowIfCancellationRequested();
         var row = BuildRow(item);
-        IReadOnlyList<string> doneKeys = string.IsNullOrWhiteSpace(item.DoneTarget)
-            ? []
-            : HarvestItemKey.ForSaved(item.SourceLink, item.ItemId, item.ShopeeShopId);
+        IReadOnlyList<string> doneKeys = item.RecordDone
+            ? HarvestItemKey.ForSaved(item.SourceLink, item.ItemId, item.ShopeeShopId)
+            : [];
         EnsureInitialized();
         WithWriteRetry(con =>
         {
@@ -169,17 +171,16 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
                 using var done = con.CreateCommand();
                 done.Transaction = tx;
                 done.CommandText = """
-                    INSERT INTO done (target, item_key, saved_at) VALUES ($t, $k, $now)
-                    ON CONFLICT (target, item_key) DO UPDATE SET saved_at = excluded.saved_at;
+                    INSERT INTO done (item_key, saved_at, item_id) VALUES ($k, $now, $item)
+                    ON CONFLICT (item_key) DO UPDATE SET saved_at = excluded.saved_at, item_id = excluded.item_id;
                     """;
-                done.Parameters.AddWithValue("$t", item.DoneTarget);
                 done.Parameters.AddWithValue("$k", key);
+                done.Parameters.AddWithValue("$item", item.ItemId);
                 done.Parameters.AddWithValue("$now", NowMs());
                 done.ExecuteNonQuery();
                 using var unfail = con.CreateCommand();
                 unfail.Transaction = tx;
-                unfail.CommandText = "DELETE FROM failed WHERE target = $t AND item_key = $k;";
-                unfail.Parameters.AddWithValue("$t", item.DoneTarget);
+                unfail.CommandText = "DELETE FROM failed WHERE item_key = $k;";
                 unfail.Parameters.AddWithValue("$k", key);
                 unfail.ExecuteNonQuery();
             }
@@ -190,33 +191,43 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
 
     // ── Tập SP đã lấy xong ─────────────────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Tập khoá SP đã lưu xong của <paramref name="target"/> (<see cref="HarvestDoneTarget.Of"/>).</summary>
-    public IReadOnlySet<string> DoneKeys(string target)
+    /// <summary>Tập khoá SP đã lưu xong (toàn cục). <paramref name="savedSince"/> khác null → chỉ khoá lưu (lần gần nhất) từ mốc
+    /// đó trở đi — SP lưu đã quá hạn "lấy lại" thì không còn tính là đã có.
+    /// <para>SP mà Hub đã TỪ CHỐI (mục outbox của SP đó đang <c>failed</c>, không còn mục nào <c>pending</c>) KHÔNG tính là đã có: Hub
+    /// không có dữ liệu → lượt sau lấy lại ("Đẩy lại mục lỗi" vẫn dùng được như cũ). Mục đang chờ đẩy bình thường (<c>pending</c>,
+    /// chưa đẩy kịp) vẫn tính là đã có — không lấy trùng. Khoá cũ không biết itemId (gộp từ v3, khoá <c>url:</c>) giữ như cũ.</para></summary>
+    public IReadOnlySet<string> DoneKeys(DateTimeOffset? savedSince = null)
     {
         EnsureInitialized();
         using var con = Open();
         using var cmd = con.CreateCommand();
-        cmd.CommandText = "SELECT item_key FROM done WHERE target = $t;";
-        cmd.Parameters.AddWithValue("$t", target);
+        cmd.CommandText = """
+            SELECT d.item_key FROM done d
+            WHERE d.saved_at >= $since
+              AND NOT (d.item_id IS NOT NULL
+                       AND EXISTS (SELECT 1 FROM pending p WHERE p.item_id = d.item_id AND p.status = 'failed')
+                       AND NOT EXISTS (SELECT 1 FROM pending p WHERE p.item_id = d.item_id AND p.status = 'pending'));
+            """;
+        cmd.Parameters.AddWithValue("$since", savedSince?.ToUnixTimeMilliseconds() ?? long.MinValue);
         var set = new HashSet<string>(StringComparer.Ordinal);
         using var rd = cmd.ExecuteReader();
         while (rd.Read()) set.Add(rd.GetString(0));
         return set;
     }
 
-    /// <summary>Xoá tập đã xong của ĐÚNG <paramref name="target"/> (nút Reset tiến độ). Trả số khoá đã xoá. Dữ liệu SP trong
-    /// hàng đợi đẩy Hub không bị đụng.</summary>
-    public int ClearDone(string target) => DeleteTarget("done", target);
+    /// <summary>Gỡ các khoá SP khỏi tập đã xong (nút Reset của các sheet chọn — khoá của các dòng trong sheet). Trả số khoá đã
+    /// xoá. Dữ liệu SP trong hàng đợi đẩy Hub không bị đụng.</summary>
+    public int ClearDone(IEnumerable<string> itemKeys) => DeleteKeys("done", itemKeys);
 
     // ── Tập SP lỗi vĩnh viễn ───────────────────────────────────────────────────────────────────────────────────────
 
-    /// <summary>Ghi khoá SP lỗi VĨNH VIỄN (SP không tồn tại / không phải trang SP / JSON bị từ chối vì nội dung) của target.
+    /// <summary>Ghi khoá SP lỗi VĨNH VIỄN (SP không tồn tại / không phải trang SP / JSON bị từ chối vì nội dung) — toàn cục.
     /// Mỗi LƯỢT chạy (<paramref name="runId"/>) chỉ tăng <c>hits</c> một lần; dựng lại chỉ bỏ qua khoá có <c>hits</c> ≥
     /// <see cref="FailedConfirmRuns"/>. Khoá đã có trong tập đã xong thì bỏ qua (đã lấy được là xong).</summary>
-    public Task RecordPermanentFailureAsync(string target, IReadOnlyList<string> itemKeys, string reason, string runId,
+    public Task RecordPermanentFailureAsync(IReadOnlyList<string> itemKeys, string reason, string runId,
         CancellationToken cancellationToken) => Task.Run(() =>
     {
-        if (string.IsNullOrWhiteSpace(target) || itemKeys.Count == 0) return;
+        if (itemKeys.Count == 0) return;
         WithWriteRetry(con =>
         {
             using var tx = con.BeginTransaction();
@@ -225,14 +236,13 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
                 using var cmd = con.CreateCommand();
                 cmd.Transaction = tx;
                 cmd.CommandText = """
-                    INSERT INTO failed (target, item_key, reason, at, hits, last_run_id)
-                    SELECT $t, $k, $r, $now, 1, $run WHERE NOT EXISTS (SELECT 1 FROM done WHERE target = $t AND item_key = $k)
-                    ON CONFLICT (target, item_key) DO UPDATE SET reason = excluded.reason, at = excluded.at,
+                    INSERT INTO failed (item_key, reason, at, hits, last_run_id)
+                    SELECT $k, $r, $now, 1, $run WHERE NOT EXISTS (SELECT 1 FROM done WHERE item_key = $k)
+                    ON CONFLICT (item_key) DO UPDATE SET reason = excluded.reason, at = excluded.at,
                         hits = failed.hits + CASE WHEN failed.last_run_id = excluded.last_run_id THEN 0 ELSE 1 END,
                         last_run_id = excluded.last_run_id;
                     """;
                 cmd.Parameters.AddWithValue("$run", runId ?? "");
-                cmd.Parameters.AddWithValue("$t", target);
                 cmd.Parameters.AddWithValue("$k", key);
                 cmd.Parameters.AddWithValue("$r", reason ?? "");
                 cmd.Parameters.AddWithValue("$now", NowMs());
@@ -243,15 +253,13 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
         }, cancellationToken);
     }, cancellationToken);
 
-    /// <summary>Tập khoá SP lỗi vĩnh viễn ĐÃ XÁC NHẬN (thấy ở ≥ <paramref name="minRuns"/> lượt chạy khác nhau) của
-    /// <paramref name="target"/>.</summary>
-    public IReadOnlySet<string> FailedKeys(string target, int minRuns = FailedConfirmRuns)
+    /// <summary>Tập khoá SP lỗi vĩnh viễn ĐÃ XÁC NHẬN (thấy ở ≥ <paramref name="minRuns"/> lượt chạy khác nhau).</summary>
+    public IReadOnlySet<string> FailedKeys(int minRuns = FailedConfirmRuns)
     {
         EnsureInitialized();
         using var con = Open();
         using var cmd = con.CreateCommand();
-        cmd.CommandText = "SELECT item_key FROM failed WHERE target = $t AND hits >= $min;";
-        cmd.Parameters.AddWithValue("$t", target);
+        cmd.CommandText = "SELECT item_key FROM failed WHERE hits >= $min;";
         cmd.Parameters.AddWithValue("$min", minRuns);
         var set = new HashSet<string>(StringComparer.Ordinal);
         using var rd = cmd.ExecuteReader();
@@ -259,16 +267,29 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
         return set;
     }
 
-    /// <summary>Xoá tập lỗi vĩnh viễn của ĐÚNG <paramref name="target"/> (nút "Cào lại dòng đã bỏ" / Reset) → lượt sau thử lại.</summary>
-    public int ClearFailed(string target) => DeleteTarget("failed", target);
+    /// <summary>Gỡ các khoá SP khỏi tập lỗi vĩnh viễn (nút "Cào lại dòng đã bỏ" / Reset của các sheet chọn) → lượt sau thử lại.</summary>
+    public int ClearFailed(IEnumerable<string> itemKeys) => DeleteKeys("failed", itemKeys);
 
-    private int DeleteTarget(string table, string target) => WithWriteRetry(con =>
+    private int DeleteKeys(string table, IEnumerable<string> itemKeys)
     {
-        using var cmd = con.CreateCommand();
-        cmd.CommandText = $"DELETE FROM {table} WHERE target = $t;";
-        cmd.Parameters.AddWithValue("$t", target);
-        return cmd.ExecuteNonQuery();
-    }, CancellationToken.None);
+        var keys = itemKeys.Where(k => !string.IsNullOrEmpty(k)).Distinct(StringComparer.Ordinal).ToList();
+        if (keys.Count == 0) return 0;
+        return WithWriteRetry(con =>
+        {
+            using var tx = con.BeginTransaction();
+            var n = 0;
+            foreach (var key in keys)
+            {
+                using var cmd = con.CreateCommand();
+                cmd.Transaction = tx;
+                cmd.CommandText = $"DELETE FROM {table} WHERE item_key = $k;";
+                cmd.Parameters.AddWithValue("$k", key);
+                n += cmd.ExecuteNonQuery();
+            }
+            tx.Commit();
+            return n;
+        }, CancellationToken.None);
+    }
 
     private sealed record BuiltRow(string AccountKey, string SheetKey, int RowKey, string Json, string Hash, string Dto)
     {
@@ -504,7 +525,8 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
                 }
                 // Mỗi bước migration nâng user_version trong CÙNG giao dịch với thay đổi schema.
                 if (version == 1) { MigrateV1ToV2(con); version = 2; }
-                if (version == 2) MigrateV2ToV3(con);
+                if (version == 2) { MigrateV2ToV3(con); version = 3; }
+                if (version == 3) MigrateV3ToV4(con);
                 using var cmd = con.CreateCommand();
                 cmd.CommandText = $"""
                     CREATE TABLE IF NOT EXISTS pending (
@@ -529,22 +551,10 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
                     );
                     CREATE INDEX IF NOT EXISTS ix_pending_due ON pending (status, next_try_at, id);
                     CREATE INDEX IF NOT EXISTS ix_pending_row ON pending (account_id, sheet, row_no);
+                    CREATE INDEX IF NOT EXISTS ix_pending_item ON pending (item_id, status);
                     CREATE TABLE IF NOT EXISTS counters (key TEXT PRIMARY KEY, value INTEGER NOT NULL);
-                    CREATE TABLE IF NOT EXISTS done (
-                        target   TEXT    NOT NULL,
-                        item_key TEXT    NOT NULL,
-                        saved_at INTEGER NOT NULL,
-                        PRIMARY KEY (target, item_key)
-                    ) WITHOUT ROWID;
-                    CREATE TABLE IF NOT EXISTS failed (
-                        target   TEXT    NOT NULL,
-                        item_key TEXT    NOT NULL,
-                        reason   TEXT    NOT NULL DEFAULT '',
-                        at       INTEGER NOT NULL,
-                        hits        INTEGER NOT NULL DEFAULT 1,
-                        last_run_id TEXT    NOT NULL DEFAULT '',
-                        PRIMARY KEY (target, item_key)
-                    ) WITHOUT ROWID;
+                    {DoneTableSql("done")}
+                    {FailedTableSql("failed")}
                     CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
                     CREATE TABLE IF NOT EXISTS probe (at INTEGER NOT NULL);
                     PRAGMA user_version = {SchemaVersion};
@@ -626,6 +636,74 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
         if (cols.Count > 0 && !cols.Contains("hits")) sql.Append("ALTER TABLE failed ADD COLUMN hits INTEGER NOT NULL DEFAULT 1;");
         if (cols.Count > 0 && !cols.Contains("last_run_id")) sql.Append("ALTER TABLE failed ADD COLUMN last_run_id TEXT NOT NULL DEFAULT '';");
         sql.Append("PRAGMA user_version = 3;");
+        cmd.CommandText = sql.ToString();
+        cmd.ExecuteNonQuery();
+        tx.Commit();
+    }
+
+    // Bảng done / failed từ v4: toàn cục theo khoá SP (không còn cột target). done.item_id = itemId của SP đã lưu (để biết Hub đã
+    // từ chối SP đó hay chưa — xem DoneKeys); NULL = không biết (khoá url: gộp từ v3).
+    private static string DoneTableSql(string name) => $"""
+        CREATE TABLE IF NOT EXISTS {name} (
+            item_key TEXT    NOT NULL PRIMARY KEY,
+            saved_at INTEGER NOT NULL,
+            item_id  INTEGER
+        ) WITHOUT ROWID;
+        CREATE INDEX IF NOT EXISTS ix_{name}_item ON {name} (item_id);
+        """;
+
+    private static string FailedTableSql(string name) => $"""
+        CREATE TABLE IF NOT EXISTS {name} (
+            item_key    TEXT    NOT NULL PRIMARY KEY,
+            reason      TEXT    NOT NULL DEFAULT '',
+            at          INTEGER NOT NULL,
+            hits        INTEGER NOT NULL DEFAULT 1,
+            last_run_id TEXT    NOT NULL DEFAULT ''
+        ) WITHOUT ROWID;
+        """;
+
+    /// <summary>v3 → v4: <c>done</c> / <c>failed</c> bỏ cột <c>target</c> (tk BigSeller × khoá tiến độ) → toàn cục theo khoá SP.
+    /// <c>done</c>: gộp theo khoá, giữ <c>saved_at</c> MỚI nhất. <c>failed</c>: gộp theo khoá, <c>hits</c> = lớn nhất trong các target
+    /// (lỗi thấy ở 2 sheet trong CÙNG một lượt không được thành "2 lượt"), lý do / mốc / lượt lấy từ bản ghi mới nhất; khoá đã có
+    /// trong <c>done</c> bị bỏ (đã lấy được là xong). Bảng chưa có cột <c>target</c> (DB đi từ v1/v2 chưa từng tạo bảng) → để CREATE
+    /// phía sau tạo dạng mới. Một giao dịch: hỏng giữa chừng thì DB vẫn nguyên v3.</summary>
+    private static void MigrateV3ToV4(SqliteConnection con)
+    {
+        using var tx = con.BeginTransaction();
+        bool HasTarget(string table)
+        {
+            using var info = con.CreateCommand();
+            info.Transaction = tx;
+            info.CommandText = $"SELECT count(*) FROM pragma_table_info('{table}') WHERE name = 'target';";
+            return (long)(info.ExecuteScalar() ?? 0L) > 0;
+        }
+        var sql = new System.Text.StringBuilder();
+        var doneOld = HasTarget("done");
+        var failedOld = HasTarget("failed");
+        if (doneOld)
+            sql.Append(DoneTableSql("done_v4")).Append("""
+                INSERT INTO done_v4 (item_key, saved_at, item_id)
+                SELECT item_key, max(saved_at),
+                       CASE WHEN item_key LIKE 'id:%.%' THEN CAST(substr(item_key, instr(item_key, '.') + 1) AS INTEGER) END
+                FROM done GROUP BY item_key;
+                DROP TABLE done;
+                ALTER TABLE done_v4 RENAME TO done;
+                DROP INDEX IF EXISTS ix_done_v4_item;
+                CREATE INDEX IF NOT EXISTS ix_done_item ON done (item_id);
+                """);
+        if (failedOld)
+            sql.Append(FailedTableSql("failed_v4")).Append("""
+                INSERT OR IGNORE INTO failed_v4 (item_key, reason, at, hits, last_run_id)
+                SELECT f.item_key, f.reason, f.at, (SELECT max(g.hits) FROM failed g WHERE g.item_key = f.item_key), f.last_run_id
+                FROM failed f
+                WHERE NOT EXISTS (SELECT 1 FROM done d WHERE d.item_key = f.item_key)
+                ORDER BY f.at DESC;
+                DROP TABLE failed;
+                ALTER TABLE failed_v4 RENAME TO failed;
+                """);
+        sql.Append("PRAGMA user_version = 4;");
+        using var cmd = con.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = sql.ToString();
         cmd.ExecuteNonQuery();
         tx.Commit();

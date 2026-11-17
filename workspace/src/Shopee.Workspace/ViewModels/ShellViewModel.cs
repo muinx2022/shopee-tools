@@ -14,6 +14,7 @@ using Shopee.Core.Proxy;
 using Shopee.Workspace.Infrastructure;
 using Shopee.Workspace.Modules.Accounts;
 using Shopee.Workspace.Modules.BigSeller;
+using Shopee.Workspace.Modules.Harvest;
 using Shopee.Workspace.Modules.Scrape;
 using Shopee.Workspace.Modules.Settings;
 using Shopee.Workspace.Modules.UpdateProduct;
@@ -25,19 +26,24 @@ namespace Shopee.Workspace.ViewModels;
 /// <summary>
 /// ViewModel gốc của shell ShopeeWorkspace (app cục bộ, không có Hub/Orders/Fleet).
 /// 4 tab: Workspace | Cấu hình BigSeller | Tài khoản &amp; Proxy | Cài đặt.
+/// App Harvest (<see cref="BuildHarvestShell"/>): 3 tab Lấy dữ liệu | Tài khoản &amp; Proxy | Cài đặt — không có gì của BigSeller.
 /// </summary>
 public sealed partial class ShellViewModel : ObservableObject
 {
-    private readonly WorkspaceViewModel _workspace;
+    // null ở app Harvest (không dựng màn Workspace / Cấu hình BigSeller / Update).
+    private readonly WorkspaceViewModel? _workspace;
     private readonly ScrapeViewModel _scrape;
-    private readonly UpdateProductViewModel _update;
+    private readonly UpdateProductViewModel? _update;
     private readonly AccountsViewModel _accounts;
-    private readonly BigSellerViewModel _bigSeller;
+    private readonly BigSellerViewModel? _bigSeller;
+    private readonly HarvestViewModel? _harvest;
 
     public string WindowTitle => WorkspaceAppConfig.WindowTitle;
     public string WindowIcon => WorkspaceAppConfig.WindowIcon;
-    public WorkspaceViewModel Workspace => _workspace;
-    public BigSellerViewModel BigSeller => _bigSeller;
+    public WorkspaceViewModel Workspace => _workspace ?? throw new InvalidOperationException("App Harvest không có màn Workspace.");
+    public BigSellerViewModel BigSeller => _bigSeller ?? throw new InvalidOperationException("App Harvest không có màn BigSeller.");
+    /// <summary>Màn chính của app Harvest (null ở app khác).</summary>
+    public HarvestViewModel? Harvest => _harvest;
 
     public ObservableCollection<RibbonTab> Tabs { get; } = new();
 
@@ -60,16 +66,12 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(CurrentScreen));
         WorkspaceStatus?.Refresh();
-        // App Harvest (chỉ đọc workbook chung): mở màn Cấu hình BigSeller → hiện đúng cấu hình app Scrape vừa đổi.
-        if (value is not null && ReferenceEquals(value, _bigSellerTab) && WorkspaceAppConfig.IsHarvest)
-        {
-            SharedWorkbookStore.ReloadIfExternalChange();
-            _bigSeller.RefreshSharedUi();
-        }
     }
 
     public bool ShowShopeeStatus => false;
     public bool ShowWorkspaceStatus => true;
+    /// <summary>Cụm "N tài khoản BigSeller · M shop" trên thanh trạng thái — app Harvest không có khái niệm này.</summary>
+    public bool ShowBigSellerStatus => !WorkspaceAppConfig.IsHarvest;
     public bool ShowScrape => WorkspaceAppConfig.ShowScrape;
     public bool ShowStatusSeparator => false;
     public bool ShowOrdersBrowserStatus => false;
@@ -86,6 +88,16 @@ public sealed partial class ShellViewModel : ObservableObject
 
     public ShellViewModel()
     {
+        if (WorkspaceAppConfig.IsHarvest)
+        {
+            _scrape = new ScrapeViewModel();
+            _accounts = new AccountsViewModel();
+            WorkspaceStatus = new WorkspaceStatusViewModel();
+            _harvest = new HarvestViewModel(_scrape);
+            BuildHarvestShell(_harvest);
+            return;
+        }
+
         var bigSeller = new BigSellerViewModel();
         _bigSeller = bigSeller;
         _scrape = new ScrapeViewModel();
@@ -101,9 +113,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
         // ── Tab 1: Workspace ──
         var wsWorkspace = new RibbonScreenItem("Workspace", AppIcons.Dashboard, workspace,
-            toolTip: WorkspaceAppConfig.IsHarvest
-                ? "Lấy dữ liệu SP Shopee theo từng shop, lưu lên Hub"
-                : "BigSeller Workspace — Scrape · Import · Update theo từng shop");
+            toolTip: "BigSeller Workspace — Scrape · Import · Update theo từng shop");
         var wsScreens = new List<object> { wsWorkspace };
         _workspaceHomeScreen = wsWorkspace;
 
@@ -117,13 +127,9 @@ public sealed partial class ShellViewModel : ObservableObject
 
         if (WorkspaceAppConfig.ShowScrape)
         {
-            // Harvest: Scrape Multi là luồng bấm Scrape BigSeller cho nhiều tk → không có ở app này.
-            if (!WorkspaceAppConfig.IsHarvest)
-            {
-                var wsScrapeMulti = new RibbonScreenItem("Scrape Multi", AppIcons.CloudDownload, workspace.ScrapeMulti,
-                    toolTip: "Cào 1 link Shopee đồng thời cho nhiều tài khoản BigSeller");
-                wsScreens.Add(wsScrapeMulti);
-            }
+            var wsScrapeMulti = new RibbonScreenItem("Scrape Multi", AppIcons.CloudDownload, workspace.ScrapeMulti,
+                toolTip: "Cào 1 link Shopee đồng thời cho nhiều tài khoản BigSeller");
+            wsScreens.Add(wsScrapeMulti);
 
             var wsAccounts = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
                 toolTip: "Kho tài khoản Shopee dùng chung · Check tài khoản");
@@ -133,9 +139,9 @@ public sealed partial class ShellViewModel : ObservableObject
         var wsActions = new List<object>
         {
             new RibbonActionItem("Dừng jobs", "IconStop", StopWorkspaceJobsCommand,
-                WorkspaceAppConfig.IsHarvest ? "Dừng các việc lấy dữ liệu đang chạy" : "Dừng các việc đang chạy (Scrape · Update)"),
+                "Dừng các việc đang chạy (Scrape · Update)"),
         };
-        if (WorkspaceAppConfig.ShowScrape && !WorkspaceAppConfig.IsHarvest)   // Harvest không tải video (chỉ lưu URL)
+        if (WorkspaceAppConfig.ShowScrape)
         {
             wsActions.Add(new RibbonActionItem("Đẩy video", "IconSync", PushVideosToHubCommand,
                 "Đẩy video trong thư mục video (30 ngày qua) lên hub: chỉ file hub thiếu/khác, hoặc đẩy lại toàn bộ"));
@@ -151,21 +157,18 @@ public sealed partial class ShellViewModel : ObservableObject
         // ── Tab 2: Cấu hình BigSeller ──
         var bsScreen = new RibbonScreenItem("Cấu hình BigSeller", AppIcons.Database, bigSeller,
             toolTip: "Tài khoản · workbook · cookie · shop · proxy");
-        var bsActions = new List<object>();
-        if (!WorkspaceAppConfig.IsHarvest)   // Harvest không cần cookie BigSeller → không có đăng nhập hàng loạt
-        {
-            bsActions.Add(new RibbonActionItem("Đăng nhập tất cả", "IconLogin", bigSeller.LoginAllCommand,
-                "Tự đăng nhập headless mỗi tài khoản để lấy cookie"));
-            bsActions.Add(new RibbonActionItem("Dừng", "IconStop", bigSeller.StopLoginAllCommand,
-                "Dừng tiến trình đăng nhập tất cả"));
-        }
-        if (!WorkspaceAppConfig.IsHarvest)   // đổi nguồn dữ liệu dùng chung — Harvest chỉ đọc
-            bsActions.Add(new RibbonActionItem("Workbook local", "IconSave", bigSeller.UseLocalWorkbookCommand,
-                "Đổi tài khoản BigSeller đang chọn từ kho Hub sang workbook Excel local"));
         var bigSellerTab = new RibbonTab("Cấu hình BigSeller", new List<RibbonGroup>
         {
             new RibbonGroup("Màn hình", new object[] { bsScreen }),
-            new RibbonGroup("Hành động", bsActions),
+            new RibbonGroup("Hành động", new object[]
+            {
+                new RibbonActionItem("Đăng nhập tất cả", "IconLogin", bigSeller.LoginAllCommand,
+                    "Tự đăng nhập headless mỗi tài khoản để lấy cookie"),
+                new RibbonActionItem("Dừng", "IconStop", bigSeller.StopLoginAllCommand,
+                    "Dừng tiến trình đăng nhập tất cả"),
+                new RibbonActionItem("Workbook local", "IconSave", bigSeller.UseLocalWorkbookCommand,
+                    "Đổi tài khoản BigSeller đang chọn từ kho Hub sang workbook Excel local"),
+            }),
         });
         _bigSellerTab = bigSellerTab;
 
@@ -198,6 +201,65 @@ public sealed partial class ShellViewModel : ObservableObject
             Tabs.Add(_accountsTab);
         Tabs.Add(settingsTab);
 
+        WireScreens();
+
+        SelectedTab = workspaceTab;
+
+        // Job status
+        _scrape.PropertyChanged += OnJobStateChanged;
+        _update.PropertyChanged += OnJobStateChanged;
+        _workspace.AutoRun.PropertyChanged += OnJobStateChanged;
+        _workspace.ScrapeMulti.PropertyChanged += OnJobStateChanged;
+        _update.JobsChanged += () => UiThread.Post(RefreshJobStatus);
+        RefreshJobStatus();
+
+        WireZoom();
+    }
+
+    /// <summary>App Harvest: 3 tab — Lấy dữ liệu (chọn file Excel, sheet, chạy) | Tài khoản &amp; Proxy (kho tk Shopee mở trang) |
+    /// Cài đặt. Không dựng màn Workspace / Cấu hình BigSeller / Update.</summary>
+    private void BuildHarvestShell(HarvestViewModel harvest)
+    {
+        var harvestScreen = new RibbonScreenItem("Lấy dữ liệu", AppIcons.CloudDownload, harvest,
+            toolTip: "Chọn file Excel danh sách link · lấy dữ liệu SP Shopee · lưu lên Hub");
+        var harvestTab = new RibbonTab("Lấy dữ liệu", new List<RibbonGroup>
+        {
+            new RibbonGroup("Màn hình", new object[] { harvestScreen }),
+            new RibbonGroup("Hành động", new object[]
+            {
+                new RibbonActionItem("Dừng jobs", "IconStop", StopWorkspaceJobsCommand, "Dừng lượt lấy dữ liệu đang chạy"),
+            }),
+        });
+        _workspaceTab = harvestTab;
+        _workspaceHomeScreen = harvestScreen;
+
+        var accScreen = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, _accounts,
+            toolTip: "Kho tài khoản Shopee · proxy · trạng thái");
+        _accountsTab = new RibbonTab("Tài khoản & Proxy", new List<RibbonGroup>
+        {
+            new RibbonGroup("Màn hình", new object[] { accScreen }),
+        });
+
+        var setScreen = new RibbonScreenItem("Cài đặt", AppIcons.Settings, new LocalSettingsViewModel(),
+            toolTip: "Hiệu năng · AI (OpenAI key) · Kho tài khoản");
+        var settingsTab = new RibbonTab("Cài đặt", new List<RibbonGroup>
+        {
+            new RibbonGroup("Màn hình", new object[] { setScreen }),
+        });
+
+        Tabs.Add(harvestTab);
+        Tabs.Add(_accountsTab);
+        Tabs.Add(settingsTab);
+        WireScreens();
+        SelectedTab = harvestTab;
+
+        _scrape.PropertyChanged += OnJobStateChanged;
+        RefreshJobStatus();
+        WireZoom();
+    }
+
+    private void WireScreens()
+    {
         // Gán lệnh điều hướng cho mọi RibbonScreenItem
         foreach (var tab in Tabs)
             foreach (var scr in tab.Groups.SelectMany(g => g.Items).OfType<RibbonScreenItem>())
@@ -213,17 +275,10 @@ public sealed partial class ShellViewModel : ObservableObject
             var first = tab.Groups.SelectMany(g => g.Items).OfType<RibbonScreenItem>().FirstOrDefault();
             if (first is not null) { _screenByTab[tab] = first.ScreenVm; first.IsActive = true; }
         }
+    }
 
-        SelectedTab = workspaceTab;
-
-        // Job status
-        _scrape.PropertyChanged += OnJobStateChanged;
-        _update.PropertyChanged += OnJobStateChanged;
-        _workspace.AutoRun.PropertyChanged += OnJobStateChanged;
-        _workspace.ScrapeMulti.PropertyChanged += OnJobStateChanged;
-        _update.JobsChanged += () => UiThread.Post(RefreshJobStatus);
-        RefreshJobStatus();
-
+    private void WireZoom()
+    {
         // Zoom text
         UiZoom.Changed += () =>
         {
@@ -266,12 +321,18 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         var n = 0;
         if (_scrape.IsBusy) n++;
+        if (_update is null || _workspace is null) { SetJobStatus(n); return; }   // app Harvest: chỉ có lượt lấy dữ liệu
         if (_update.IsRunning) n++;
         if (_workspace.AutoRun.IsRunning) n++;
         if (_workspace.ScrapeMulti.IsRunning) n++;
         if (_isPushingVideos) n++;
         foreach (var acct in Shopee.Core.BigSeller.BigSellerStore.Shared.Accounts)
             if (_update.IsUpdateRunning(acct.Id)) n++;
+        SetJobStatus(n);
+    }
+
+    private void SetJobStatus(int n)
+    {
         JobStatusText = n > 0 ? $"Đang chạy — {n} job" : "Rảnh — không có job";
     }
 
@@ -293,8 +354,8 @@ public sealed partial class ShellViewModel : ObservableObject
     [RelayCommand]
     private void StopWorkspaceJobs()
     {
-        _workspace.AutoRun.Stop();
-        if (WorkspaceAppConfig.ShowImportUpdate && (_update.IsRunning || _update.HasActiveWsJob))
+        _workspace?.AutoRun.Stop();
+        if (WorkspaceAppConfig.ShowImportUpdate && _update is not null && (_update.IsRunning || _update.HasActiveWsJob))
             _update.StopAllSingle();
         if (WorkspaceAppConfig.ShowScrape && _scrape.IsBusy && _scrape.StopCommand.CanExecute(null))
             _scrape.StopCommand.Execute(null);
@@ -311,6 +372,7 @@ public sealed partial class ShellViewModel : ObservableObject
     [RelayCommand]
     private async Task PushVideosToHubAsync()
     {
+        if (_workspace is null) return;   // app Harvest không có video (lệnh không có trên ribbon)
         if (CoordinationRuntime.Client is null)
         {
             await Dialogs.InfoAsync("Chưa nối hub, không đẩy được video.");
@@ -347,7 +409,7 @@ public sealed partial class ShellViewModel : ObservableObject
 
     private async Task RunVideoPushAsync(string folder, CancellationToken ct)
     {
-        var log = _workspace.ScrapeMulti;
+        var log = Workspace.ScrapeMulti;
 
         (IReadOnlyList<LocalVideo> All, IReadOnlyList<LocalVideo> Missing) scan;
         try
@@ -416,8 +478,14 @@ public sealed partial class ShellViewModel : ObservableObject
     /// <summary>Cửa sổ được kích hoạt lại: nạp DB chung, trừ khi đang có job.</summary>
     public void OnWindowActivated()
     {
+        if (_workspace is null || _update is null)
+        {
+            // App Harvest: chỉ nạp lại kho tk Shopee (app khác có thể vừa sửa) khi không chạy.
+            _accounts.ReloadFromDbIfIdle(_scrape.IsBusy);
+            return;
+        }
         BigSellerStore.Shared.ReloadIfExternalChange();
-        RoleStores.ScrapeProgress.ReloadIfExternalChange();
+        ScrapeProgressStore.Shared.ReloadIfExternalChange();
         OpProgressStore.Shared.ReloadIfExternalChange();
         Workspace.RefreshAccountCookies();
         Workspace.RefreshSharedWorkbookIndicator();

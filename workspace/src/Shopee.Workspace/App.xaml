@@ -6,6 +6,7 @@
              xmlns:acc="clr-namespace:Shopee.Workspace.Modules.Accounts"
              xmlns:ca="clr-namespace:Shopee.Workspace.Modules.CheckAccount"
              xmlns:settings="clr-namespace:Shopee.Workspace.Modules.Settings"
+             xmlns:hv="clr-namespace:Shopee.Workspace.Modules.Harvest"
              xmlns:conv="clr-namespace:Shopee.Workspace.Infrastructure">
     <!-- Entry point thật là Program.Main; MainWindow dựng tay trong App.OnStartup. -->
 
@@ -36,15 +37,18 @@
             </DataTemplate>
             <DataTemplate DataType="{x:Type ws:AutoRunViewModel}">
                 <ws:AutoRunView />
-            </DataTemplate>
-            <DataTemplate DataType="{x:Type ws:ScrapeMultiViewModel}">
-                <ws:ScrapeMultiView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type ws:ScrapeMultiViewModel}">
+                <ws:ScrapeMultiView />
             </DataTemplate>
             <DataTemplate DataType="{x:Type ca:CheckAccountViewModel}">
                 <ca:CheckAccountView />
             </DataTemplate>
             <DataTemplate DataType="{x:Type settings:LocalSettingsViewModel}">
                 <settings:LocalSettingsView />
+            </DataTemplate>
+            <DataTemplate DataType="{x:Type hv:HarvestViewModel}">
+                <hv:HarvestView />
             </DataTemplate>
         </ResourceDictionary>
     </Application.Resources>

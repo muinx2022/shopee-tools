@@ -14,10 +14,14 @@ internal static class LauncherRunnerLoop
     private static readonly Random RestRandom = new();
 
     /// <summary>Dòng "Bigseller Account: … | Shopee Account: …" hiển thị trên overlay thông báo.</summary>
-    internal static string BuildAccountHeader(InstanceConfig config)
+    internal static string BuildAccountHeader(InstanceConfig config) =>
+        BuildAccountHeader(config, "Bigseller Account", config.BigSellerAccountName);
+
+    /// <summary>Như trên nhưng nhãn / giá trị đầu dòng do caller đặt (Harvest: "Sheet: …").</summary>
+    internal static string BuildAccountHeader(InstanceConfig config, string label, string? value)
     {
-        var bigSeller = string.IsNullOrWhiteSpace(config.BigSellerAccountName) ? "?" : config.BigSellerAccountName.Trim();
-        return $"Bigseller Account: {bigSeller} | Shopee Account: {ShopeeAccountName(config)}";
+        var shown = string.IsNullOrWhiteSpace(value) ? "?" : value.Trim();
+        return $"{label}: {shown} | Shopee Account: {ShopeeAccountName(config)}";
     }
 
     private static string ShopeeAccountName(InstanceConfig config)

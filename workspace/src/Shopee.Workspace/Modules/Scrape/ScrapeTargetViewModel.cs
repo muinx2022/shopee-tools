@@ -53,21 +53,19 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
     // Cấu hình CHẠY giờ ở MỨC ACCOUNT (Account.RunConfig) — 1 bộ DÙNG CHUNG cho mọi op; các property dưới
     // là PROXY đọc/ghi thẳng RunConfig (map MaxProcess ↔ Processes). Setter LƯU xuống bigseller.json
     // (BigSellerStore); UpdateRunTargetViewModel proxy cùng object nên giá trị luôn nhất quán. RIÊNG-MÁY.
-    // App Harvest: bộ cấu hình RIÊNG (harvest-run-config.json) — không ghi bigseller.json của app Scrape. Vai trò khác: như cũ.
-    private BigSellerRunConfig Cfg => RunConfigSource.For(WorkspaceAppConfig.Role, Account);
-    private static void SaveCfg() => RunConfigSource.Save(WorkspaceAppConfig.Role);
+    private BigSellerRunConfig Cfg => Account.RunConfig ??= new BigSellerRunConfig();
 
     /// <summary>Bắt đầu từ dòng nào của sheet. Mặc định 2 vì dòng 1 là header (engine yêu cầu ≥ 2).</summary>
     public int StartRow
     {
         get => Cfg.StartRow;
-        set { if (Cfg.StartRow != value) { Cfg.StartRow = value; OnPropertyChanged(); SaveCfg(); } }
+        set { if (Cfg.StartRow != value) { Cfg.StartRow = value; OnPropertyChanged(); BigSellerStore.Shared.Save(); } }
     }
     /// <summary>Đến dòng nào thì DỪNG (0 = chạy hết sheet).</summary>
     public int EndRow
     {
         get => Cfg.EndRow;
-        set { if (Cfg.EndRow != value) { Cfg.EndRow = value; OnPropertyChanged(); SaveCfg(); } }
+        set { if (Cfg.EndRow != value) { Cfg.EndRow = value; OnPropertyChanged(); BigSellerStore.Shared.Save(); } }
     }
 
     /// <summary>Override khoảng dòng TẠM cho 1 lượt chạy (vd Hub giao việc) — KHÔNG persist, dùng-một-lần.
@@ -86,20 +84,20 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
     public int RowsPerAccount
     {
         get => Cfg.RowsPerAccount;
-        set { if (Cfg.RowsPerAccount != value) { Cfg.RowsPerAccount = value; OnPropertyChanged(); SaveCfg(); } }
+        set { if (Cfg.RowsPerAccount != value) { Cfg.RowsPerAccount = value; OnPropertyChanged(); BigSellerStore.Shared.Save(); } }
     }
     /// <summary>Số process chạy đồng thời = số cửa sổ Brave (áp dụng mọi op) — map RunConfig.Processes.</summary>
     public int MaxProcess
     {
         get => Cfg.Processes;
-        set { if (Cfg.Processes != value) { Cfg.Processes = value; OnPropertyChanged(); SaveCfg(); } }
+        set { if (Cfg.Processes != value) { Cfg.Processes = value; OnPropertyChanged(); BigSellerStore.Shared.Save(); } }
     }
     /// <summary>Số tk Shopee "đóng khung" cố định cho tk BigSeller này — chỉ xoay vòng trong khung này
     /// (cấp lúc bắt đầu chạy). Để BigSeller chỉ thấy ngần ấy thiết bị ổn định → không bị đá phiên.</summary>
     public int FrameSize
     {
         get => Cfg.FrameSize;
-        set { if (Cfg.FrameSize != value) { Cfg.FrameSize = value; OnPropertyChanged(); SaveCfg(); } }
+        set { if (Cfg.FrameSize != value) { Cfg.FrameSize = value; OnPropertyChanged(); BigSellerStore.Shared.Save(); } }
     }
 
     // ── Khoảng nghỉ giữa 2 link của scrape (GIÂY, riêng-máy). Setter TỰ HỢP LỆ HOÁ qua ScrapeRestWindow.Resolve
@@ -133,7 +131,7 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
         Cfg.RestMaxSeconds = w.MaxSeconds;
         OnPropertyChanged(nameof(RestMinSeconds));
         OnPropertyChanged(nameof(RestMaxSeconds));
-        SaveCfg();
+        BigSellerStore.Shared.Save();
     }
 
     public ScrapeTargetViewModel(BigSellerAccount account)
@@ -143,12 +141,11 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
 
         // Cấu hình CHẠY giờ ở mức account (Account.RunConfig) — migrate 1 lần từ nguồn cũ nếu chưa có; proxy
         // StartRow/EndRow/… đọc-ghi thẳng RunConfig nên KHỎI nạp vào field ở đây.
-        // App Harvest dùng cấu hình chạy RIÊNG (RunConfigSource) → không migrate/ghi bigseller.json.
-        if (!WorkspaceAppConfig.IsHarvest) Infrastructure.RunConfigMigration.EnsureRunConfig(account);
+        Infrastructure.RunConfigMigration.EnsureRunConfig(account);
 
         // Nạp lựa chọn SHOP + tick chọn đã lưu (ScrapeTargetConfigStore CHỈ còn giữ 2 thứ này) → giữ qua reload/mở lại.
         _loading = true;
-        var saved = RoleStores.ScrapeTargets.Find(account.Id);
+        var saved = ScrapeTargetConfigStore.Shared.Find(account.Id);
         if (saved is not null)
         {
             IsSelected = saved.IsSelected;
@@ -167,7 +164,7 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
     private void Persist()
     {
         if (_loading) return;
-        RoleStores.ScrapeTargets.Save(new ScrapeTargetConfig
+        ScrapeTargetConfigStore.Shared.Save(new ScrapeTargetConfig
         {
             AccountId = Account.Id,
             SelectedShopId = SelectedShop?.Id,
@@ -192,7 +189,7 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
         get
         {
             var key = SelectedShop is null ? "" : ProgressKey(SelectedShop);
-            var p = RoleStores.ScrapeProgress.Find(Account.Id, key);
+            var p = ScrapeProgressStore.Shared.Find(Account.Id, key);
             if (p is null || (p.Completed.Count == 0 && p.LastRowReached == 0))
                 return "Chưa có tiến độ.";
             var status = p.Status switch
@@ -225,20 +222,20 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
             return new ShopScrapeStatus
             {
                 DisplayName = shop.DisplayName,
-                StatusText = $"○ chưa {RoleText.ScrapeOpLower}",
+                StatusText = "○ chưa scrape",
                 Background = TodoBg, Foreground = TodoFg,
                 Tooltip = "Shop chưa gán sheet dữ liệu Shopee.",
             };
 
         // "Đang" lấy từ job LIVE (chuẩn xác, không kẹt sau crash); "Đã/Chưa" lấy từ tiến độ đã lưu.
         var live = IsShopRunning?.Invoke(shop) ?? false;
-        var p = RoleStores.ScrapeProgress.Find(Account.Id, ProgressKey(shop));
+        var p = ScrapeProgressStore.Shared.Find(Account.Id, ProgressKey(shop));
 
         if (live)
             return new ShopScrapeStatus
             {
                 DisplayName = shop.DisplayName,
-                StatusText = $"⏳ đang {RoleText.ScrapeOpLower}",
+                StatusText = "⏳ đang scrape",
                 Background = RunningBg, Foreground = RunningFg,
                 Tooltip = p is not null ? $"Đang chạy · đã xong tới dòng {p.LastRowReached}." : "Đang chạy…",
             };
@@ -247,7 +244,7 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
             return new ShopScrapeStatus
             {
                 DisplayName = shop.DisplayName,
-                StatusText = $"✓ đã {RoleText.ScrapeOpLower}",
+                StatusText = "✓ đã scrape",
                 Background = DoneBg, Foreground = DoneFg,
                 Tooltip = $"Hoàn thành · đã xong tới dòng {p.LastRowReached}.",
             };
@@ -257,7 +254,7 @@ public sealed partial class ScrapeTargetViewModel : ObservableObject
         return new ShopScrapeStatus
         {
             DisplayName = shop.DisplayName,
-            StatusText = hasPartial ? "◐ chưa xong" : $"○ chưa {RoleText.ScrapeOpLower}",
+            StatusText = hasPartial ? "◐ chưa xong" : "○ chưa scrape",
             Background = TodoBg, Foreground = TodoFg,
             Tooltip = hasPartial
                 ? $"Dở dang · đã xong tới dòng {p!.LastRowReached} — bấm Tiếp tục để chạy nốt."

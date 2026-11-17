@@ -4,9 +4,9 @@ namespace Shopee.Core.Harvest;
 /// Một sản phẩm vừa lấy được JSON <c>get_pc</c> ở chế độ Harvest — đơn vị engine giao cho
 /// <see cref="IHarvestSink"/>. Engine chỉ dựng bản ghi; lưu ở đâu (outbox SQLite, đẩy Hub) là việc của sink (GĐ4).
 /// </summary>
-/// <param name="AccountId">Tài khoản BigSeller đích (khoá <c>product_rows.account_id</c> trên Hub).</param>
-/// <param name="ShopId">Shop BigSeller đích của lượt chạy (rỗng nếu caller không truyền).</param>
-/// <param name="Sheet">Sheet nguồn link.</param>
+/// <param name="AccountId">Định danh nguồn gửi Hub ở <c>account_id</c> — app Harvest luôn là <see cref="HarvestSource.AccountId"/>.</param>
+/// <param name="ShopId">Nhãn tuỳ chọn của lượt chạy (rỗng nếu caller không truyền; không gửi Hub).</param>
+/// <param name="Sheet">Sheet nguồn link (tên sheet trong file Excel — Hub lưu ở <c>sheet</c>).</param>
 /// <param name="RowNo">Số dòng nguồn trong sheet.</param>
 /// <param name="Url">Link ĐÃ làm sạch đã gửi cho extension (<see cref="HarvestLinks.CleanProductUrl"/>).</param>
 /// <param name="SourceLink">Link GỐC của dòng nguồn (sheet / Hub <c>product_rows</c>), CHƯA làm sạch. GĐ4: dòng nguồn trên
@@ -18,8 +18,8 @@ namespace Shopee.Core.Harvest;
 /// <param name="Source"><c>"hook"</c> | <c>"hook-reload"</c>.</param>
 /// <param name="HarvestedAt">Giờ cào: <c>capturedAt</c> của extension nếu có, không thì giờ máy lúc engine nhận kết quả
 /// bước (không phải giờ ghi outbox) — xem <see cref="HarvestStepResult.HarvestedAtOr"/>.</param>
-/// <param name="DoneTarget">Target của tập "SP đã lấy xong" (<see cref="HarvestDoneTarget.Of"/>): sink lưu xong thì ghi khoá SP
-/// (<see cref="HarvestItemKey.ForSaved"/>) vào tập này CÙNG lần lưu. null → không ghi (caller không theo dõi tiến độ).</param>
+/// <param name="RecordDone">true → sink lưu xong thì ghi khoá SP (<see cref="HarvestItemKey.ForSaved"/>) vào tập "SP đã lấy
+/// xong" TOÀN CỤC (không theo file / sheet) CÙNG lần lưu. false → không ghi (caller không theo dõi tiến độ).</param>
 public sealed record HarvestedItem(
     string AccountId,
     string ShopId,
@@ -32,7 +32,7 @@ public sealed record HarvestedItem(
     string Json,
     string Source,
     DateTimeOffset HarvestedAt,
-    string? DoneTarget = null);
+    bool RecordDone = false);
 
 /// <summary>Lỗi lưu dữ liệu (sink) là lỗi HẠ TẦNG của máy (đĩa / outbox), không phải lỗi tài khoản Shopee: engine dừng
 /// CẢ job như ca key proxy chết (nhả tài khoản nguyên vẹn, không cooldown, không tính kẹt, không bỏ dòng). Thông điệp
@@ -87,6 +87,7 @@ public interface IHarvestSink
 public interface IHarvestFailureSink
 {
     /// <param name="runId">Định danh LƯỢT chạy — mỗi lượt chỉ tính một lần thấy lỗi (cần nhiều lượt mới bỏ qua hẳn).</param>
-    Task RecordPermanentFailureAsync(string target, IReadOnlyList<string> itemKeys, string reason, string runId,
+    /// <param name="itemKeys">Khoá SP (<see cref="HarvestItemKey"/>) — tập lỗi TOÀN CỤC theo khoá SP, không theo file / sheet.</param>
+    Task RecordPermanentFailureAsync(IReadOnlyList<string> itemKeys, string reason, string runId,
         CancellationToken cancellationToken);
 }

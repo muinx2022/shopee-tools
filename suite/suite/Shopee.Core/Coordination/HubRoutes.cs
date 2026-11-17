@@ -88,6 +88,12 @@ public static class HubRoutes
     /// lỗi phía Hub (mất kết nối Postgres, lớp 53/57/08/40) → 503 <c>pg-unavailable</c> CẢ lô; lớp còn lại → 500 CẢ lô.
     /// Client giữ lô, lùi dần; chỉ SP gửi lẻ bị 500 lặp (có SP khác vào xen giữa) mới bị đánh lỗi.</summary>
     public const string HarvestedProductsBatch = "/api/harvested-products/batch";
+    /// <summary>POST body <see cref="HarvestedKnownRequest"/> (≤ <see cref="HarvestedKnownLimits.MaxItems"/> itemId, trùng thì
+    /// khử; <c>maxAgeDays</c> 1..<see cref="HarvestedKnownLimits.MaxAgeDays"/>) → <see cref="HarvestedKnownResponse"/>: các itemId
+    /// ĐÃ có dữ liệu với mốc lấy gần nhất (<c>harvested_products.harvested_at</c>, đồng hồ Hub) còn trong hạn. KHÔNG trả raw.
+    /// App Harvest dùng để bỏ qua SP đã có (không mở trang). Thiếu itemIds → 400 <c>item-ids-required</c>; quá trần → 400
+    /// <c>too-many-ids</c>; maxAgeDays sai → 400 <c>max-age-days</c>.</summary>
+    public const string HarvestedProductsKnown = "/api/harvested-products/known";
     /// <summary>GET <c>?account=&amp;sheet=</c> → số dòng nguồn đã có dữ liệu + số SP khác nhau.</summary>
     public const string HarvestedProductsStats = "/api/harvested-products/stats";
 

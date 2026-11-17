@@ -9,6 +9,7 @@ namespace Shopee.Workspace.Tests;
 /// <summary>
 /// GĐ5 — exe Shopee Harvest: vai trò + đối số, kho tiến độ/cấu hình RIÊNG theo vai trò, profile Brave tách khỏi Scrape,
 /// mutex chặn 2 bản, runtime outbox (sink báo UI + Nudge, đóng app có giới hạn thời gian). Các vai trò cũ giữ nguyên.
+/// GĐ6 — Harvest chạy theo file Excel tự chọn, không BigSeller: tập đã xong toàn cục, màn chọn file / sheet, shell 3 tab.
 /// </summary>
 [Collection("Sequential")]
 public sealed class HarvestAppTests
@@ -98,14 +99,10 @@ public sealed class HarvestAppTests
             WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
             Assert.Same(ScrapeProgressStore.Harvest, RoleStores.ScrapeProgress);
             Assert.Same(ScrapeTargetConfigStore.Harvest, RoleStores.ScrapeTargets);
-            Assert.Equal("Lấy dữ liệu", RoleText.ScrapeOp);
-            Assert.Equal("lấy dữ liệu", RoleText.ScrapeOpLower);
 
             WorkspaceAppConfig.Initialize(WorkspaceRole.Scrape);
             Assert.Same(ScrapeProgressStore.Shared, RoleStores.ScrapeProgress);
             Assert.Same(ScrapeTargetConfigStore.Shared, RoleStores.ScrapeTargets);
-            Assert.Equal("Scrape", RoleText.ScrapeOp);
-            Assert.Equal("scrape", RoleText.ScrapeOpLower);
         }
         finally { WorkspaceAppConfig.Initialize(WorkspaceRole.Full); }
     }
@@ -215,16 +212,6 @@ public sealed class HarvestAppTests
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
-    // ── Workbook chung: Harvest chỉ đọc ──
-
-    [Theory]
-    [InlineData(WorkspaceRole.Harvest, false)]
-    [InlineData(WorkspaceRole.Scrape, true)]
-    [InlineData(WorkspaceRole.Full, true)]
-    [InlineData(WorkspaceRole.ImportUpdate, true)]
-    public void ChiHarvest_KhoaSuaWorkbookChung(WorkspaceRole role, bool canEdit) =>
-        Assert.Equal(canEdit, SharedWorkbookPolicy.CanEdit(role));
-
     // ── Workbook đang bị app Update ghi: không phải lỗi tài khoản ──
 
     [Fact]
@@ -245,242 +232,210 @@ public sealed class HarvestAppTests
         Assert.False(HarvestWorkbookLockedException.Is("App Update đang ghi"));
     }
 
-    // ── Tập SP đã lấy xong (outbox) ──
+    // ── Tập SP đã lấy xong (outbox, TOÀN CỤC theo khoá SP — GĐ6) ──
 
-    private static HarvestedItem ItemFor(string target, string sourceLink, long itemId, int row, long? shop = null) =>
-        new("acc-1", "shop-1", "Shop1", row, HarvestLinks.CleanProductUrl(sourceLink), sourceLink, itemId, shop,
+    private static HarvestedItem ItemFor(string sourceLink, long itemId, int row, string sheet = "Shop1", long? shop = null) =>
+        new(HarvestSource.AccountId, "", sheet, row, HarvestLinks.CleanProductUrl(sourceLink), sourceLink, itemId, shop,
             "{\"error\":null,\"data\":{\"item\":{\"item_id\":" + itemId + ",\"shop_id\":77,\"title\":\"SP\"},\"product_images\":{\"images\":[\"vn-a\"],\"video\":null}}}",
-            "hook", DateTimeOffset.Now, target);
+            "hook", DateTimeOffset.Now, RecordDone: true);
 
     [Fact]
-    public async Task Outbox_LuuXong_GhiKhoaVaoTapCuaTarget_ResetXoaDungTarget()
+    public async Task Outbox_LuuXong_GhiKhoaToanCuc_ResetXoaTheoKhoa()
     {
         var dir = NewTempDir();
         try
         {
             var ob = new HarvestOutbox(Path.Combine(dir, "outbox.db"));
-            var a = HarvestDoneTarget.Of("acc-1", "acc:acc-1:shared:S1");
-            var b = HarvestDoneTarget.Of("acc-1", "acc:acc-1:shared:S2");
-            await ob.SaveAsync(ItemFor(a, "https://shopee.vn/ao-i.10.100", 100, 2), CancellationToken.None);
-            await ob.SaveAsync(ItemFor(a, "https://shp.ee/abc", 200, 3, shop: 77), CancellationToken.None);      // link rút gọn: thêm khoá từ JSON
-            await ob.SaveAsync(ItemFor(b, "https://shopee.vn/product/10/300", 300, 5), CancellationToken.None);
-            await ob.SaveAsync(ItemFor(null!, "https://shopee.vn/product/10/400", 400, 9), CancellationToken.None);   // không theo dõi
+            await ob.SaveAsync(ItemFor("https://shopee.vn/ao-i.10.100", 100, 2, "Shop A"), CancellationToken.None);
+            await ob.SaveAsync(ItemFor("https://shp.ee/abc", 200, 3, "Shop A", shop: 77), CancellationToken.None);   // link rút gọn: thêm khoá từ JSON
+            await ob.SaveAsync(ItemFor("https://shopee.vn/product/10/300", 300, 5, "Shop B"), CancellationToken.None);
+            await ob.SaveAsync(ItemFor("https://shopee.vn/product/10/400", 400, 9) with { RecordDone = false }, CancellationToken.None);   // không theo dõi
 
-            Assert.Equal(new HashSet<string> { "id:10.100", "url:shp.ee/abc", "id:77.200" }, ob.DoneKeys(a));
-            Assert.Equal(new HashSet<string> { "id:10.300" }, ob.DoneKeys(b));
-            Assert.Equal(a, HarvestDoneTarget.Of("acc-1", "ACC:acc-1:SHARED:s1"));   // khoá tiến độ không phân biệt hoa thường
-
-            Assert.Equal(3, ob.ClearDone(a));
-            Assert.Empty(ob.DoneKeys(a));
-            Assert.Single(ob.DoneKeys(b));                                           // target khác không bị đụng
+            Assert.Equal(new HashSet<string> { "id:10.100", "url:shp.ee/abc", "id:77.200", "id:10.300" }, ob.DoneKeys());
+            Assert.Equal(2, ob.ClearDone(["id:10.100", "url:shp.ee/abc", "id:khong-co"]));
+            Assert.Equal(new HashSet<string> { "id:77.200", "id:10.300" }, ob.DoneKeys());
             Assert.Equal(4, (await ob.GetStatsAsync()).Pending);                     // dữ liệu SP chờ đẩy Hub giữ nguyên
         }
         finally { try { Directory.Delete(dir, true); } catch { } }
     }
 
+    // ── Màn Harvest: quét file + đếm theo tập toàn cục + Hub; Reset theo sheet ──
+
+    private sealed class YesDialogs : Services.IDialogService
+    {
+        public List<string> Asked { get; } = [];
+        public Task<bool> ConfirmAsync(string text, string caption = "", Services.DialogIcon icon = Services.DialogIcon.Question)
+        {
+            Asked.Add(text);
+            return Task.FromResult(true);
+        }
+        public Task InfoAsync(string text, string caption = "", Services.DialogIcon icon = Services.DialogIcon.Info) => Task.CompletedTask;
+        public void Notify(string text, string caption = "", Services.DialogIcon icon = Services.DialogIcon.Info) { }
+    }
+
+    private static string Workbook(string dir, string name, params (string Sheet, string[] Links)[] sheets)
+    {
+        var path = Path.Combine(dir, name);
+        using var wb = new ClosedXML.Excel.XLWorkbook();
+        foreach (var (sheet, links) in sheets)
+        {
+            var ws = wb.Worksheets.Add(sheet);
+            ws.Cell(1, 1).Value = "Link";
+            ws.Cell(1, 6).Value = "Tên";
+            for (var i = 0; i < links.Length; i++) { ws.Cell(i + 2, 1).Value = links[i]; ws.Cell(i + 2, 6).Value = "SP"; }
+        }
+        wb.SaveAs(path);
+        return path;
+    }
+
+    /// <summary>Hai sheet cùng chứa SP 1: lưu ở "Shop A" thì "Shop B" cũng tính là đã có; SP 3 Hub báo đã có (máy khác lấy) → đã có;
+    /// Hub lỗi → chỉ tính cục bộ, có ghi chú. Reset chỉ các sheet đã tick: gỡ khoá SP của sheet đó (toàn cục).</summary>
     [Fact]
-    public async Task ResetTienDo_Harvest_XoaTapDaXongCuaDungTarget_ScrapeKhongDung()
+    public async Task ManHarvest_DemDaCoToanCucVaHub_ResetTheoSheetDaTick()
     {
         var dir = NewTempDir();
+        var oldDialogs = Dialogs.Service;
+        var dialogs = new YesDialogs();
         try
         {
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
+            var file = Workbook(dir, "links.xlsx",
+                ("Shop A", ["https://shopee.vn/a-i.77.1", "https://shopee.vn/b-i.77.2"]),
+                ("Shop B", ["https://shopee.vn/product/77/1", "https://shopee.vn/c-i.77.3"]));
             var rt = new HarvestRuntime(Path.Combine(dir, "outbox.db"), () => null);
-            var target = HarvestDoneTarget.Of("acc-r", "acc:acc-r:shared:S1");
-            var other = HarvestDoneTarget.Of("acc-r", "acc:acc-r:shared:S2");
-            await rt.Sink.SaveAsync(ItemFor(target, "https://shopee.vn/product/1/1", 1, 2), CancellationToken.None);
-            await rt.Sink.SaveAsync(ItemFor(other, "https://shopee.vn/product/1/2", 2, 2), CancellationToken.None);
+            var hubIds = new List<long>();
+            rt.KnownQuery = (ids, days, _) =>
+            {
+                hubIds.AddRange(ids);
+                return Task.FromResult<IReadOnlyDictionary<long, DateTimeOffset>>(
+                    ids.Where(i => i == 3).ToDictionary(i => i, _ => DateTimeOffset.UtcNow));
+            };
             HarvestRuntime.SetCurrentForTest(rt);
-            try
-            {
-                WorkspaceAppConfig.Initialize(WorkspaceRole.Scrape);
-                Assert.Equal(0, Modules.Scrape.ScrapeProgressReset.ClearHarvestDone("acc-r", "acc:acc-r:shared:S1"));
-                Assert.Single(rt.Outbox.DoneKeys(target));
+            Dialogs.Service = dialogs;
+            await rt.Sink.SaveAsync(ItemFor("https://shopee.vn/a-i.77.1", 1, 2, "Shop A"), CancellationToken.None);
 
-                Modules.Scrape.ScrapeProgressReset.ClearKey("acc-r", "acc:acc-r:shared:S1");
-                Assert.Single(rt.Outbox.DoneKeys(target));                               // app Scrape: ClearKey = Clear cũ
+            var settings = new HarvestSettingsStore(Path.Combine(dir, "harvest-settings.json"));
+            settings.Current.WorkbookPath = file;
+            var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), settings);
+            await vm.RefreshCommand.ExecuteAsync(null);
 
-                WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
-                Modules.Scrape.ScrapeProgressReset.ClearKey("acc-r", "ACC:acc-r:shared:s1");   // khoá tiến độ hoa thường khác
-                Assert.Empty(rt.Outbox.DoneKeys(target));
-                Assert.Single(rt.Outbox.DoneKeys(other));
-                await rt.Sink.SaveAsync(ItemFor(target, "https://shopee.vn/product/1/3", 3, 3), CancellationToken.None);
-                Assert.Equal(1, Modules.Scrape.ScrapeProgressReset.ClearHarvestDone("acc-r", "acc:acc-r:shared:S1"));
-            }
-            finally
-            {
-                HarvestRuntime.SetCurrentForTest(null);
-                WorkspaceAppConfig.Initialize(WorkspaceRole.Full);
-            }
-        }
-        finally { try { Directory.Delete(dir, true); } catch { } }
-    }
+            Assert.Equal(["Shop A", "Shop B"], vm.Sheets.Select(s => s.Name));
+            Assert.All(vm.Sheets, s => Assert.True(s.IsChecked));                  // mặc định tick hết
+            var a = vm.Sheets[0];
+            var b = vm.Sheets[1];
+            Assert.Equal((2, 1, 1, 0), (a.TotalLinks, a.HaveCount, a.TodoCount, a.SkippedCount));
+            Assert.Equal((2, 2, 0), (b.TotalLinks, b.HaveCount, b.TodoCount));       // SP 1 lấy ở Shop A + SP 3 Hub đã có
+            Assert.DoesNotContain(1L, hubIds);                                       // SP đã có trên máy khỏi hỏi Hub
+            Assert.Equal("", vm.HubNote);
 
-    // ── Resolve của Harvest: không rơi sang file gộp khi file nguồn chưa đọc được ──
+            b.IsChecked = false;                                                     // bỏ tick → nhớ qua lần mở sau
+            Assert.Contains(b.Key, new HarvestSettingsStore(settings.FilePath).Current.UncheckedSheetKeys);
+            await vm.ResetCommand.ExecuteAsync(null);
+            Assert.Single(dialogs.Asked);
+            Assert.Empty(rt.Outbox.DoneKeys());                                      // khoá SP 1 của Shop A đã gỡ (toàn cục)
+            a = vm.Sheets[0];
+            b = vm.Sheets[1];
+            Assert.Equal((0, 2), (a.HaveCount, a.TodoCount));
+            Assert.Equal((1, 1), (b.HaveCount, b.TodoCount));                        // còn SP 3 nhờ Hub
 
-    private static Shopee.Core.BigSeller.BigSellerShop Shop(string id, string name) => new() { Id = id, Name = name };
+            rt.KnownQuery = (_, _, _) => throw new System.Net.Http.HttpRequestException("Hub sập");
+            await vm.RefreshCommand.ExecuteAsync(null);
+            Assert.Contains("Hub sập", vm.HubNote);
+            Assert.Equal((0, 2), (vm.Sheets[1].HaveCount, vm.Sheets[1].TodoCount));  // Hub lỗi: chỉ dựa vào cục bộ
 
-    private static (string Src, string Merged) Workbooks(string dir)
-    {
-        var src = Path.Combine(dir, "nguon.xlsx");
-        var merged = Path.Combine(dir, "gop.xlsx");
-        using (var wb = new ClosedXML.Excel.XLWorkbook())
-        {
-            wb.AddWorksheet("Shop A").Cell(2, 1).Value = "https://shopee.vn/product/1/1";
-            wb.AddWorksheet("Shop B");
-            wb.SaveAs(src);
-        }
-        using (var wb = new ClosedXML.Excel.XLWorkbook())
-        {
-            wb.AddWorksheet(Shopee.Core.BigSeller.SharedWorkbookMerge.SheetName);
-            wb.SaveAs(merged);
-        }
-        return (src, merged);
-    }
-
-    [Fact]
-    public void HarvestResolve_DocDuoc_KhopResolveChuan()
-    {
-        var dir = NewTempDir();
-        try
-        {
-            var (src, merged) = Workbooks(dir);
-            var acc = new Shopee.Core.BigSeller.BigSellerAccount { Id = "acc" };
-            foreach (var enabled in new[] { true, false })
-            foreach (var shop in new[] { Shop("1", "Shop A"), Shop("2", "Khong Khop") })
-            foreach (var source in new[] { src, "" })
-            foreach (var gop in new[] { merged, Path.Combine(dir, "khong-co.xlsx") })
-            {
-                var harvest = HarvestWorkbookResolve.Resolve(enabled, source, gop, acc, shop, out var error);
-                Assert.Null(error);
-                Assert.Equal(Shopee.Core.BigSeller.SharedWorkbookCatalog.ResolveForUpdate(enabled, source, gop, acc, shop), harvest);
-            }
-            // Đọc được mà thật sự không có sheet của shop → file gộp (hành vi chuẩn).
-            Assert.Equal(merged, HarvestWorkbookResolve.Resolve(true, src, merged, acc, Shop("2", "Khong Khop"), out _)!.Value.DataPath);
-        }
-        finally { try { Directory.Delete(dir, true); } catch { } }
-    }
-
-    /// <summary>Ca thật: file nguồn có sheet của shop nhưng đang bị mở ĐỘC QUYỀN → bản dùng chung đọc lỗi thành "không khớp" rồi
-    /// trả file gộp (dòng của mọi shop); Harvest phải dừng với lý do rõ, KHÔNG lấy file gộp.</summary>
-    [Fact]
-    public void HarvestResolve_NguonMoDocQuyen_KhongRoiSangGop_BanChuanThiRoi()
-    {
-        var dir = NewTempDir();
-        try
-        {
-            var (src, merged) = Workbooks(dir);
-            var acc = new Shopee.Core.BigSeller.BigSellerAccount { Id = "acc" };
-            var shop = Shop("1", "Shop A");
-            using (new FileStream(src, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-            {
-                Assert.Equal(merged, Shopee.Core.BigSeller.SharedWorkbookCatalog.ResolveForUpdate(true, src, merged, acc, shop).DataPath);
-                Assert.Null(HarvestWorkbookResolve.Resolve(true, src, merged, acc, shop, out var error));
-                Assert.Equal(HarvestWorkbookResolve.SourceUnreadableMessage, error);
-            }
-            using (new FileStream(src + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))   // app Update đang ghi
-            {
-                Assert.Null(HarvestWorkbookResolve.Resolve(true, src, merged, acc, shop, out var error));
-                Assert.True(HarvestWorkbookLockedException.Is(error));
-            }
-            File.Delete(src + ".lock");
-            var missing = Path.Combine(dir, "da-xoa.xlsx");
-            Assert.Null(HarvestWorkbookResolve.Resolve(true, missing, merged, acc, shop, out var miss));   // nguồn đã chọn mà vắng
-            Assert.Equal(HarvestWorkbookResolve.SourceMissingMessage(missing), miss);
-            Assert.Equal("Shop A", HarvestWorkbookResolve.Resolve(true, src, merged, acc, shop, out _)!.Value.DataSheet);   // nhả → đọc được
-        }
-        finally { try { Directory.Delete(dir, true); } catch { } }
-    }
-
-    [Fact]
-    public void HarvestResolve_DanhSachSheetRong_LaChuaDocDuoc()
-    {
-        var dir = NewTempDir();
-        var old = HarvestWorkbookResolve.ListSheets;
-        try
-        {
-            var (src, merged) = Workbooks(dir);
-            HarvestWorkbookResolve.ListSheets = _ => [];
-            Assert.Null(HarvestWorkbookResolve.Resolve(true, src, merged, new Shopee.Core.BigSeller.BigSellerAccount { Id = "a" }, Shop("1", "Shop A"), out var error));
-            Assert.Equal(HarvestWorkbookResolve.SourceUnreadableMessage, error);
+            // Ô số nhập ngoài khoảng → ô hiện ngay giá trị đã kẹp (không hiện 0 mà chạy 30), lưu đúng giá trị đó.
+            vm.MaxAgeDays = 0;
+            Assert.Equal(HarvestPlanning.DefaultMaxAgeDays, vm.MaxAgeDays);
+            vm.MaxAgeDays = 99_999;
+            Assert.Equal(Shopee.Core.Coordination.HarvestedKnownLimits.MaxAgeDays, vm.MaxAgeDays);
+            vm.MaxAgeDays = 7;
+            vm.Processes = 0;
+            vm.RowsPerAccount = -3;
+            vm.RestMinSeconds = 300;
+            vm.RestMaxSeconds = 10;                                                  // max < min → kéo lên bằng min
+            Assert.Equal((7, 1, 1, 300, 300), (vm.MaxAgeDays, vm.Processes, vm.RowsPerAccount, vm.RestMinSeconds, vm.RestMaxSeconds));
+            var saved = new HarvestSettingsStore(settings.FilePath).Current;
+            Assert.Equal((7, 1, 1, 300, 300), (saved.MaxAgeDays, saved.Processes, saved.RowsPerAccount, saved.RestMinSeconds, saved.RestMaxSeconds));
         }
         finally
         {
-            HarvestWorkbookResolve.ListSheets = old;
+            Dialogs.Service = oldDialogs;
+            HarvestRuntime.SetCurrentForTest(null);
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Full);
             try { Directory.Delete(dir, true); } catch { }
         }
     }
 
-    [Theory]
-    [InlineData(WorkspaceRole.Harvest, false)]
-    [InlineData(WorkspaceRole.Scrape, true)]
-    public void DanhDauDaXong_TatOHarvest(WorkspaceRole role, bool can)
-    {
-        try
-        {
-            WorkspaceAppConfig.Initialize(role);
-            var vm = (Modules.Workspace.WorkspaceShopViewModel)System.Runtime.CompilerServices.RuntimeHelpers
-                .GetUninitializedObject(typeof(Modules.Workspace.WorkspaceShopViewModel));
-            Assert.Equal(can, vm.CanMarkScrapeDone);
-        }
-        finally { WorkspaceAppConfig.Initialize(WorkspaceRole.Full); }
-    }
+    // ── Vòng sheet của một lượt Harvest (phản biện GĐ6) ──
 
-    // ── Cấu hình chạy riêng cho Harvest ──
+    private static readonly IReadOnlyList<Modules.Scrape.HarvestSheetJob> BaSheet =
+        [new(@"C:\f.xlsx", "Shop A"), new(@"C:\f.xlsx", "Shop B"), new(@"C:\f.xlsx", "Shop C")];
 
     [Fact]
-    public void RunConfig_Harvest_KhoiTaoDaiDongMacDinh_ChiChepThongSoMay_LuuNgay_KhongDoiCuaTk()
+    public async Task VongSheet_ChayDungThuTu_ChungRunId_LoiDocSheetBoQuaSheetDo()
     {
-        var dir = NewTempDir();
-        try
+        var calls = new List<(string Sheet, string RunId)>();
+        var changed = new List<string>();
+        var done = await Modules.Scrape.ScrapeViewModel.RunSheetsAsync(BaSheet, "run-1", (job, runId) =>
         {
-            var path = Path.Combine(dir, "harvest-run-config.json");
-            var store = new HarvestRunConfigStore(path);
-            var account = new Shopee.Core.BigSeller.BigSellerAccount
-            {
-                Id = "acc-1",
-                RunConfig = new Shopee.Core.BigSeller.BigSellerRunConfig
-                    { StartRow = 500, EndRow = 900, Processes = 3, FrameSize = 7, RestMinSeconds = 30, RestMaxSeconds = 60 },
-            };
+            calls.Add((job.Sheet, runId));
+            // Shop A đọc lỗi (sheet hỏng) → bỏ riêng sheet đó.
+            return Task.FromResult(job.Sheet == "Shop A"
+                ? Modules.Scrape.ScrapeViewModel.EndAfterReadError(new InvalidOperationException("Không tìm thấy sheet"))
+                : Modules.Scrape.ScrapeViewModel.EndAfterRun(jobFatal: false, cancelled: false));
+        }, CancellationToken.None, new Modules.Scrape.HarvestRunCallbacks { Changed = j => changed.Add(j.Sheet) });
 
-            var h = RunConfigSource.For(WorkspaceRole.Harvest, account, store);
-            Assert.NotSame(account.RunConfig, h);
-            Assert.Equal((2, 0), (h.StartRow, h.EndRow));                   // KHÔNG ăn dải dòng của Scrape
-            Assert.Equal((3, 7, 30, 60), (h.Processes, h.FrameSize, h.RestMinSeconds, h.RestMaxSeconds));
-            Assert.True(File.Exists(path));                                   // lưu ngay khi tạo
-
-            account.RunConfig.Processes = 9;                                  // Scrape đổi sau đó
-            Assert.Equal(3, new HarvestRunConfigStore(path).For(account).Processes);   // không chép lại
-
-            h.StartRow = 700;
-            RunConfigSource.Save(WorkspaceRole.Harvest, store, saveBigSeller: () => throw new Exception("không được lưu bigseller.json"));
-            Assert.Equal(500, account.RunConfig.StartRow);
-            Assert.Equal(700, new HarvestRunConfigStore(path).For(account).StartRow);
-
-            var noCfg = new Shopee.Core.BigSeller.BigSellerAccount { Id = "acc-2" };
-            Assert.Equal(2, RunConfigSource.For(WorkspaceRole.Harvest, noCfg, store).StartRow);
-            Assert.Null(noCfg.RunConfig);
-        }
-        finally { try { Directory.Delete(dir, true); } catch { } }
+        Assert.Equal(3, done);
+        Assert.Equal(["Shop A", "Shop B", "Shop C"], calls.Select(c => c.Sheet));
+        Assert.All(calls, c => Assert.Equal("run-1", c.RunId));                     // mọi sheet dùng CHUNG một lượt
+        Assert.Equal(["Shop A", "Shop B", "Shop C"], changed);
     }
 
-    [Theory]
-    [InlineData(WorkspaceRole.Scrape)]
-    [InlineData(WorkspaceRole.Full)]
-    [InlineData(WorkspaceRole.ImportUpdate)]
-    public void RunConfig_VaiTroKhac_DungCuaTk_VaLuuBigSellerJson(WorkspaceRole role)
+    [Fact]
+    public async Task VongSheet_LoiHaTangToanCucHoacFileBiKhoa_DungCaLuot()
     {
-        var dir = NewTempDir();
-        try
+        foreach (var stop in new[]
+                 {
+                     Modules.Scrape.ScrapeViewModel.EndAfterRun(jobFatal: true, cancelled: false),          // key proxy chết / chỗ lưu hỏng
+                     Modules.Scrape.ScrapeViewModel.EndAfterReadError(new HarvestWorkbookLockedException(@"C:\f.xlsx")),
+                 })
         {
-            var store = new HarvestRunConfigStore(Path.Combine(dir, "h.json"));
-            var account = new Shopee.Core.BigSeller.BigSellerAccount { Id = "acc", RunConfig = new() };
-            Assert.Same(account.RunConfig, RunConfigSource.For(role, account, store));
-            var saved = 0;
-            RunConfigSource.Save(role, store, saveBigSeller: () => saved++);
-            Assert.Equal(1, saved);
-            Assert.False(File.Exists(Path.Combine(dir, "h.json")));
+            var calls = new List<string>();
+            var done = await Modules.Scrape.ScrapeViewModel.RunSheetsAsync(BaSheet, "r", (job, _) =>
+            {
+                calls.Add(job.Sheet);
+                return Task.FromResult(job.Sheet == "Shop B" ? stop : Modules.Scrape.ScrapeViewModel.HarvestSheetEnd.Next);
+            }, CancellationToken.None);
+            Assert.Equal(["Shop A", "Shop B"], calls);                                // Shop C không chạy
+            Assert.Equal(2, done);
         }
-        finally { try { Directory.Delete(dir, true); } catch { } }
+        Assert.Equal(Modules.Scrape.ScrapeViewModel.HarvestSheetEnd.StopRun,
+            Modules.Scrape.ScrapeViewModel.EndAfterRun(jobFatal: false, cancelled: true));
+        Assert.Equal(Modules.Scrape.ScrapeViewModel.HarvestSheetEnd.Next,
+            Modules.Scrape.ScrapeViewModel.EndAfterRun(jobFatal: false, cancelled: false));
+    }
+
+    [Fact]
+    public async Task VongSheet_HuyThiDungNgay_KhongChaySheetSau()
+    {
+        using var cts = new CancellationTokenSource();
+        var calls = new List<string>();
+        var done = await Modules.Scrape.ScrapeViewModel.RunSheetsAsync(BaSheet, "r", (job, _) =>
+        {
+            calls.Add(job.Sheet);
+            cts.Cancel();                                                            // bấm Dừng giữa sheet đầu
+            return Task.FromResult(Modules.Scrape.ScrapeViewModel.HarvestSheetEnd.Next);
+        }, cts.Token);
+        Assert.Equal(["Shop A"], calls);
+        Assert.Equal(1, done);
+
+        calls.Clear();
+        Assert.Equal(0, await Modules.Scrape.ScrapeViewModel.RunSheetsAsync(BaSheet, "r", (job, _) =>
+        {
+            calls.Add(job.Sheet);
+            return Task.FromResult(Modules.Scrape.ScrapeViewModel.HarvestSheetEnd.Next);
+        }, cts.Token));                                                              // đã huỷ trước khi bắt đầu
+        Assert.Empty(calls);
     }
 
     // ── Nối dây (đọc mã nguồn): các điểm gọi không bị gỡ âm thầm ──
@@ -503,127 +458,48 @@ public sealed class HarvestAppTests
     }
 
     [Fact]
-    public void NoiDay_RunOneJob_Harvest_DungLaiTuTapDaXong_KhongResetKhongTinTienDoCu()
+    public void NoiDay_JobHarvest_DungLaiTuTapToanCucVaHub_GhiDoneLoi_KhongDungTienDoKhiHuySom()
+    {
+        var job = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeViewModel.Harvest.cs"));
+        var body = Between(job, "private async Task<HarvestSheetEnd> HarvestSheetBodyAsync", "catch (OperationCanceledException)");
+        Assert.Contains("rt.Outbox.DoneKeys(HarvestPlanning.DoneSince(DateTimeOffset.UtcNow, settings.MaxAgeDays))", body);
+        Assert.Contains("HarvestPlanning.AskHubAsync(rt.KnownQuery,", body);
+        Assert.Contains("store.ReplaceProgress(acct, key, label, totalRows, plan.Completed, plan.Skipped);", body);
+        Assert.Contains("RecordDone: true,", body);
+        Assert.Contains("FailureSink: rt.Outbox,", body);
+        Assert.Contains("RunId: runId,", body);
+        Assert.Contains("bigSellerAccountId: acct", body);                         // account_id gửi Hub = hằng "harvest"
+        Assert.Contains("mode: RunnerMode.Harvest", body);
+        Assert.Contains("plan.Remaining", body);
+        Assert.DoesNotContain("BeginFresh(", body);                                 // Chạy không xoá tập đã có
+        Assert.Contains("if (progressTouched)", Between(job, "catch (OperationCanceledException)", "finally"));
+        Assert.Equal("harvest", HarvestSource.AccountId);
+    }
+
+    /// <summary>Đường Scrape (tài khoản BigSeller) không còn nhánh Harvest nào; engine ghi tập đã xong theo cờ RecordDone.</summary>
+    [Fact]
+    public void NoiDay_DuongScrape_KhongConNhanhHarvest()
     {
         var vm = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeViewModel.cs"));
         var run = Between(vm, "private async Task RunOneJobAsync", "/// <summary>Tạo + phóng 1 job");
-        Assert.DoesNotContain("SharedProgressGuard", vm);
-        var harvestBranch = Between(run, "if (harvest)\r\n            {\r\n                // App Harvest: Chạy hay Tiếp tục", "else\r\n            {\r\n                // RESET");
-        Assert.Contains("HarvestDoneRebuild.Build(startRow, totalRows, harvestRange!.Links?.Items ?? [],", harvestBranch);
-        Assert.Contains("outbox.DoneKeys(doneTarget), outbox.FailedKeys(doneTarget)", harvestBranch);
-        Assert.Contains("RoleStores.ScrapeProgress.ReplaceProgress(account.Id, sheet, account.DisplayName, totalRows, rebuilt.Completed, rebuilt.Skipped);", harvestBranch);
-        Assert.DoesNotContain("MarkCompleted(", harvestBranch);
-        Assert.Contains("progressTouched = true;", harvestBranch);
-        Assert.Contains("segments = rebuilt.Remaining;", harvestBranch);
-        Assert.Contains("var progressTouched = !harvest;", run);
-        Assert.Contains("if (progressTouched)\r\n                try { RoleStores.ScrapeProgress.FinishRun(account.Id, sheet, startRow, 0); }",
-            Between(run, "catch (OperationCanceledException)", "catch (Exception ex)"));
-        Assert.Contains("FailureSink: HarvestRuntime.Current.Outbox", run);
-        Assert.DoesNotContain("ScrapeProgressReset.Reset(", harvestBranch);          // Chạy ở Harvest không xoá tập đã xong
-        Assert.DoesNotContain("RemainingSegments(", harvestBranch);
-        Assert.Contains("HarvestWorkbookReader.ReadRangeAsync(dataPath, dataSheet, excelStart, excelEnd, ct)", run);
-        Assert.Contains("catch (HarvestWorkbookLockedException ex)", run);
-        Assert.Contains("if (resume || harvest) RoleStores.ScrapeProgress.BeginResume(", run);
-        Assert.Contains("DoneTarget: HarvestDoneTarget.Of(account.Id, sheet)", run);
-    }
-
-    [Fact]
-    public void NoiDay_ResetTienDo_XoaTapDaXong_ThongKeHoiTruocOHarvest()
-    {
-        var reset = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeProgressReset.cs"));
-        Assert.Contains("ClearKey(accountId, sheet, log);", Between(reset, "public static void Reset(string accountId, string sheet, BigSellerShop? shop", "/// <summary>ĐƯỜNG DUY NHẤT"));
-        var bySheet = Between(reset, "public static void Reset(string accountId, string sheet, Action<string>? log = null)", "\r\n}");
-        Assert.DoesNotContain("RoleStores.ScrapeProgress.Clear(", bySheet);
-        Assert.Contains("ClearKey(accountId, sheet ?? \"\", log);", bySheet);
-        var stats = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeStatsViewModel.cs"));
-        var clear = Between(stats, "private async Task ClearProgress(", "ScrapeProgressReset.Reset(");
-        Assert.Contains("WorkspaceAppConfig.IsHarvest", clear);
-        Assert.Contains("Dialogs.ConfirmAsync(", clear);
-    }
-
-    [Fact]
-    public void NoiDay_MoiNutResetQuaDuongChung_DangKyJobHarvestDungResolveChat()
-    {
-        foreach (var f in new[]
+        foreach (var harvestCode in new[] { "IsHarvest", "HarvestRuntime", "HarvestWorkbook", "HarvestDone", "var harvest", "RunnerMode.Harvest" })
         {
-            Path.Combine("src", "Shopee.Workspace", "Modules", "Workspace", "WorkspaceAccountViewModel.cs"),
-            Path.Combine("src", "Shopee.Workspace", "Modules", "Workspace", "WorkspaceShopViewModel.cs"),
-        })
-        {
-            var text = Src(f);
-            Assert.DoesNotContain("RoleStores.ScrapeProgress.Clear(", text);
-            Assert.Contains("ScrapeProgressReset.ClearKey(", text);
+            Assert.DoesNotContain(harvestCode, run);
+            Assert.DoesNotContain(harvestCode, Between(vm, "private bool StartJob", "/// <summary>true nếu đang có job LIVE"));
         }
-        var shopVm = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Workspace", "WorkspaceShopViewModel.cs"));
-        Assert.Equal(2, Between(shopVm, "private void ResetScrapeProgress()", "[RelayCommand]").Split("ScrapeProgressReset.ClearKey(").Length - 1);
-        Assert.Contains("[RelayCommand(CanExecute = nameof(CanMarkScrapeDone))]", shopVm);
-        var acct = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Workspace", "WorkspaceAccountViewModel.cs"));
-        Assert.Contains("ScrapeProgressReset.ClearKey(Account.Id, scrapeKey);", Between(acct, "private async Task ResetAllShopsProgressAsync()", "else if (WorkspaceAppConfig.IsImportUpdateOnly)"));
-        var reset = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeProgressReset.cs"));
-        var clearKey = Between(reset, "public static void ClearKey(", "/// <summary>App Harvest");
-        Assert.Contains("RoleStores.ScrapeProgress.Clear(accountId, sheet);", clearKey);
-        Assert.Contains("ClearHarvestDone(accountId, sheet, log);", clearKey);
-
-        var vm = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeViewModel.cs"));
-        var start = Between(vm, "private bool StartJob", "var started = s.Jobs.TryAdd(");
-        Assert.Contains("if (WorkspaceAppConfig.IsHarvest)", start);
-        Assert.Contains("HarvestWorkbookResolve.ResolveCurrent(target.Account, shop, out var resolveError) is not { } strict", start);
-        Assert.Contains("refused = resolveError;", start);
-        var one = Between(vm, "private bool StartOneAccount", "/// <summary>Dừng RIÊNG 1 tk");
-        Assert.Contains("if (refused is null)", one);
-    }
-
-    [Fact]
-    public void NoiDay_CaoLaiDongDaBo_XoaTapLoiCuaTarget_ResetXoaCaHai()
-    {
-        var stats = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeStatsViewModel.cs"));
-        var reopen = Between(stats, "private Task ReopenSkippedAsync(", "Load();");
-        Assert.Contains("ScrapeProgressReset.ClearHarvestFailed(_accountId, sheet);", reopen);
-        var reset = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeProgressReset.cs"));
-        var clear = Between(reset, "internal static int ClearHarvestDone(", "/// <summary>App Harvest, nút");
-        Assert.Contains("rt.Outbox.ClearFailed(target);", clear);
-        Assert.Contains("return rt.Outbox.ClearDone(target);", clear);
-    }
-
-    [Fact]
-    public void NoiDay_EngineLuuGhiDoneTarget()
-    {
+        Assert.DoesNotContain("IsHarvest", Between(vm, "private static bool ValidateTarget", "[RelayCommand(CanExecute = nameof(IsBusy))]"));
         var proc = Src(Path.Combine("src", "Shopee.Module.MultiBrave", "Engine", "HarvestRowProcessor.cs"));
-        Assert.Contains("_options.DoneTarget);", Between(proc, "var harvested = new HarvestedItem(", "var saveError"));
+        Assert.Contains("_options.RecordDone);", Between(proc, "var harvested = new HarvestedItem(", "var saveError"));
         var loop = Src(Path.Combine("src", "Shopee.Module.MultiBrave", "Engine", "HarvestRunnerLoop.cs"));
         var flushLine = System.Text.RegularExpressions.Regex.Match(loop, @"^[ \t]+await processor\.FlushPendingNotProductAsync\(cancellationToken\)",
             System.Text.RegularExpressions.RegexOptions.Multiline);
         Assert.True(flushLine.Success, "phải GỌI (không comment) FlushPendingNotProductAsync");
-        var flush = flushLine.Index;
-        Assert.True(flush > 0 && flush < loop.IndexOf("processor.CompleteBlock(totalLinks, sheet);", StringComparison.Ordinal),
+        Assert.True(flushLine.Index < loop.IndexOf("processor.CompleteBlock(totalLinks, sheet);", StringComparison.Ordinal),
             "hết khối phải xả chuỗi notProduct chưa tới ngưỡng TRƯỚC CompleteBlock");
-        var vm = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeViewModel.cs"));
-        Assert.Contains("RunId: Guid.NewGuid().ToString(\"N\")", vm);
-    }
-
-    [Fact]
-    public void NoiDay_CauHinhChay_ManDichScrape_DiQuaNguonTheoVaiTro()
-    {
-        var vm = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeTargetViewModel.cs"));
-        Assert.Contains("RunConfigSource.For(WorkspaceAppConfig.Role, Account)", vm);
-        Assert.Contains("RunConfigSource.Save(WorkspaceAppConfig.Role)", vm);
-        Assert.DoesNotContain("BigSellerStore.Shared.Save()", vm);   // mọi lần lưu cấu hình chạy đi qua nguồn theo vai trò
-        Assert.DoesNotContain("Account.RunConfig ??=", vm);
-    }
-
-    [Fact]
-    public void NoiDay_HarvestDong_KhongLuuCaBigSellerJson_ChoDebounceGhiXong()
-    {
+        Assert.DoesNotContain("BigSeller", Between(loop, "var accountHeader =", ";"));
         var app = Src(Path.Combine("src", "Shopee.Workspace", "App.xaml.cs"));
         var hooks = Between(app, "private void RunShutdownHooks()", "private static void HookBindingTrace()");
-        var harvest = Between(hooks, "if (WorkspaceAppConfig.IsHarvest)", "else");
-        Assert.Contains("Thread.Sleep(HarvestRuntime.PendingSaveWait)", harvest);
-        // Chờ phải dài hơn độ trễ debounce THẬT (đọc từ mã nguồn PersistDebounce dùng chung) + biên 100 ms.
-        var debounce = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "BigSeller", "PersistDebounce.cs"));
-        var m = System.Text.RegularExpressions.Regex.Match(debounce, @"_timer\.Change\((\d+),");
-        Assert.True(m.Success);
-        Assert.True(HarvestRuntime.PendingSaveWait.TotalMilliseconds >= int.Parse(m.Groups[1].Value) + 100);
-        Assert.DoesNotContain("BigSellerStore.Shared.Save()", harvest);
+        Assert.Contains("BigSellerStore.Shared.Save()", Between(hooks, "if (!WorkspaceAppConfig.IsHarvest)", "}"));
     }
 
     [Fact]
@@ -639,49 +515,17 @@ public sealed class HarvestAppTests
         Assert.DoesNotContain("Thread.Sleep", Src(Path.Combine("src", "Shopee.Core", "Harvest", "HarvestWorkbookReader.cs")));
     }
 
-    [Fact]
-    public void NoiDay_HarvestKhongMigrateRunConfig()
-    {
-        foreach (var f in new[]
-        {
-            Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeTargetViewModel.cs"),
-            Path.Combine("src", "Shopee.Workspace", "Modules", "UpdateProduct", "UpdateRunTargetViewModel.cs"),
-        })
-        {
-            var text = Src(f);
-            var i = text.IndexOf("RunConfigMigration.EnsureRunConfig(account)", StringComparison.Ordinal);
-            Assert.True(i > 0, f);
-            Assert.Contains("IsHarvest", text[Math.Max(0, i - 200)..i]);
-        }
-    }
+    // ── Shell: Harvest không có gì của BigSeller; Scrape giữ nguyên tab + danh sách tài khoản ──
 
-    [Fact]
-    public void NoiDay_NapLaiCauHinhWorkbookChung_TruocKhiResolve()
-    {
-        const string reload = "if (WorkspaceAppConfig.IsHarvest) SharedWorkbookStore.ReloadIfExternalChange();";
-        var vm = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeViewModel.cs"));
-        Assert.Contains(reload, Between(vm, "private async Task StartCoreAsync", "ValidateTarget("));
-        Assert.Contains(reload, Between(vm, "private bool StartOneAccount", "ValidateTarget("));
-        var ws = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Workspace", "WorkspaceViewModel.cs"));
-        Assert.Contains(reload, Between(ws, "externalSyncTimer.Tick +=", "externalSyncTimer.Start();"));
-        var shell = Src(Path.Combine("src", "Shopee.Workspace", "ViewModels", "ShellViewModel.cs"));
-        Assert.Contains("SharedWorkbookStore.ReloadIfExternalChange();",
-            Between(shell, "partial void OnSelectedTabChanged", "private RibbonTab?"));
-    }
+    private static readonly object AppGate = new();
 
-    /// <summary>Nối dây VM: app Harvest không gọi được chọn file chung / gộp / ngừng dùng (BigSeller + Workspace).</summary>
-    [Theory]
-    [InlineData(WorkspaceRole.Harvest, false)]
-    [InlineData(WorkspaceRole.Scrape, true)]
-    public void VM_LenhSuaWorkbookChung_BiKhoaOHarvest(WorkspaceRole role, bool canExecute)
+    private static void OnSta(Action body)
     {
         Exception? error = null;
-        var results = new List<(string Name, bool Can)>();
         var thread = new Thread(() =>
         {
             try
             {
-                WorkspaceAppConfig.Initialize(role);
                 lock (AppGate)
                 {
                     if (System.Windows.Application.Current is null)
@@ -690,29 +534,106 @@ public sealed class HarvestAppTests
                         catch (InvalidOperationException) { /* lớp test khác vừa tạo App */ }
                     }
                 }
-                var shell = new ViewModels.ShellViewModel();
-                results.Add(("PickShared", shell.BigSeller.PickSharedWorkbookCommand.CanExecute(null)));
-                results.Add(("MergeShared", shell.BigSeller.MergeSharedCommand.CanExecute(null)));
-                results.Add(("StopShared", shell.BigSeller.StopSharedCommand.CanExecute(null)));
-                results.Add(("WsPickShared", shell.Workspace.PickSharedUpdateWorkbookCommand.CanExecute(null)));
-                results.Add(("WsClearShared", shell.Workspace.ClearSharedUpdateWorkbookCommand.CanExecute(null)));
+                body();
             }
             catch (Exception ex) { error = ex; }
-            finally
-            {
-                WorkspaceAppConfig.Initialize(WorkspaceRole.Full);
-            }
+            finally { WorkspaceAppConfig.Initialize(WorkspaceRole.Full); }
         });
         thread.SetApartmentState(ApartmentState.STA);
         thread.Start();
         thread.Join();
-
-        Assert.Null(error);
-        Assert.Equal(5, results.Count);
-        Assert.All(results, r => Assert.True(r.Can == canExecute, $"{r.Name} CanExecute={r.Can}"));
+        if (error is not null) throw new AggregateException(error);
     }
 
-    private static readonly object AppGate = new();
+    /// <summary>Mọi chữ người dùng nhìn thấy trên một cây giao diện: TextBlock (cả Run), nội dung chữ, tooltip, tiêu đề cột, ô nhập.</summary>
+    private static List<string> VisibleTexts(System.Windows.DependencyObject root)
+    {
+        var texts = new List<string>();
+        var seen = new HashSet<System.Windows.DependencyObject>();
+        var stack = new Stack<System.Windows.DependencyObject>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var d = stack.Pop();
+            if (!seen.Add(d)) continue;
+            if (d is System.Windows.Controls.TextBlock tb) texts.Add(tb.Text);
+            if (d is System.Windows.Controls.ContentControl { Content: string s }) texts.Add(s);
+            if (d is System.Windows.FrameworkElement { ToolTip: string tip }) texts.Add(tip);
+            if (d is System.Windows.Controls.DataGrid grid)
+                foreach (var col in grid.Columns) texts.Add(col.Header?.ToString() ?? "");
+            if (d is System.Windows.Controls.TextBox box) texts.Add(box.Text);
+            foreach (var child in System.Windows.LogicalTreeHelper.GetChildren(d).OfType<System.Windows.DependencyObject>()) stack.Push(child);
+            if (d is System.Windows.Media.Visual or System.Windows.Media.Media3D.Visual3D)
+                for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(d); i++)
+                    stack.Push(System.Windows.Media.VisualTreeHelper.GetChild(d, i));
+        }
+        return texts;
+    }
+
+    private static List<string> RibbonTexts(ViewModels.ShellViewModel shell)
+    {
+        var texts = new List<string>();
+        foreach (var tab in shell.Tabs)
+        {
+            texts.Add(tab.Title);
+            foreach (var g in tab.Groups)
+            {
+                texts.Add(g.Title);
+                foreach (var item in g.Items)
+                {
+                    if (item is ViewModels.RibbonScreenItem s) { texts.Add(s.Title); texts.Add(s.ToolTip ?? ""); }
+                    if (item is ViewModels.RibbonActionItem a) { texts.Add(a.Title); texts.Add(a.ToolTip ?? ""); }
+                }
+            }
+        }
+        return texts;
+    }
+
+    [Fact]
+    public void ShellHarvest_BaTab_KhongCoBigSeller_ManChinhChonFileExcel()
+    {
+        OnSta(() =>
+        {
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
+            var shell = new ViewModels.ShellViewModel();
+            Assert.Equal(["Lấy dữ liệu", "Tài khoản & Proxy", "Cài đặt"], shell.Tabs.Select(t => t.Title));
+            Assert.DoesNotContain(RibbonTexts(shell), s => s.Contains("BigSeller", StringComparison.OrdinalIgnoreCase));
+            Assert.False(shell.ShowBigSellerStatus);
+            Assert.Throws<InvalidOperationException>(() => shell.BigSeller);
+            Assert.NotNull(shell.Harvest);
+            Assert.Same(shell.Harvest, shell.CurrentScreen);
+
+            var view = new Modules.Harvest.HarvestView { DataContext = shell.Harvest };
+            view.Measure(new System.Windows.Size(1500, 1000));
+            view.Arrange(new System.Windows.Rect(0, 0, 1500, 1000));
+            view.UpdateLayout();
+            var texts = VisibleTexts(view);
+            Assert.Contains("Chọn file Excel", texts);
+            Assert.Contains("Lấy lại nếu dữ liệu cũ hơn", texts);
+            Assert.Contains("Đẩy lại mục lỗi", texts);
+            Assert.Contains("Chạy / Tiếp tục", texts);
+            Assert.DoesNotContain(texts, s => s.Contains("BigSeller", StringComparison.OrdinalIgnoreCase));
+        });
+    }
+
+    [Fact]
+    public void ShellScrape_VanDuTab_VaDanhSachTaiKhoan()
+    {
+        OnSta(() =>
+        {
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Scrape);
+            var shell = new ViewModels.ShellViewModel();
+            Assert.Equal(["Workspace", "Cấu hình BigSeller", "Tài khoản & Proxy", "Cài đặt"], shell.Tabs.Select(t => t.Title));
+            Assert.Contains("Scrape Multi", RibbonTexts(shell));
+            Assert.Null(shell.Harvest);
+            Assert.True(shell.ShowBigSellerStatus);
+            Assert.Same(shell.Workspace, shell.CurrentScreen);
+            var count = Shopee.Core.BigSeller.BigSellerStore.Shared.Accounts.Count;
+            Assert.Equal(count, shell.Workspace.Accounts.Count);
+            Assert.Equal(count, shell.Workspace.Scrape.ScrapeTargets.Count);
+            Assert.Equal(count, shell.BigSeller.Items.Count);
+        });
+    }
 
     // ── Bộ đếm tổng kết cuối khối qua watchdog mở lại ─────────────────────────────────────────────────────────
 

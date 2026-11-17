@@ -27,4 +27,18 @@ public static class HarvestLinks
         var m = matches[^1];
         return $"{uri.Scheme}://{uri.Host}/product/{m.Groups[1].Value}/{m.Groups[2].Value}";
     }
+
+    /// <summary>Host link rút gọn của Shopee (cũ và mới).</summary>
+    private static readonly string[] ShortHosts = ["shp.ee", "shope.ee"];
+
+    /// <summary>MỘT chỗ duy nhất quyết định "host này là Shopee": <c>shopee.{vùng}</c> (vn, co.id, com.my…), mọi tên miền con
+    /// <c>*.shopee.{vùng}</c> (s.shopee.vn, www.…), link rút gọn <c>shp.ee</c> / <c>shope.ee</c> (và tên miền con).</summary>
+    public static bool IsShopeeHost(string? host)
+    {
+        var h = (host ?? "").Trim().TrimEnd('.').ToLowerInvariant();
+        if (h.Length == 0) return false;
+        foreach (var s in ShortHosts)
+            if (h == s || h.EndsWith("." + s, StringComparison.Ordinal)) return true;
+        return h.StartsWith("shopee.", StringComparison.Ordinal) || h.Contains(".shopee.", StringComparison.Ordinal);
+    }
 }

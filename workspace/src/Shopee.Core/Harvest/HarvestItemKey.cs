@@ -165,10 +165,32 @@ public static class HarvestItemKey
     }
 }
 
-/// <summary>Định danh target của tập đã xong: (tk BigSeller, khoá tiến độ — vd <c>acc:X:shared:S</c> / tên sheet).
-/// Khoá tiến độ so không phân biệt hoa thường như kho tiến độ.</summary>
-public static class HarvestDoneTarget
+/// <summary>Nguồn link của app Harvest: một file Excel do chính app chọn, mỗi sheet một đơn vị chạy. Không có khái niệm tài
+/// khoản hay shop đăng bán ở đây — việc chọn shop để đăng SP là của app đăng SP.</summary>
+public static class HarvestSource
 {
-    public static string Of(string accountId, string progressKey) =>
-        $"{accountId}|{(progressKey ?? "").Trim().ToLowerInvariant()}";
+    /// <summary>Hằng định danh nguồn Harvest gửi Hub ở <c>account_id</c> (cột <c>harvested_product_sources.account_id</c>);
+    /// <c>sheet</c> = tên sheet trong file Excel. Cũng là "tài khoản" của kho tiến độ <c>harvest-progress.json</c>.</summary>
+    public const string AccountId = "harvest";
+
+    /// <summary>Khoá tiến độ của một (file, sheet): đường dẫn đầy đủ đã chuẩn hoá (chữ thường, dấu <c>\</c>) + <c>|</c> + tên
+    /// sheet. Cùng file mở bằng đường dẫn tương đối / khác hoa thường ra cùng khoá; hai file trùng tên sheet ra khoá khác.</summary>
+    public static string SheetKey(string filePath, string sheet) => $"{NormalizePath(filePath)}|{(sheet ?? "").Trim()}";
+
+    public static string NormalizePath(string filePath)
+    {
+        var p = (filePath ?? "").Trim();
+        if (p.Length == 0) return "";
+        try { p = Path.GetFullPath(p); } catch { /* đường dẫn hỏng → giữ nguyên chuỗi */ }
+        return p.Replace('/', '\\').ToLowerInvariant();
+    }
+
+    /// <summary>itemId của khoá <c>id:{shop}.{item}</c> (<see cref="HarvestItemKey"/>); khoá <c>url:</c> / <c>txt:</c> → null
+    /// (không hỏi Hub được).</summary>
+    public static long? ItemIdOfKey(string? key)
+    {
+        if (key is null || !key.StartsWith("id:", StringComparison.Ordinal)) return null;
+        var dot = key.LastIndexOf('.');
+        return dot > 3 && long.TryParse(key.AsSpan(dot + 1), out var id) && id > 0 ? id : null;
+    }
 }

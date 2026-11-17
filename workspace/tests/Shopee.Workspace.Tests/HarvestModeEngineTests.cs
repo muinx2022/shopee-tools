@@ -456,11 +456,11 @@ public sealed class HarvestModeEngineTests
         public List<(string Target, string[] Keys, string Reason)> Calls { get; } = [];
         public Exception? Fail { get; set; }
         public string? LastRunId { get; private set; }
-        public Task RecordPermanentFailureAsync(string target, IReadOnlyList<string> itemKeys, string reason, string runId, CancellationToken cancellationToken)
+        public Task RecordPermanentFailureAsync(IReadOnlyList<string> itemKeys, string reason, string runId, CancellationToken cancellationToken)
         {
             if (Fail is not null) throw Fail;
             LastRunId = runId;
-            Calls.Add((target, itemKeys.ToArray(), reason));
+            Calls.Add(("*", itemKeys.ToArray(), reason));   // GĐ6: tập lỗi toàn cục, không còn target
             return Task.CompletedTask;
         }
     }
@@ -472,7 +472,7 @@ public sealed class HarvestModeEngineTests
         cfg.HubAccountId = "bs1";
         var sink = new FakeSink(sinkFails);
         var log = new List<string>();
-        var p = new HarvestRowProcessor(cfg, new HarvestRunOptions(sink, "shop1", 3, DoneTarget: "bs1|acc:bs1:shared:s1", FailureSink: failures,
+        var p = new HarvestRowProcessor(cfg, new HarvestRunOptions(sink, "shop1", 3, RecordDone: true, FailureSink: failures,
                 SampleLink: sampleLink),
             breaker ?? new HarvestPdpBreaker(3), log.Add);
         return (p, cfg, sink, new FakeHost(), log);
@@ -488,7 +488,7 @@ public sealed class HarvestModeEngineTests
         await Handle(x, Step(notProduct: true, message: "không phải trang SP"), 3);
         Assert.Empty(f.Calls);                                                               // notProduct: chờ xem có phải chuỗi
         await Handle(x, Step(message: "hết giờ chờ get_pc"), 4);                            // tạm — cắt chuỗi → dòng 3 ghi
-        Assert.Equal(("bs1|acc:bs1:shared:s1", "id:1490438686.26393229156"), (f.Calls[0].Target, Assert.Single(f.Calls[0].Keys)));
+        Assert.Equal(("*", "id:1490438686.26393229156"), (f.Calls[0].Target, Assert.Single(f.Calls[0].Keys)));
         Assert.False(string.IsNullOrEmpty(f.LastRunId));
 
         await Handle(x, Step(pdpError: "90309999", message: "pdp"), 5);                     // pdpError chưa xác nhận → tạm

@@ -1,0 +1,218 @@
+<UserControl x:Class="Shopee.Workspace.Modules.Harvest.HarvestView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:c="clr-namespace:Shopee.Workspace.Controls"
+             xmlns:b="clr-namespace:Shopee.Workspace.Behaviors"
+             x:Name="Root">
+    <!-- Màn chính app Harvest: chọn file Excel → danh sách sheet (tick để chạy) → Chạy / Dừng; dưới là tiến trình + log.
+         Không có tài khoản / shop đăng bán ở màn này ("shop" gửi Hub = tên sheet). -->
+    <UserControl.Resources>
+        <Style x:Key="numBox" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="Width" Value="56" />
+            <Setter Property="Height" Value="28" />
+            <Setter Property="Margin" Value="6,0,14,0" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="HorizontalContentAlignment" Value="Right" />
+        </Style>
+        <Style x:Key="inlineLabel" TargetType="{x:Type TextBlock}">
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+        </Style>
+        <Style x:Key="instanceRow" TargetType="{x:Type DataGridRow}" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Setter Property="Background"
+                    Value="{Binding AccountBrush, TargetNullValue={StaticResource CardBackgroundBrush}}" />
+        </Style>
+        <Style x:Key="sheetRow" TargetType="{x:Type DataGridRow}" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Style.Triggers>
+                <DataTrigger Binding="{Binding IsRunning}" Value="True">
+                    <Setter Property="Background" Value="{StaticResource WarningBgBrush}" />
+                </DataTrigger>
+            </Style.Triggers>
+        </Style>
+    </UserControl.Resources>
+
+    <Grid Margin="18,14,18,14">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="2*" MinHeight="140" />
+            <RowDefinition Height="12" />
+            <RowDefinition Height="3*" MinHeight="160" />
+        </Grid.RowDefinitions>
+
+        <!-- Tiêu đề -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,10">
+            <TextBlock Style="{StaticResource h1}" Text="{Binding PageTitle}" />
+            <TextBlock Style="{StaticResource caption}" Text="{Binding PageSubtitle}" TextWrapping="Wrap" Margin="0,3,0,0" />
+        </StackPanel>
+
+        <!-- File Excel + 3 số Hub -->
+        <Border Grid.Row="1" Style="{StaticResource card}" Padding="12,10" Margin="0,0,0,10">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
+                                   ToolTip="Đã lưu Hub = số SP Hub đã nhận (cộng dồn) · Chờ đẩy = đã lưu trên máy, chưa lên Hub · Lỗi đẩy = Hub từ chối, bấm Đẩy lại mục lỗi"><Run Text="Hub: đã nhận " /><Run Text="{Binding HubSaved, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · chờ đẩy " /><Run Text="{Binding HubPending, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · lỗi " /><Run Text="{Binding HubFailed, Mode=OneWay}" FontWeight="SemiBold" /></TextBlock>
+                        <TextBlock Text="{Binding HubError}" FontSize="10.5" MaxWidth="360"
+                                   Foreground="{StaticResource TextMutedBrush}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding HubError}"
+                                   Visibility="{Binding HubError, Converter={StaticResource StringToVis}}" />
+                    </StackPanel>
+                    <Button Style="{StaticResource subtle}" Margin="10,0,0,0" Height="28" Padding="10,0"
+                            Command="{Binding RequeueFailedCommand}"
+                            ToolTip="Đưa mọi mục Hub từ chối / đẩy lỗi về hàng chờ để đẩy lại.">
+                        <StackPanel Orientation="Horizontal">
+                            <c:PathIcon Data="{StaticResource IconSync}" Width="12" Height="12" />
+                            <TextBlock Style="{StaticResource btnLabel}" Margin="6,0,0,0" Text="Đẩy lại mục lỗi" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+                <Button DockPanel.Dock="Left" Style="{StaticResource primary}" Command="{Binding PickFileCommand}"
+                        ToolTip="Chọn file Excel danh sách link: một sheet dùng chung, hoặc mỗi shop một sheet. Chỉ cần một cột link SP Shopee (cột đầu tiên có link được dùng); dòng 1 là tiêu đề hoặc đã là link đều được; tên SP không bắt buộc.">
+                    <StackPanel Orientation="Horizontal">
+                        <c:PathIcon Data="{StaticResource IconFolder}" />
+                        <TextBlock Style="{StaticResource btnLabel}" Text="Chọn file Excel" />
+                    </StackPanel>
+                </Button>
+                <Button DockPanel.Dock="Left" Style="{StaticResource subtle}" Margin="8,0,0,0" Height="30" Padding="10,0"
+                        Command="{Binding RefreshCommand}" ToolTip="Đọc lại file (danh sách sheet + đếm lại đã có / còn phải lấy).">
+                    <StackPanel Orientation="Horizontal">
+                        <c:PathIcon Data="{StaticResource IconSync}" Width="12" Height="12" />
+                        <TextBlock Style="{StaticResource btnLabel}" Margin="6,0,0,0" Text="Đọc lại" />
+                    </StackPanel>
+                </Button>
+                <StackPanel Margin="12,0,0,0" VerticalAlignment="Center">
+                    <TextBlock Text="{Binding WorkbookName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                    <TextBlock Text="{Binding WorkbookPath}" Style="{StaticResource caption}" TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding WorkbookPath}" />
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- Cấu hình chạy + nút -->
+        <WrapPanel Grid.Row="2" Margin="0,0,0,8" VerticalAlignment="Center">
+            <TextBlock Style="{StaticResource inlineLabel}" Text="Lấy lại nếu dữ liệu cũ hơn" />
+            <TextBox Style="{StaticResource numBox}" Text="{Binding MaxAgeDays}"
+                     ToolTip="SP đã có dữ liệu (lấy trên máy này hoặc đã có trên Hub) mà cũ hơn số ngày này thì lấy lại; còn mới thì bỏ qua, không mở trang." />
+            <TextBlock Style="{StaticResource inlineLabel}" Text="ngày" Margin="-8,0,18,0" />
+            <TextBlock Style="{StaticResource inlineLabel}" Text="Số cửa sổ" />
+            <TextBox Style="{StaticResource numBox}" Text="{Binding Processes}" ToolTip="Số cửa sổ Brave chạy song song." />
+            <TextBlock Style="{StaticResource inlineLabel}" Text="Dòng mỗi lần" />
+            <TextBox Style="{StaticResource numBox}" Text="{Binding RowsPerAccount}"
+                     ToolTip="Nhịp chạy: mỗi tài khoản Shopee nhận một khối dòng liên tiếp cỡ này rồi trả về kho." />
+            <TextBlock Style="{StaticResource inlineLabel}" Text="Khung tk" />
+            <TextBox Style="{StaticResource numBox}" Text="{Binding FrameSize}"
+                     ToolTip="Số tài khoản Shopee dùng xoay vòng cho lượt chạy (ít nhất bằng số cửa sổ)." />
+            <TextBlock Style="{StaticResource inlineLabel}" Text="Nghỉ giữa link (giây)" />
+            <TextBox Style="{StaticResource numBox}" Text="{Binding RestMinSeconds}" Margin="6,0,4,0" />
+            <TextBlock Style="{StaticResource inlineLabel}" Text="–" />
+            <TextBox Style="{StaticResource numBox}" Text="{Binding RestMaxSeconds}" Margin="4,0,14,0" />
+        </WrapPanel>
+
+        <DockPanel Grid.Row="3" Margin="0,0,0,8">
+            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
+                <Button Style="{StaticResource success}" Command="{Binding RunCommand}"
+                        ToolTip="Chạy / Tiếp tục các sheet đã tick, lần lượt từng sheet. SP đã có (trên máy hoặc trên Hub, còn hạn) được bỏ qua.">
+                    <StackPanel Orientation="Horizontal">
+                        <c:PathIcon Data="{StaticResource IconPlay}" />
+                        <TextBlock Style="{StaticResource btnLabel}" Text="Chạy / Tiếp tục" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource danger}" Margin="8,0,0,0" Command="{Binding StopCommand}" ToolTip="Dừng lượt đang chạy (giữ tiến độ).">
+                    <StackPanel Orientation="Horizontal">
+                        <c:PathIcon Data="{StaticResource IconStop}" />
+                        <TextBlock Style="{StaticResource btnLabel}" Text="Dừng" />
+                    </StackPanel>
+                </Button>
+                <Button Style="{StaticResource subtle}" Margin="8,0,0,0" Height="30" Padding="10,0" Command="{Binding ResetCommand}"
+                        ToolTip="Xoá tiến độ của các sheet đã tick để lấy lại từ đầu (có hỏi trước).">
+                    <TextBlock Style="{StaticResource btnLabel}" Text="Reset…" />
+                </Button>
+                <Button Style="{StaticResource subtle}" Margin="8,0,0,0" Height="30" Padding="10,0" Command="{Binding RetrySkippedCommand}"
+                        ToolTip="SP bị bỏ qua vì lỗi (không phải trang SP / SP không tồn tại…) ở các sheet đã tick sẽ được thử lại ở lượt Chạy sau.">
+                    <TextBlock Style="{StaticResource btnLabel}" Text="Cào lại dòng đã bỏ" />
+                </Button>
+            </StackPanel>
+            <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
+                <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}" />
+                <TextBlock Text="{Binding HubNote}" FontSize="11" Foreground="{StaticResource WarningBrush}" TextWrapping="Wrap"
+                           Visibility="{Binding HubNote, Converter={StaticResource StringToVis}}" />
+            </StackPanel>
+        </DockPanel>
+
+        <!-- Danh sách sheet -->
+        <Border Grid.Row="4" Style="{StaticResource card}" ClipToBounds="True">
+            <DataGrid ItemsSource="{Binding Sheets}" BorderThickness="0" AutoGenerateColumns="False" CanUserSortColumns="False"
+                      CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single" RowStyle="{StaticResource sheetRow}">
+                <DataGrid.Columns>
+                    <DataGridTemplateColumn Header="Chạy" Width="52">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"
+                                          IsChecked="{Binding IsChecked, UpdateSourceTrigger=PropertyChanged}"
+                                          IsEnabled="{Binding DataContext.IsIdle, ElementName=Root}" />
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Sheet" Binding="{Binding Name}" Width="2*" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Tổng link" Binding="{Binding TotalLinks}" Width="80" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Đã có" Binding="{Binding HaveCount}" Width="80" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Còn phải lấy" Binding="{Binding TodoCount}" Width="100" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Bỏ qua / lỗi" Binding="{Binding SkippedCount}" Width="96" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Lượt này" Binding="{Binding RunText}" Width="90" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Ghi chú" Binding="{Binding Warning}" Width="2*" IsReadOnly="True">
+                        <DataGridTextColumn.ElementStyle>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                <Setter Property="ToolTip" Value="{Binding Warning}" />
+                            </Style>
+                        </DataGridTextColumn.ElementStyle>
+                    </DataGridTextColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+        </Border>
+
+        <!-- Tiến trình + log -->
+        <Grid Grid.Row="6" DataContext="{Binding Scrape}">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="1*" />
+                <ColumnDefinition Width="12" />
+                <ColumnDefinition Width="1.35*" />
+            </Grid.ColumnDefinitions>
+            <DockPanel Grid.Column="0">
+                <TextBlock DockPanel.Dock="Top" Text="Tiến trình" Style="{StaticResource caption}" Margin="0,0,0,6" />
+                <Border Style="{StaticResource card}" ClipToBounds="True">
+                    <DataGrid x:Name="InstancesGrid" ItemsSource="{Binding Instances}" BorderThickness="0" IsReadOnly="True"
+                              RowStyle="{StaticResource instanceRow}"
+                              AutoGenerateColumns="False" CanUserSortColumns="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Cửa sổ" Binding="{Binding Label}" Width="1.2*" />
+                            <DataGridTextColumn Header="Tài khoản Shopee" Binding="{Binding AccountName}" Width="1.3*" />
+                            <DataGridTextColumn Header="Dòng" Binding="{Binding RangeText}" Width="86" />
+                            <DataGridTextColumn Header="Trạng thái" Binding="{Binding Status}" Width="1.8*" />
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </Border>
+            </DockPanel>
+            <DockPanel Grid.Column="2">
+                <Grid DockPanel.Dock="Top" Margin="0,0,0,6">
+                    <TextBlock Style="{StaticResource caption}" VerticalAlignment="Center" Text="Log" />
+                    <Button HorizontalAlignment="Right" Padding="8,2" FontSize="11.5" Command="{Binding OpenLogFileCommand}"
+                            ToolTip="Mở file log (logs\workspace-harvest.log).">
+                        <StackPanel Orientation="Horizontal">
+                            <c:PathIcon Data="{StaticResource IconFolder}" Width="12" Height="12" />
+                            <TextBlock Style="{StaticResource btnLabel}" Margin="6,0,0,0" Text="Mở file log" />
+                        </StackPanel>
+                    </Button>
+                </Grid>
+                <Border CornerRadius="6" ClipToBounds="True" Background="{StaticResource LogBackgroundBrush}">
+                    <TextBox Style="{StaticResource log}" b:LogText.Source="{Binding LogLines}" />
+                </Border>
+            </DockPanel>
+        </Grid>
+    </Grid>
+</UserControl>

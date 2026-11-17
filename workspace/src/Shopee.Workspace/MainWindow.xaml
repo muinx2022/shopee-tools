@@ -264,9 +264,9 @@
                     </StackPanel>
                 </StackPanel>
 
-                <!-- Cụm đếm chính (Workspace): tk BigSeller · shop -->
+                <!-- Cụm đếm chính (Workspace): tk BigSeller · shop — app Harvest không có (ShowBigSellerStatus) -->
                 <StackPanel DockPanel.Dock="Left" Orientation="Horizontal"
-                            Visibility="{Binding ShowWorkspaceStatus, Converter={StaticResource BoolToVis}}">
+                            Visibility="{Binding ShowBigSellerStatus, Converter={StaticResource BoolToVis}}">
                     <Rectangle Style="{StaticResource statusSep}" />
                     <Border Style="{StaticResource statusSeg}">
                         <StackPanel Orientation="Horizontal">

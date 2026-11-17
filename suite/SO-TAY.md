@@ -743,3 +743,45 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/src/Shopee.Core/Browser/BraveFleet.cs`; `workspace/src/Shopee.Workspace/App.xaml.cs`
 - **Bằng chứng**: **nghi ngờ** — đọc code GĐ5, chưa dựng ca chạy song song.
 - **Vì sao không sửa ngay**: cần quyết định chính sách dùng chung tài khoản.
+
+### P-20261118-1 · [MỞ] · VỪA — Harvest: sheet có dòng đã có / chưa có xen kẽ bị chia thành hàng trăm khối 1 dòng (mỗi khối mở Brave + giữ tổng kết 5 s)
+- **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/ScrapeRunner.cs:749-762`
+- **Bằng chứng**: **nghi ngờ** về hiệu năng — phản biện GĐ6: khối không vượt ranh giới đoạn; `done` toàn cục + Hub báo đã có làm đoạn vụn hơn GĐ5.
+- **Vì sao không sửa ngay**: cần đổi cách chia khối của engine, việc riêng.
+
+### P-20261118-2 · [MỞ] · NHẸ — Test Workspace dựng shell đọc kho thật trong %AppData% (`harvest-settings.json`, bigseller) vì project test không có `data-dir.txt`
+- **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/tests/Shopee.Workspace.Tests/HarvestAppTests.cs:511`
+- **Bằng chứng**: đọc code — Core.Tests có `data-dir.txt`, Workspace.Tests thì không; chỉ đọc, không ghi.
+- **Vì sao không sửa ngay**: dọn hạ tầng test là việc riêng.
+
+### P-20261118-3 · [MỞ] · NHẸ — Kho tài khoản Shopee có vẻ không theo `data-dir.txt`
+- **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `AccountStore` (workspace)
+- **Bằng chứng**: **nghi ngờ** — mở app với data-dir tạm vẫn hiện "40 acc Shopee · 2 proxy"; chưa dò đường đọc.
+- **Vì sao không sửa ngay**: chưa dựng ca.
+
+### P-20261118-4 · [MỞ] · NHẸ — Build Release cả solution lỗi MSB3021/3027 khi `ShopeeHarvest.exe` đang chạy từ `bin\Release`; DLL không khoá của app đang chạy bị chép đè
+- **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/src/Shopee.Harvest/bin/Release/net8.0-windows`
+- **Bằng chứng**: gặp thật GĐ6 — "locked by ShopeeHarvest (5348)".
+- **Vì sao không sửa ngay**: nên chạy app từ thư mục publish riêng thay vì bin.
+
+### P-20261118-5 · [MỞ] · NHẸ — `HarvestLinks.IsShopeeHost` nhận cả host dạng `shopee.vn.<tên miền khác>`
+- **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/src/Shopee.Core/Harvest/HarvestLinks.cs`
+- **Bằng chứng**: đọc code — `h.StartsWith("shopee.")`; chỉ ảnh hưởng chọn cột / nhận link, extension vẫn kiểm trang SP.
+- **Vì sao không sửa ngay**: thấp.
+
+### P-20261118-6 · [MỞ] · NHẸ — `harvested_products` khoá chỉ theo `item_id`, không theo vùng — SP khác vùng trùng id bị báo "đã có" nhầm
+- **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `suite/server/Shopee.Hub.Web/Data/ProductDb.cs:92`
+- **Bằng chứng**: **nghi ngờ** — chỉ đúng nếu trộn link nhiều vùng.
+- **Vì sao không sửa ngay**: hiện chỉ dùng shopee.vn.
+
+### P-20261118-7 · [MỞ] · NHẸ — Điểm nối `account_id = "harvest"` và hạn N ngày của `done` cục bộ chỉ được giữ bằng test đọc chữ mã nguồn
+- **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/tests/Shopee.Workspace.Tests/HarvestAppTests.cs:374-390`
+- **Bằng chứng**: nghiệm thu GĐ6 — đột biến bỏ hạn N ngày chỉ bị bắt nhờ `Assert.Contains` chuỗi mã nguồn.
+- **Vì sao không sửa ngay**: cần test hành vi cho job Harvest.

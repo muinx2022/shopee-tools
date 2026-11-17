@@ -187,10 +187,11 @@ public sealed class HarvestAppWiringTests
         finally { TryDelete(dir); }
     }
 
-    /// <summary>Đọc link của Harvest (RAM) phải giống hệt <see cref="ScrapeWorkbook"/> đọc file: dòng trống giữa, thiếu tên (F),
-    /// thiếu link, link www., cột không header, khoảng start/end, ExcelRowsToDenseRange, TotalDataRows.</summary>
+    /// <summary>File định dạng cũ (tiêu đề dòng 1, link cột A, tên cột F): Harvest đánh số dòng, đọc link / giá trị cột giống hệt
+    /// <see cref="ScrapeWorkbook"/> (dòng trống giữa, thiếu link, link www., cột không header, khoảng start/end, TotalDataRows) —
+    /// KHÁC duy nhất (GĐ6): dòng có link mà THIẾU tên SP vẫn được lấy (Scrape bỏ).</summary>
     [Fact]
-    public async Task BoDocHarvest_DocLink_GiongHetScrapeWorkbook()
+    public async Task BoDocHarvest_DocLink_NhuScrapeWorkbook_TruDongThieuTenVanLay()
     {
         var dir = NewTempDir();
         try
@@ -211,21 +212,24 @@ public sealed class HarvestAppWiringTests
                 }
                 wb.SaveAs(path);
             }
-            static string Dump(ScrapeLinkResult x) => string.Join("\n", x.Items.Select(i =>
-                $"{i.RowNumber}|{i.Link}|{string.Join(";", i.Values.Select(kv => kv.Key + "=" + kv.Value))}"))
-                + $"#{x.TotalDataRows}/{x.SkippedMissingProductName}/{x.SkippedMissingLink}";
+            static string Line(ScrapeLinkItem i) =>
+                $"{i.RowNumber}|{i.Link}|{string.Join(";", i.Values.Select(kv => kv.Key + "=" + kv.Value))}";
             foreach (var (s, e) in new[] { (1, 300), (1, 10), (50, 120), (290, 400) })
-                Assert.Equal(Dump(ScrapeWorkbook.FetchLinks(path, "Shop A", s, e)),
-                    Dump(await HarvestWorkbookReader.FetchLinksAsync(path, "Shop A", s, e, CancellationToken.None)));
-            foreach (var (s, e) in new[] { (2, 0), (2, 50), (40, 0), (100, 120), (999, 0) })
             {
-                var dense = ScrapeWorkbook.ExcelRowsToDenseRange(path, "Shop A", s, e);
-                var range = await HarvestWorkbookReader.ReadRangeAsync(path, "Shop A", s, e, CancellationToken.None);
-                Assert.Equal(dense, (range.DenseStart, range.DenseEnd));
-                if (dense.denseEnd >= dense.denseStart)
-                    Assert.Equal(Dump(ScrapeWorkbook.FetchLinks(path, "Shop A", dense.denseStart, dense.denseEnd)), Dump(range.Links!));
-                else Assert.Null(range.Links);
+                var scrape = ScrapeWorkbook.FetchLinks(path, "Shop A", s, e);
+                var harvest = await HarvestWorkbookReader.FetchLinksAsync(path, "Shop A", s, e, CancellationToken.None);
+                // Harvest = các dòng Scrape lấy + các dòng Scrape bỏ vì thiếu tên; cùng số dòng, cùng link, cùng giá trị cột.
+                // (Scrape xét tên TRƯỚC link: dòng thiếu cả hai Scrape đếm "thiếu tên", Harvest đếm "thiếu link".)
+                Assert.Empty(scrape.Items.Select(Line).Except(harvest.Items.Select(Line)));
+                var thieuTen = harvest.Items.Where(i => i.Values["Tên"].Trim().Length == 0).ToList();
+                Assert.Equal(scrape.Items.Count + thieuTen.Count, harvest.Items.Count);
+                Assert.Equal((scrape.TotalDataRows, 0, scrape.SkippedMissingLink + scrape.SkippedMissingProductName - thieuTen.Count),
+                    (harvest.TotalDataRows, harvest.SkippedMissingProductName, harvest.SkippedMissingLink));
+                if (e >= 300) Assert.NotEmpty(thieuTen);
             }
+            Assert.True(ScrapeWorkbook.FetchLinks(path, "Shop A", 1, 300).SkippedMissingProductName > 0);   // dữ liệu có dòng thiếu tên
+            var range = await HarvestWorkbookReader.ReadSheetAsync(path, "Shop A", CancellationToken.None);
+            Assert.Equal(ScrapeWorkbook.ExcelRowsToDenseRange(path, "Shop A", 2, 0), (range.DenseStart, range.DenseEnd));
             Assert.Equal(ScrapeWorkbook.TotalDataRows(path, "Shop A"),
                 await HarvestWorkbookReader.TotalDataRowsAsync(path, "Shop A", CancellationToken.None));
             await Assert.ThrowsAsync<InvalidOperationException>(() => HarvestWorkbookReader.FetchLinksAsync(path, "Khong Co", 1, 2, CancellationToken.None));
@@ -267,7 +271,7 @@ public sealed class HarvestAppWiringTests
                 using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
                 sw.Restart();
                 await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                    () => HarvestWorkbookReader.ReadRangeAsync(path, "Data", 2, 0, cts.Token));
+                    () => HarvestWorkbookReader.ReadSheetAsync(path, "Data", cts.Token));
                 Assert.True(sw.ElapsedMilliseconds < 3000, $"huỷ mất {sw.ElapsedMilliseconds} ms");
             }
         }

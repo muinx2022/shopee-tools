@@ -220,7 +220,7 @@ public sealed partial class AutoRunViewModel : ObservableObject
             return;
         }
         BigSellerStore.Shared.ReloadIfExternalChange();
-        RoleStores.ScrapeProgress.ReloadIfExternalChange();
+        ScrapeProgressStore.Shared.ReloadIfExternalChange();
         OpProgressStore.Shared.ReloadIfExternalChange();
         var targets = Accounts.Where(a => a.IsSelected).ToList();
         if (targets.Count == 0)
@@ -300,7 +300,7 @@ public sealed partial class AutoRunViewModel : ObservableObject
 
         if (WorkspaceAppConfig.ShowScrape)
         {
-            RoleStores.ScrapeProgress.MarkCompleted(acc.Account.Id, scrapeKey);
+            ScrapeProgressStore.Shared.MarkCompleted(acc.Account.Id, scrapeKey);
         }
         if (WorkspaceAppConfig.ShowImportUpdate)
         {

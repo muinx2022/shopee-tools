@@ -18,12 +18,6 @@ public partial class WorkspaceView : UserControl
         ColImport.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
         ColUpdate.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
         ColRewrite.Visibility = WorkspaceAppConfig.ShowImportUpdate ? Visibility.Visible : Visibility.Collapsed;
-        if (WorkspaceAppConfig.IsHarvest)
-        {
-            // App Harvest: cột chạy là "Lấy dữ liệu" (không bấm Scrape BigSeller) — rộng hơn cho vừa nhãn.
-            ColScrape.Header = new TextBlock { Text = "LẤY DỮ LIỆU", HorizontalAlignment = HorizontalAlignment.Center };
-            ColScrape.Width = 96;
-        }
         // Bấm 1 dòng tiến trình (tab Theo dõi Scrape) → đưa cửa sổ Brave của process đó lên trước.
         // (Avalonia: `PointerReleased` trên DataGrid.) Dùng bản PREVIEW (tunnel) + handledEventsToo vì DataGrid
         // tự đánh dấu handled sự kiện chuột khi xử lý selection của nó.

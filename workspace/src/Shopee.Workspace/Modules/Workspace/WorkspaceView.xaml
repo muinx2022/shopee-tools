@@ -359,27 +359,6 @@
                                Style="{StaticResource caption}" Margin="0,3,0,0" TextWrapping="Wrap" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <!-- App Harvest: 3 số của kho lưu cục bộ (đã lưu Hub · chờ đẩy · lỗi đẩy) + nút đẩy lại mục lỗi.
-                         Ẩn ở mọi app khác. -->
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,12,0"
-                                Visibility="{Binding IsHarvest, Converter={StaticResource BoolToVis}}">
-                        <StackPanel VerticalAlignment="Center">
-                            <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
-                                       ToolTip="Đã lưu Hub = số SP Hub đã nhận (cộng dồn) · Chờ đẩy = đã lưu trên máy, chưa lên Hub · Lỗi đẩy = Hub từ chối, bấm Đẩy lại mục lỗi để gửi lại."><Run Text="Đã lưu Hub " /><Run Text="{Binding HarvestSaved, Mode=OneWay}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" /><Run Text="  ·  Chờ đẩy " /><Run Text="{Binding HarvestPending, Mode=OneWay}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" /><Run Text="  ·  Lỗi đẩy " /><Run Text="{Binding HarvestFailed, Mode=OneWay}" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" /></TextBlock>
-                            <TextBlock Text="{Binding HarvestHubError}" FontSize="10.5" MaxWidth="360"
-                                       Foreground="{StaticResource TextMutedBrush}" TextTrimming="CharacterEllipsis"
-                                       ToolTip="{Binding HarvestHubError}"
-                                       Visibility="{Binding HarvestHubError, Converter={StaticResource StringToVis}}" />
-                        </StackPanel>
-                        <Button Style="{StaticResource subtle}" Margin="10,0,0,0" Height="28" Padding="10,0"
-                                Command="{Binding RequeueHarvestFailedCommand}"
-                                ToolTip="Đưa mọi mục Hub từ chối / đẩy lỗi về hàng chờ để đẩy lại.">
-                            <StackPanel Orientation="Horizontal">
-                                <c:PathIcon Data="{StaticResource IconSync}" Width="12" Height="12" />
-                                <TextBlock Style="{StaticResource btnLabel}" Margin="6,0,0,0" Text="Đẩy lại mục lỗi" />
-                            </StackPanel>
-                        </Button>
-                    </StackPanel>
                     <!-- Trạng thái dùng CHUNG chip `headerStatusChip` với 5 màn kia (trước là chữ trần) — vẫn
                          ở cột Auto nên không đè tiêu đề, và tự ẩn khi Status rỗng. -->
                     <ContentControl Style="{StaticResource headerStatusChip}" Margin="0,0,12,0"
@@ -531,14 +510,9 @@
                                     </Grid>
                                     <!-- Dòng 2 thụt 14px: cookie · tiến độ scrape -->
                                     <StackPanel Orientation="Horizontal" Margin="14,5,0,0">
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,8,0"
-                                                    Visibility="{Binding DataContext.ShowBigSellerBits,
-                                                                 RelativeSource={RelativeSource AncestorType={x:Type UserControl}},
-                                                                 Converter={StaticResource BoolToVis}}">
-                                            <TextBlock Style="{StaticResource acctCookie}" Text="{Binding CookieShort}" />
-                                            <TextBlock Text="·" FontSize="11" Margin="8,0,0,0" Foreground="{StaticResource IdleDotBrush}" />
-                                        </StackPanel>
-                                        <TextBlock Text="{Binding ScrapeSummary}" FontSize="11"
+                                        <TextBlock Style="{StaticResource acctCookie}" Text="{Binding CookieShort}" />
+                                        <TextBlock Text="·" FontSize="11" Margin="8,0,0,0" Foreground="{StaticResource IdleDotBrush}" />
+                                        <TextBlock Text="{Binding ScrapeSummary}" FontSize="11" Margin="8,0,0,0"
                                                    Foreground="{StaticResource TextSecondaryBrush}"
                                                    TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
@@ -595,8 +569,7 @@
                                                 <TextBlock Text="{Binding DisplayName}" Style="{StaticResource h2}"
                                                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                                                 <!-- Pill cookie: xanh khi đã có, vàng khi chưa đăng nhập -->
-                                                <Border Style="{StaticResource pillCookie}" Margin="10,0,0,0"
-                                                        Visibility="{Binding DataContext.ShowBigSellerBits, ElementName=Root, Converter={StaticResource BoolToVis}}">
+                                                <Border Style="{StaticResource pillCookie}" Margin="10,0,0,0">
                                                     <TextBlock Text="{Binding CookieStatus}" />
                                                 </Border>
                                             </StackPanel>
@@ -612,10 +585,10 @@
                                                 </Button>
                                                 <Button Style="{StaticResource primary}" Margin="8,0,0,0"
                                                         Command="{Binding DataContext.GoToBigSellerConfigCommand, ElementName=Root}"
-                                                        ToolTip="{Binding DataContext.ConfigButtonTip, ElementName=Root}">
+                                                        ToolTip="Mở tab BigSeller để đăng nhập lấy cookie / sửa workbook · cookie · shop · proxy của tài khoản này.">
                                                     <StackPanel Orientation="Horizontal">
                                                         <c:PathIcon Data="{StaticResource IconOpenExternal}" />
-                                                        <TextBlock Style="{StaticResource btnLabel}" Text="{Binding DataContext.ConfigButtonText, ElementName=Root}" />
+                                                        <TextBlock Style="{StaticResource btnLabel}" Text="Đăng nhập / cấu hình" />
                                                     </StackPanel>
                                                 </Button>
                                                 <Button Padding="10,4" Margin="8,0,0,0"
@@ -637,12 +610,7 @@
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
                                                 <TextBlock Grid.Column="0" Text="Workbook" Style="{StaticResource fieldLabel}" VerticalAlignment="Center" />
-                                                <!-- App Harvest chỉ đọc workbook chung: chú thích thay cho 2 nút. -->
-                                                <TextBlock Grid.Column="1" Text="{Binding DataContext.SharedWorkbookReadOnlyNote, ElementName=Root}"
-                                                           FontSize="11" Foreground="{StaticResource TextMutedBrush}" VerticalAlignment="Center"
-                                                           Visibility="{Binding DataContext.ShowSharedWorkbookReadOnlyNote, ElementName=Root, Converter={StaticResource BoolToVis}}" />
-                                                <StackPanel Grid.Column="1" Orientation="Horizontal"
-                                                            Visibility="{Binding DataContext.CanEditSharedWorkbook, ElementName=Root, Converter={StaticResource BoolToVis}}">
+                                                <StackPanel Grid.Column="1" Orientation="Horizontal">
                                                     <Button Style="{StaticResource subtle}" Height="24" Padding="8,0" Margin="0,0,6,0"
                                                             Command="{Binding DataContext.PickSharedUpdateWorkbookCommand, ElementName=Root}"
                                                             ToolTip="Chọn 1 file Excel chung cho tất cả các shop (tự động nhận diện sheet theo tên shop)">
@@ -1021,8 +989,7 @@
                                                        FontSize="10.5" Foreground="{StaticResource TextMutedBrush}"
                                                        Margin="0,4,0,0" TextWrapping="Wrap" />
                                         </StackPanel>
-                                        <StackPanel Margin="0,0,0,6"
-                                                    Visibility="{Binding DataContext.ShowBigSellerBits, ElementName=Root, Converter={StaticResource BoolToVis}}">
+                                        <StackPanel Margin="0,0,0,6">
                                             <TextBlock Text="Thư mục video (máy này)" Style="{StaticResource cfgLabel}" />
                                             <Grid Margin="0,2,0,0">
                                                 <Grid.ColumnDefinitions>
@@ -1053,7 +1020,7 @@
 
 
                     <!-- ══════════ TAB 4: Theo dõi Scrape (log đầy màn) ══════════ -->
-                    <TabItem Header="{Binding ScrapeTabHeader}" Visibility="{Binding ShowScrape, Converter={StaticResource BoolToVis}}">
+                    <TabItem Header="Theo dõi Scrape" Visibility="{Binding ShowScrape, Converter={StaticResource BoolToVis}}">
                         <Grid DataContext="{Binding Scrape}">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="1*" />

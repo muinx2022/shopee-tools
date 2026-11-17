@@ -428,6 +428,27 @@ public sealed class HubClient : IDisposable
         return await r.Content.ReadFromJsonAsync<OrdersPushResult>(ct);
     }
 
+    // ── Kho dữ liệu SP Harvest: hỏi SP nào ĐÃ có dữ liệu còn hạn (app Harvest bỏ qua, không mở trang) ──
+    /// <summary>Hỏi <see cref="HubRoutes.HarvestedProductsKnown"/>: tự khử trùng + bỏ id ≤ 0, chia lô
+    /// <see cref="HarvestedKnownLimits.MaxItems"/>, gộp kết quả (itemId → mốc lấy gần nhất). id không có trong kết quả = Hub
+    /// chưa có hoặc đã quá hạn <paramref name="maxAgeDays"/>. Dùng _http (body nhỏ, không raw). Lỗi: non-2xx →
+    /// HttpRequestException; body không đọc được → InvalidOperationException. Một lô hỏng là ném cả lời gọi — caller (Harvest)
+    /// khi đó chỉ dựa vào dữ liệu cục bộ, không được coi phần đã hỏi được là đủ.</summary>
+    public async Task<Dictionary<long, DateTimeOffset>> GetHarvestedKnownAsync(IEnumerable<long> itemIds, int maxAgeDays,
+        CancellationToken ct = default)
+    {
+        var known = new Dictionary<long, DateTimeOffset>();
+        foreach (var lo in itemIds.Where(i => i > 0).Distinct().Chunk(HarvestedKnownLimits.MaxItems))
+        {
+            using var r = await _http.PostAsJsonAsync(HubRoutes.HarvestedProductsKnown, new HarvestedKnownRequest([.. lo], maxAgeDays), ct);
+            r.EnsureSuccessStatusCode();
+            var body = await r.Content.ReadFromJsonAsync<HarvestedKnownResponse>(ct)
+                       ?? throw new InvalidOperationException("Hub trả body rỗng cho known.");
+            foreach (var it in body.Items ?? []) known[it.ItemId] = it.HarvestedAt;
+        }
+        return known;
+    }
+
     // ── Kho dữ liệu SP Harvest: đẩy lô SP đã cào (outbox → Hub) ──
     // Dùng _bulkHttp (timeout dài): lô ≤50 SP × 60–120 KB JSON ≈ vài MB qua tunnel. KHÔNG ném theo mã HTTP — worker
     // outbox cần phân biệt 400 batch-too-large / 400 khác / 413 / 500 / 503 / 401 để chọn hành động; chỉ lỗi MẠNG

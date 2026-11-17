@@ -154,14 +154,9 @@ public partial class App : Application
         try { _hubVideoSweep?.Dispose(); } catch { }
         _hubVideoSweep = null;
 
-        // App Harvest: KHÔNG lưu cả bigseller.json lúc đóng (bản trong RAM có thể cũ hơn thay đổi app Scrape vừa ghi → đè mất);
-        // chỉ ghi nốt lần lưu đang chờ của màn Cấu hình (nếu có). Vai trò khác: như cũ.
-        if (WorkspaceAppConfig.IsHarvest)
-        {
-            // Lần lưu đang chờ của tab Cấu hình (PersistDebounce, 500 ms) tự chạy trên threadpool — chờ nó xong rồi mới đóng.
-            System.Threading.Thread.Sleep(HarvestRuntime.PendingSaveWait);
-        }
-        else
+        // App Harvest không dùng BigSeller: KHÔNG lưu bigseller.json lúc đóng (bản trong RAM có thể cũ hơn thay đổi app Scrape vừa
+        // ghi → đè mất). Vai trò khác: như cũ.
+        if (!WorkspaceAppConfig.IsHarvest)
         {
             try { Shopee.Core.BigSeller.BigSellerStore.Shared.Save(); } catch { }
         }

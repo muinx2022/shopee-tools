@@ -97,12 +97,13 @@ public sealed partial class ScrapeViewModel
 
     private sealed class JobHandle
     {
-        public required ScrapeTargetViewModel Target;
+        // null = job của app Harvest (một sheet của file Excel, không có tài khoản BigSeller / shop — RunHarvestAsync).
+        public required ScrapeTargetViewModel? Target;
         // Shop/sheet của job được CHỐT LÚC ĐĂNG KÝ (không đọc Target.SelectedShop nữa). SelectedShop là state
         // MUTABLE: WorkspaceViewModel.PickShop / AssignmentWorker ghi đè nó giữa chừng, nên đọc muộn có thể trả
         // shop KHÁC hẳn shop job đang cào → chip "đang scrape" nhảy sang shop khác, IsRunningLocally kết luận
         // sai (việc Hub-giao bị báo "không khởi động được" dù đang chạy ngon).
-        public required BigSellerShop Shop;
+        public required BigSellerShop? Shop;
         public required string Sheet;     // khóa tiến độ: tên sheet, hoặc shared:{shopId} khi workbook chung bật
         public string DataPath = "";     // file Excel job đọc (workbook riêng hoặc file gộp)
         public string DataSheet = "";    // sheet trong file đó ("Gop" khi workbook chung bật)

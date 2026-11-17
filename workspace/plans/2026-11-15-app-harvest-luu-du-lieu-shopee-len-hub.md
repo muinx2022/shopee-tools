@@ -356,6 +356,95 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    - Huỷ trong lúc chờ khoá `.lock` đầu lượt (trước khi dựng lại) không đụng trạng thái tiến độ; `StartJob` bị resolve chặt
      từ chối thì log đúng lý do (không còn "đang chạy rồi").
 
+### GĐ6 — Harvest theo file Excel, bỏ BigSeller, bỏ qua SP đã có trên Hub
+
+User chốt (2026-11-17): Harvest chỉ cần **danh sách link**, không có khái niệm shop hay BigSeller (chọn shop để đăng là việc
+của app đăng SP). File Excel do Harvest **tự chọn** (một sheet dùng chung, hoặc mỗi shop một sheet); Hub nhận "shop" = **tên
+sheet**. SP đã có dữ liệu trên Hub (lấy từ file/sheet/máy khác) thì **bỏ qua, không mở trang**; bản trên Hub cũ hơn **N ngày**
+(mặc định 30, đặt được) thì lấy lại. Thay cho mục "Để ngỏ" ở mục 5 (luôn cào lại).
+
+1. **Giao diện** (chỉ app Harvest; Scrape / Update không đổi):
+   - Shell Harvest 3 tab: **Lấy dữ liệu** | Tài khoản & Proxy | Cài đặt. Không dựng màn Workspace / Cấu hình BigSeller / Update /
+     Auto Run / Scrape Multi; thanh trạng thái ẩn cụm "N tài khoản BigSeller · M shop". Không còn chữ "BigSeller" ở chỗ user
+     Harvest nhìn thấy (tab, nhãn, tooltip, hộp thoại, log, overlay — overlay ghi "Sheet: …" thay "Bigseller Account: …").
+   - Màn **Lấy dữ liệu** (view/VM riêng `Modules/Harvest/HarvestView*` + `HarvestViewModel`, không nhồi vào `WorkspaceView`): nút
+     "Chọn file Excel" + đường dẫn (nhớ qua lần mở sau, `harvest\harvest-settings.json`); "Đọc lại"; bảng sheet (ô tick — mặc
+     định tick hết, sheet bỏ tick được nhớ —, Tổng link, Đã có, Còn phải lấy, Bỏ qua/lỗi, Lượt này); Chạy / Tiếp tục, Dừng, Reset…
+     (có hỏi), Cào lại dòng đã bỏ; 3 số Hub + "Đẩy lại mục lỗi"; "Lấy lại nếu dữ liệu cũ hơn N ngày"; số cửa sổ, dòng mỗi lần,
+     khung tk, nghỉ giữa link. Dưới là lưới tiến trình + log (bấm dòng tiến trình → đưa Brave lên trước). Overlay từng dòng /
+     tổng kết khối giữ như GĐ5.
+   - "Đã có" = SP lấy trên máy này còn hạn + SP Hub báo đã có còn hạn. Hub không trả lời → ghi chú "chỉ tính SP trên máy này".
+   - Định dạng file (luật riêng của `HarvestWorkbookReader`; app Scrape vẫn dùng `ScrapeWorkbook` — link A, tiêu đề dòng 1, bắt
+     buộc tên SP cột F): **chỉ cần một cột link SP Shopee**. Cột link = cột có NHIỀU ô là link SP tách được id
+     (`HarvestItemKey` ra `id:`) nhất trong 200 dòng đầu, hoà → cột trái (một ô "Ghi chú" lẻ hay cột "Link shop" đứng trước không cướp
+     được); không cột nào có id SP → cột nhiều link Shopee nhất; không có → cột A. Host Shopee gom một chỗ
+     (`HarvestLinks.IsShopeeHost`: `shopee.{vùng}`, `*.shopee.{vùng}`, `shp.ee`, `shope.ee`). Ô chỉ là link khi không có khoảng trắng
+     và (có `http(s)://` / `www.` hoặc có path) — tên miền trơn "Shopee.vn" / "Shopee.Link" (hay gặp ở tiêu đề) không tính. Dòng 1 là
+     tiêu đề, TRỪ KHI ô cột link ở dòng 1 đã là link. Ô cột link là link → phải lấy (tên SP không bắt buộc — overlay lấy tên từ
+     JSON); ô trống hoặc chữ không phải link ("hết hàng", "x", tiêu đề gộp) → dòng không có link, bỏ. Cột chọn có < ½ số dòng là link
+     SP, hoặc có dòng chữ không phải link → cảnh báo (`HarvestSheetInfo.Warning`, vd "sheet X: chỉ 3/200 dòng có link SP ở cột C"):
+     cột "Ghi chú" trên màn + log đầu lượt sheet. File GĐ5 (tiêu đề + link cột A) đánh số dòng y như cũ.
+   - Ô số (N ngày, số cửa sổ, dòng mỗi lần, khung, nghỉ giữa link) nhập ngoài khoảng → ô hiện ngay giá trị đã kẹp (0 ngày → 30,
+     > 3650 → 3650, < 1 → 1, cặp nghỉ theo `ScrapeRestWindow.Resolve`) và lưu đúng giá trị đó.
+2. **Định danh:** đơn vị chạy là (file, sheet); các sheet tick chạy **lần lượt** trong một phiên (sheet sau thấy SP sheet trước
+   vừa lưu). Khoá tiến độ `HarvestSource.SheetKey` = đường dẫn đầy đủ chuẩn hoá (chữ thường, `\`) + `|` + tên sheet, "tài khoản"
+   của kho `harvest-progress.json` = `HarvestSource.AccountId` (`"harvest"`).
+   - **Tập `done` / `failed` TOÀN CỤC theo khoá SP** (`HarvestItemKey`): SP đã lưu ở sheet/file nào cũng tính là đã có. Luật lỗi
+     vĩnh viễn 2 lượt giữ nguyên (mỗi lần bấm Chạy = một `RunId`, dùng chung cho mọi sheet của lượt).
+   - Outbox **schema v4** (`MigrateV3ToV4`, một giao dịch): `done(item_key PK, saved_at)` gộp các target, giữ `saved_at` mới nhất;
+     `failed(item_key PK, …)` gộp, `hits` = lớn nhất (không cộng — cùng lượt ở 2 sheet không thành 2 lượt), lý do/mốc/lượt của bản
+     mới nhất, khoá đã có trong `done` bị bỏ. `pending` / `counters` / `meta` không đổi. Bản app GĐ5 không mở được DB v4.
+   - Tập `done` cục bộ cũng theo hạn N ngày (`DoneKeys(savedSince)`): SP lấy trên máy quá N ngày thì lấy lại như bản trên Hub.
+   - SP Hub TỪ CHỐI (mục outbox của SP đang `failed`, không còn mục `pending` nào của SP đó) KHÔNG tính là đã có → lượt sau lấy lại;
+     "Đẩy lại mục lỗi" đưa về `pending` → lại là đã có. Mục chờ đẩy bình thường vẫn là đã có (không lấy trùng). `done` có thêm cột
+     `item_id` (v4; migration suy từ khoá `id:` cũ, khoá `url:` cũ để NULL = giữ như cũ).
+   - API: `HarvestedItem.RecordDone` / `HarvestRunOptions.RecordDone` (bool) thay `DoneTarget`; `IHarvestFailureSink` bỏ tham số
+     target; `HarvestOutbox.DoneKeys(since)`, `ClearDone(keys)`, `FailedKeys(minRuns)`, `ClearFailed(keys)`.
+3. **Gửi Hub:** `account_id` = `"harvest"` (hằng), `sheet` = tên sheet, `row_no` như cũ (chỉ số dòng nén). Hub không ràng buộc gì
+   thêm với `account_id` (chỉ độ dài ≤ 256; `stats` lọc theo account/sheet).
+   - **Ảnh hưởng app đăng SP:** nguồn trên Hub nay là ("harvest", tên sheet) — không còn "TK BigSeller × sheet". Hai sheet cùng
+     tên ở hai file khác nhau chung một nguồn trên Hub. App đăng nên tự đọc Excel ra itemId rồi gọi API theo itemId
+     (`by-items`), hoặc chọn nguồn theo sheet với `account_id` cố định `"harvest"`.
+4. **Bỏ qua SP đã có trên Hub (còn hạn):**
+   - Hub: `POST /api/harvested-products/known` (`HubRoutes.HarvestedProductsKnown`), body `{itemIds (≤ 500, đếm cả trùng, Hub khử
+     trùng), maxAgeDays (1..3650)}` → `{items:[{itemId, harvestedAt}]}` các id có dữ liệu với mốc lấy gần nhất còn trong hạn. KHÔNG
+     trả raw. Lỗi: thiếu itemIds → 400 `item-ids-required`; quá trần → 400 `too-many-ids`; maxAgeDays sai → 400 `max-age-days`.
+   - Mốc "lần lấy gần nhất" = `harvested_products.harvested_at`: ghi bản mới → đặt bằng mốc mới; hash TRÙNG → `sqlBumpAt` nhích lên
+     GREATEST → lấy lại SP (kể cả JSON y hệt) luôn làm mới mốc. `updated_at` KHÔNG dùng (hash trùng không đụng tới). Không cần
+     migration 6.
+   - Client: `HubClient.GetHarvestedKnownAsync` (khử trùng, bỏ id ≤ 0, chia lô 500, một lô hỏng là ném cả lời gọi);
+     `HarvestPlanning.AskHubAsync` (không ném — Hub không trả lời / chưa nối Hub → `Known = null` + lý do, chỉ dựa vào `done` cục
+     bộ, log rõ; huỷ của caller thì ném); `HarvestDoneRebuild.Build(…, hubKnown)` — dòng có khoá `id:` trùng itemId Hub báo → đã
+     có. Khoá `url:` / `txt:` không hỏi Hub được. SP đã có trong `done` cục bộ không hỏi Hub.
+5. **Engine:** không đổi luồng; job Harvest dựng `ScrapeRunner` thẳng với `bigSellerAccountId = "harvest"`, sheet = tên sheet,
+   workbook = file đã chọn (`ScrapeViewModel.RunHarvestAsync` / `HarvestSheetBodyAsync`, dùng chung `RunSession`, khung tk,
+   `SessionAccountPool`, watchdog, link mẫu, khoá `.lock` / xử lý chờ như GĐ5). `JobHandle.Target/Shop` nullable cho job Harvest.
+   Lỗi hạ tầng toàn cục (key proxy chết / chỗ lưu hỏng) hoặc file đang bị khoá → dừng cả lượt; sheet đọc lỗi → bỏ sheet đó.
+   Vòng sheet tách thành `ScrapeViewModel.RunSheetsAsync` (delegate chạy một sheet) + `EndAfterReadError` / `EndAfterRun` để test
+   thứ tự, `RunId` chung cả lượt, dừng khi `StopRun`, huỷ thì dừng ngay.
+6. **Gỡ phần chỉ phục vụ mô hình cũ:** `HarvestRunConfigStore` + `RunConfigSource`, `HarvestWorkbookResolve`, `SharedWorkbookPolicy`,
+   `RoleText`, `HarvestDoneTarget`, `HarvestRuntime.PendingSaveWait`; mọi nhánh `IsHarvest` trong `ScrapeViewModel` (đường Scrape),
+   `ScrapeTargetViewModel`, `ScrapeProgressReset`, `ScrapeStatsViewModel`, `WorkspaceViewModel` / `WorkspaceView` /
+   `WorkspaceShopViewModel` / `WorkspaceAccountViewModel`, `BigSellerViewModel` / `BigSellerView`, `UpdateRunTargetViewModel`,
+   `ShellViewModel` — các file này về đúng bản trước GĐ3 (đường Scrape không đổi hành vi).
+
+**Tiêu chí nghiệm thu GĐ6:**
+- [ ] `ShopeeHarvest.exe` mở ra màn "Lấy dữ liệu" với nút chọn file Excel; shell 3 tab, không có chữ "BigSeller" ở tab / ribbon /
+      màn chính / thanh trạng thái (có test dựng shell + view). App Scrape vẫn đủ 4 tab, danh sách tài khoản như cũ (có test).
+- [ ] Chọn file nhiều sheet và file một sheet đều liệt kê đúng sheet + số link; sheet tick chạy lần lượt; đường dẫn + sheet bỏ
+      tick nhớ qua lần mở sau.
+- [ ] File chỉ một cột link (có và không có tiêu đề), link ở cột khác A, dòng thiếu tên SP: đều lấy đúng các dòng có link. Cột
+      "Ghi chú" / "Link shop" không cướp cột link SP; chữ không phải link bị bỏ và có cảnh báo; `shope.ee` được nhận.
+- [ ] SP Hub từ chối không bị coi là đã có; mục chờ đẩy bình thường vẫn là đã có.
+- [ ] Vòng nhiều sheet: đúng thứ tự, `RunId` chung, sheet đọc lỗi bị bỏ riêng, lỗi hạ tầng / file khoá / huỷ dừng cả lượt (test).
+- [ ] Cùng một SP ở 2 sheet / 2 file chỉ mở trang một lần (tập `done` toàn cục); SP Hub đã có còn hạn không mở trang; quá N ngày
+      thì lấy lại; Hub sập → vẫn chạy, chỉ bỏ qua theo `done` cục bộ, log nói rõ.
+- [ ] DB outbox v3 thật lên v4 không mất mục chờ đẩy, đếm, link mẫu; `done` gộp đúng (test migration).
+- [ ] `POST /api/harvested-products/known`: lấy lại với `raw_hash` trùng làm mới mốc; trần 500; `maxAgeDays` cắt đúng; không trả raw
+      (Postgres thật).
+- [ ] Hub nhận `account_id = "harvest"`, `sheet` = tên sheet.
+- [ ] Build Release 0 warning hai solution; test Core / Workspace / Hub / JS xanh.
+
 ## 4. Tiêu chí nghiệm thu
 
 - [ ] `dotnet build workspace/ShopeeWorkspace.sln -c Release` và `dotnet build suite/server/ShopeeHub.sln` xanh; toàn bộ
@@ -473,3 +562,19 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
 - Ý "báo fatal lên Hub" trong plan không áp dụng: workspace không có AssignmentWorker.
 - Test: Workspace 386, Core 970, Hub 312 (Postgres thật), JS 110; build Release 0 warning cả hai solution.
   16 vòng nghiệm thu / phản biện. Chưa chạy end-to-end trên Brave thật; Hub chưa deploy migration 4–5.
+
+### GĐ6 — Harvest theo file Excel, bỏ BigSeller, bỏ qua SP đã có trên Hub (2026-11-18): XONG (chưa chạy thật, chưa deploy Hub)
+
+- Harvest tự chọn file Excel, chạy các sheet được tick lần lượt, chung một `RunId`. Không còn tài khoản BigSeller /
+  shop / tab "Cấu hình BigSeller"; shell Harvest còn 3 tab (Lấy dữ liệu, Tài khoản & Proxy, Cài đặt). Màn riêng
+  `Modules/Harvest/*`; các file Workspace dùng chung trả về đúng bản trước GĐ3 (`5b1f96f`).
+- File tối thiểu: một cột link SP Shopee bất kỳ (tự chọn cột có nhiều link SP nhất), dòng 1 có thể là tiêu đề, không
+  cần tên SP; ô chữ không phải link bị bỏ và đếm riêng, cảnh báo ở cột "Ghi chú" khi cột link có ít link.
+- Hub: `account_id = "harvest"`, `sheet` = tên sheet. Endpoint mới `POST /api/harvested-products/known` (≤ 500 id,
+  `maxAgeDays` 1..3650, lọc theo `harvested_at`, không trả raw). SP Hub đã có trong N ngày (mặc định 30) thì không mở
+  trang; Hub lỗi thì chỉ dựa vào `done` cục bộ.
+- Outbox v4: `done` (có `item_id`) / `failed` toàn cục theo khoá SP, migration v3→v4 (hits lấy max). SP bị Hub từ chối
+  (pending failed) không tính là đã có.
+- Test: Core 1235 (gồm test của phiên đăng SP), Workspace 369, Hub 362 (Postgres thật), JS 110. 1 vòng nghiệm thu ĐẠT,
+  1 vòng phản biện (không chặn; đã sửa nhận cột link, `shope.ee`, chữ không phải link, SP Hub từ chối, kẹp ô số, test
+  vòng sheet).

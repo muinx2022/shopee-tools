@@ -42,25 +42,19 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     public bool ShowImportUpdate => WorkspaceAppConfig.ShowImportUpdate;
     public bool ShowLogModeSwitcher => ShowScrape && ShowImportUpdate;
 
-    public string PageTitle => WorkspaceAppConfig.IsHarvest
-        ? "Shopee Harvest — Lấy dữ liệu"
-        : WorkspaceAppConfig.IsScrapeOnly
+    public string PageTitle => WorkspaceAppConfig.IsScrapeOnly
         ? "BigSeller Scrape"
         : WorkspaceAppConfig.IsImportUpdateOnly
             ? "BigSeller Import & Update"
             : "BigSeller Workspace";
 
-    public string PageSubtitle => WorkspaceAppConfig.IsHarvest
-        ? "Lấy toàn bộ dữ liệu sản phẩm Shopee (JSON trang SP) theo link của từng shop rồi lưu lên Hub. Không cần BigSeller / Product Copy."
-        : WorkspaceAppConfig.IsScrapeOnly
+    public string PageSubtitle => WorkspaceAppConfig.IsScrapeOnly
         ? "Quản lý tài khoản & Scrape dữ liệu Shopee. Chọn 1 tài khoản để xem các shop, tình trạng scrape, rồi Scrape trực tiếp trên từng shop."
         : WorkspaceAppConfig.IsImportUpdateOnly
             ? "Quản lý tài khoản & Import / Update Shopee. Chọn 1 tài khoản để xem các shop, tình trạng import/update, rồi Import · Update · Sửa tên SP trên từng shop."
             : "Gộp Cấu hình + Scrape + Update. Chọn 1 tài khoản để xem các shop, tình trạng scrape, rồi Scrape · Import · Update · Tên SP ngay trên từng shop.";
 
-    public string PageHint => WorkspaceAppConfig.IsHarvest
-        ? "Bấm 1 tài khoản → chạy theo từng shop (nút Lấy dữ liệu). Dữ liệu lưu vào máy trước rồi tự đẩy lên Hub — mất mạng Hub vẫn chạy tiếp, có mạng lại tự đẩy."
-        : WorkspaceAppConfig.IsScrapeOnly
+    public string PageHint => WorkspaceAppConfig.IsScrapeOnly
         ? "Bấm 1 tài khoản → chạy theo từng shop (nút Scrape). Nút icon cam + viền cam = đang chạy, bấm lại để dừng · dấu ✓ góc nút = đã xong."
         : WorkspaceAppConfig.IsImportUpdateOnly
             ? "Bấm 1 tài khoản → chạy theo từng shop (3 nút: import · update · tên SP). Nút icon cam + viền cam = đang chạy, bấm lại để dừng · dấu ✓ góc nút = đã xong."
@@ -68,59 +62,6 @@ public sealed partial class WorkspaceViewModel : ObservableObject
 
     [ObservableProperty]
     private WorkspaceLogMode _logMode;
-
-    // ── App Harvest: ẩn phần BigSeller-login / video, đổi nhãn, 3 số outbox + nút đẩy lại ───────────────────
-    public bool IsHarvest => WorkspaceAppConfig.IsHarvest;
-    /// <summary>Hiện phần chỉ có nghĩa với BigSeller (pill cookie, nút đăng nhập, thư mục video). Harvest: ẩn.</summary>
-    public bool ShowBigSellerBits => !WorkspaceAppConfig.IsHarvest;
-    public string ScrapeOpLabel => RoleText.ScrapeOp;
-    public string ScrapeTabHeader => $"Theo dõi {RoleText.ScrapeOp}";
-    public string ConfigButtonText => WorkspaceAppConfig.IsHarvest ? "Cấu hình" : "Đăng nhập / cấu hình";
-    public string ConfigButtonTip => WorkspaceAppConfig.IsHarvest
-        ? "Mở tab Cấu hình BigSeller để sửa workbook · shop · sheet của tài khoản này."
-        : "Mở tab BigSeller để đăng nhập lấy cookie / sửa workbook · cookie · shop · proxy của tài khoản này.";
-
-    /// <summary>Số SP Hub đã nhận (cộng dồn bền của outbox).</summary>
-    [ObservableProperty] private long _harvestSaved;
-    /// <summary>Số SP đang chờ đẩy Hub (outbox <c>pending</c>).</summary>
-    [ObservableProperty] private int _harvestPending;
-    /// <summary>Số SP Hub từ chối / đẩy lỗi hẳn (outbox <c>failed</c>) — nút "Đẩy lại mục lỗi" đưa về hàng chờ.</summary>
-    [ObservableProperty]
-    [NotifyCanExecuteChangedFor(nameof(RequeueHarvestFailedCommand))]
-    private int _harvestFailed;
-    [ObservableProperty] private string _harvestHubError = "";
-
-    private CoalescingRefresher? _harvestStatsRefresher;
-
-    /// <summary>Đọc lại 3 số từ outbox. Gọi dồn nhiều lần (mỗi SP lưu xong) → <see cref="CoalescingRefresher"/> chỉ cho một
-    /// lượt đọc chạy, yêu cầu đến giữa chừng được đọc bù (không kẹt số cũ); đọc lỗi thì tự thử lại sau.</summary>
-    private void RefreshHarvestStats() => _ = _harvestStatsRefresher?.RequestAsync();
-
-    /// <summary>Dựng MỘT lần trong ctor (trước khi nối <see cref="HarvestRuntime.StatsChanged"/> — event bắn từ luồng nền).</summary>
-    private CoalescingRefresher NewHarvestStatsRefresher(HarvestRuntime rt) => new(async () =>
-    {
-        var st = await rt.GetStatsAsync().ConfigureAwait(false);
-        var err = rt.Worker.LastError ?? "";
-        UiThread.Post(() =>
-        {
-            HarvestSaved = st.PushedTotal;
-            HarvestPending = st.Pending;
-            HarvestFailed = st.Failed;
-            HarvestHubError = err;
-        });
-    });
-
-    private bool CanRequeueHarvestFailed() => HarvestFailed > 0;
-
-    /// <summary>Nút "Đẩy lại mục lỗi": mọi mục <c>failed</c> về hàng chờ đẩy Hub.</summary>
-    [RelayCommand(CanExecute = nameof(CanRequeueHarvestFailed))]
-    private async Task RequeueHarvestFailedAsync()
-    {
-        if (HarvestRuntime.Current is not { } rt) return;
-        var n = await rt.RequeueFailedAsync();
-        Status = n > 0 ? $"Đã đưa {n} mục lỗi về hàng chờ đẩy Hub." : "Không có mục lỗi nào.";
-        RefreshHarvestStats();
-    }
 
     public void RefreshAccountCookies()
     {
@@ -204,7 +145,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         // Nút "⏯ Tiếp tục việc dở": đếm lại số việc CHẠY TAY còn dở khi tiến độ 2 store đổi (BeginRun/FinishRun/
         // Clear đều bắn Changed) — các store bắn từ luồng runner nên marshal về UI thread. Đếm lần đầu do
         // Rebuild() phía trên đã gọi RecomputeResumePending().
-        RoleStores.ScrapeProgress.Changed += OnProgressStoresChanged;
+        ScrapeProgressStore.Shared.Changed += OnProgressStoresChanged;
         OpProgressStore.Shared.Changed += OnProgressStoresChanged;
 
         // Tự động đồng bộ tiến độ giữa 2 tiến trình ShopeeScrape và ShopeeUpdate chạy song song trên cùng máy
@@ -215,19 +156,10 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         };
         externalSyncTimer.Tick += (_, _) =>
         {
-            RoleStores.ScrapeProgress.ReloadIfExternalChange();
+            ScrapeProgressStore.Shared.ReloadIfExternalChange();
             OpProgressStore.Shared.ReloadIfExternalChange();
-            // App Harvest chỉ đọc workbook chung: app Scrape đổi nguồn / gộp lại → nạp cấu hình mới (chỉ so mốc ghi file).
-            if (WorkspaceAppConfig.IsHarvest) SharedWorkbookStore.ReloadIfExternalChange();
         };
         externalSyncTimer.Start();
-
-        if (HarvestRuntime.Current is { } harvestRt)
-        {
-            _harvestStatsRefresher = NewHarvestStatsRefresher(harvestRt);
-            harvestRt.StatsChanged += RefreshHarvestStats;
-            RefreshHarvestStats();
-        }
 
         // Hub hủy/bỏ-hẳn 1 việc → client phải BỎ khỏi "việc dở" + Clear tiến độ local. Fleet cập nhật theo nhịp
         // poll 12s của Hub (bắn Changed) → hook cùng event fleet như WorkspaceAccountViewModel để RecomputeResume-
@@ -412,7 +344,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
             return;
         }
         BigSellerStore.Shared.ReloadIfExternalChange();
-        RoleStores.ScrapeProgress.ReloadIfExternalChange();
+        ScrapeProgressStore.Shared.ReloadIfExternalChange();
         OpProgressStore.Shared.ReloadIfExternalChange();
         if (ShowScrape) Scrape.ReloadCommand.Execute(null);
         if (ShowImportUpdate) Update.ReloadCommand.Execute(null);
@@ -519,8 +451,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     {
         // Nút SCRAPE trên lưới là ScrapeToggle (resume true vì tiếp tục dòng thiếu) — vẫn hỏi khi BẮT ĐẦU.
         // Lệnh ScrapeShop (resume false) cũng hỏi. Tiếp tục / dừng / Auto Run không truyền cờ và không vào đây.
-        // Harvest không có video → không hỏi xoá video hub.
-        if ((askDeleteHubVideos || !resume) && !WorkspaceAppConfig.IsHarvest && CoordinationRuntime.Client is not null)
+        if ((askDeleteHubVideos || !resume) && CoordinationRuntime.Client is not null)
         {
             try
             {
@@ -594,16 +525,9 @@ public sealed partial class WorkspaceViewModel : ObservableObject
 
     // (Map field ↔ cột Excel làm bên tab "Cấu hình BigSeller" khi cài đặt shop — không lặp ở workspace.)
 
-    /// <summary>App Harvest chỉ ĐỌC workbook chung (<see cref="SharedWorkbookPolicy"/>) — nút chọn file chung / dùng file riêng
-    /// bị khoá. Vai trò khác: luôn true như cũ.</summary>
-    public bool CanEditSharedWorkbook => SharedWorkbookPolicy.CanEditCurrent;
-    public bool ShowSharedWorkbookReadOnlyNote => !CanEditSharedWorkbook;
-    public string SharedWorkbookReadOnlyNote => SharedWorkbookPolicy.ReadOnlyNote;
-
-    [RelayCommand(CanExecute = nameof(CanEditSharedWorkbook))]
+    [RelayCommand]
     public async Task PickSharedUpdateWorkbookAsync()
     {
-        if (!CanEditSharedWorkbook) { Status = SharedWorkbookPolicy.ReadOnlyNote; return; }
         var path = await FilePicker.OpenFileAsync("Chọn file Excel dùng chung cho mọi shop", "Excel|*.xlsx;*.xlsm|Tất cả|*.*");
         if (string.IsNullOrWhiteSpace(path) || !File.Exists(path)) return;
 
@@ -620,10 +544,9 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         Status = $"Đã chọn file chung: {Path.GetFileName(path)} (tự nhận diện sheet theo tên shop).";
     }
 
-    [RelayCommand(CanExecute = nameof(CanEditSharedWorkbook))]
+    [RelayCommand]
     public void ClearSharedUpdateWorkbook()
     {
-        if (!CanEditSharedWorkbook) { Status = SharedWorkbookPolicy.ReadOnlyNote; return; }
         SharedWorkbookStore.Disable();
         BigSeller.RefreshSharedUi();
         RefreshSharedWorkbookIndicator();
@@ -676,7 +599,6 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     public string ResumeBannerText => WorkspaceAppConfig.Role switch
     {
         WorkspaceRole.Scrape => $"Có {ResumePendingCount} việc Scrape đang dở dang từ lần trước:",
-        WorkspaceRole.Harvest => $"Có {ResumePendingCount} việc Lấy dữ liệu đang dở dang từ lần trước:",
         WorkspaceRole.ImportUpdate => $"Có {ResumePendingCount} việc Import / Update đang dở dang từ lần trước:",
         _ => $"Có {ResumePendingCount} việc đang dở dang từ lần trước:"
     };
@@ -689,7 +611,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
 
     private static string OpLabel(string op) => op switch
     {
-        AssignmentOps.Scrape => RoleText.ScrapeOp, AssignmentOps.Import => "Import", AssignmentOps.Update => "Update", _ => op,
+        AssignmentOps.Scrape => "Scrape", AssignmentOps.Import => "Import", AssignmentOps.Update => "Update", _ => op,
     };
 
     /// <summary>Tiến độ scrape thành chữ: "đã cào {tới}/{tổng} dòng" (Tổng=0 chưa biết → "đã cào tới dòng {tới}").</summary>
@@ -755,7 +677,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
 
         // Scrape: mỗi (acc, sheet) có tiến độ running/stopped → ứng viên tiếp tục dòng còn thiếu.
         if (ShowScrape)
-        foreach (var p in RoleStores.ScrapeProgress.All())
+        foreach (var p in ScrapeProgressStore.Shared.All())
         {
             if (p.Status is not (LedgerStatus.Running or LedgerStatus.Stopped)) continue;
             if (sharedOn != SharedWorkbookCatalog.IsSharedKey(p.Sheet)) continue;
@@ -818,7 +740,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
             _recomputing = true;
             try
             {
-                foreach (var (acc, sheet) in clearScrape) RoleStores.ScrapeProgress.Clear(acc, sheet);
+                foreach (var (acc, sheet) in clearScrape) ScrapeProgressStore.Shared.Clear(acc, sheet);
                 foreach (var (acc, sheet, op) in clearOp) OpProgressStore.Shared.Clear(acc, sheet, op);
             }
             finally { _recomputing = false; }
@@ -872,7 +794,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         foreach (var item in _resumePending.ToList())   // ToList: Clear bắn Changed → recompute làm rỗng _resumePending
         {
             var acc = item.Acct.Account.Id;
-            if (item.Op == AssignmentOps.Scrape) RoleStores.ScrapeProgress.Clear(acc, item.ProgressKey);
+            if (item.Op == AssignmentOps.Scrape) ScrapeProgressStore.Shared.Clear(acc, item.ProgressKey);
             else                     OpProgressStore.Shared.Clear(acc, item.ProgressKey, item.Op);
         }
         RecomputeResumePending();

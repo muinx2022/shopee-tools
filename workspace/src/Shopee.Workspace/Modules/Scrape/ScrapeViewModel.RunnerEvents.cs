@@ -11,7 +11,28 @@ public sealed partial class ScrapeViewModel
 {
     private void WireRunner(ScrapeRunner runner, int seq, BigSellerAccount account)
     {
-        var bigSellerName = account.DisplayName;
+        WireRunner(runner, seq, account.Id, account.DisplayName);
+        runner.BigSellerNeedLogin += reason =>
+        {
+            // Tk BigSeller mất phiên ("log in first") → job tk này đã bị dừng. NHỜ HUB đăng nhập lại ngay (hub có
+            // mật khẩu + tự giải captcha + tự đọc mã verify từ hòm thư) rồi kéo cookie mới về — người dùng KHÔNG
+            // phải ra tận máy đăng nhập tay. Hub chưa cấu hình → coordinator null, giữ nguyên hành vi cũ (chỉ log).
+            // App local: không yêu cầu Hub đăng nhập lại.
+
+
+            OnUi(() =>
+            {
+                var text = $"⚠ [{account.DisplayName}] BigSeller mất đăng nhập: {reason} — đã DỪNG job tài khoản này. Hãy ĐĂNG NHẬP LẠI BigSeller rồi chạy lại.";
+                LogAcc(account.Id, account.DisplayName, text);
+            });
+        };
+    }
+
+    /// <summary>Đấu event chung của runner ra lưới/log theo (id log, nhãn) — job Scrape: tk BigSeller; job Harvest: sheet.</summary>
+    private void WireRunner(ScrapeRunner runner, int seq, string logId, string jobLabel)
+    {
+        var bigSellerName = jobLabel;
+        var account = (Id: logId, DisplayName: jobLabel);
         string K(string key) => $"{seq}:{key}";   // namespace key theo job để nhiều BigSeller chạy đồng thời không đụng lưới
         // Đang Ở UI thread (trong OnUi) + cần tra Instances → ghi THẲNG cả 2 buffer, khỏi lồng OnUi thừa (LogAcc).
         runner.InstanceLog += (key, line) => OnUi(() =>
@@ -54,20 +75,6 @@ public sealed partial class ScrapeViewModel
                 var text = Shopee.Core.Harvest.HarvestSinkFailure.Is(reason)
                     ? $"⛔ [{bigSellerName}] DỪNG job: {reason}"
                     : $"⛔ [{bigSellerName}] DỪNG job: {reason} — mọi tk Shopee dùng CHUNG key proxy này nên đổi tk vô ích. Gia hạn key rồi Tiếp tục.";
-                LogAcc(account.Id, bigSellerName, text);
-            });
-        };
-        runner.BigSellerNeedLogin += reason =>
-        {
-            // Tk BigSeller mất phiên ("log in first") → job tk này đã bị dừng. NHỜ HUB đăng nhập lại ngay (hub có
-            // mật khẩu + tự giải captcha + tự đọc mã verify từ hòm thư) rồi kéo cookie mới về — người dùng KHÔNG
-            // phải ra tận máy đăng nhập tay. Hub chưa cấu hình → coordinator null, giữ nguyên hành vi cũ (chỉ log).
-            // App local: không yêu cầu Hub đăng nhập lại.
-
-
-            OnUi(() =>
-            {
-                var text = $"⚠ [{bigSellerName}] BigSeller mất đăng nhập: {reason} — đã DỪNG job tài khoản này. Hãy ĐĂNG NHẬP LẠI BigSeller rồi chạy lại.";
                 LogAcc(account.Id, bigSellerName, text);
             });
         };

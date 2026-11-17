@@ -48,6 +48,28 @@ public sealed record HarvestedProductResult(int Index, long ItemId, bool Ok, boo
 /// <summary><see cref="Results"/> đúng thứ tự + đủ số mục của request, mỗi mục một kết quả.</summary>
 public sealed record HarvestedProductBatchResponse(List<HarvestedProductResult> Results);
 
+// ── Hỏi SP nào ĐÃ có dữ liệu còn hạn (<see cref="HubRoutes.HarvestedProductsKnown"/>) — app Harvest bỏ qua, không mở trang ──
+
+/// <summary>Giới hạn của <see cref="HubRoutes.HarvestedProductsKnown"/>.</summary>
+public static class HarvestedKnownLimits
+{
+    /// <summary>Số itemId tối đa mỗi lần hỏi (đếm cả id trùng) — quá thì Hub trả 400 <c>too-many-ids</c>; client tự chia lô.</summary>
+    public const int MaxItems = 500;
+    /// <summary>Trần của <see cref="HarvestedKnownRequest.MaxAgeDays"/> (≈ 10 năm).</summary>
+    public const int MaxAgeDays = 3650;
+}
+
+/// <summary>Body của <see cref="HubRoutes.HarvestedProductsKnown"/>: ≤ <see cref="HarvestedKnownLimits.MaxItems"/> itemId,
+/// <see cref="MaxAgeDays"/> = chỉ tính là "đã có" khi mốc lấy gần nhất không cũ hơn chừng này ngày (1..<see cref="HarvestedKnownLimits.MaxAgeDays"/>).</summary>
+public sealed record HarvestedKnownRequest(List<long>? ItemIds, int? MaxAgeDays);
+
+/// <summary>1 SP đã có dữ liệu còn hạn: <see cref="HarvestedAt"/> = mốc lấy gần nhất (đồng hồ Hub; lấy lại cùng JSON cũng
+/// làm mới mốc này).</summary>
+public sealed record HarvestedKnownItem(long ItemId, DateTimeOffset HarvestedAt);
+
+/// <summary>Kết quả của <see cref="HubRoutes.HarvestedProductsKnown"/>: chỉ các id CÓ dữ liệu còn hạn (không kèm raw).</summary>
+public sealed record HarvestedKnownResponse(List<HarvestedKnownItem> Items);
+
 /// <summary><see cref="Rows"/> = số dòng nguồn (account, sheet, row_no) đã nối SP; <see cref="Products"/> = số SP
 /// khác nhau.</summary>
 public sealed record HarvestedProductStats(long Rows, long Products);

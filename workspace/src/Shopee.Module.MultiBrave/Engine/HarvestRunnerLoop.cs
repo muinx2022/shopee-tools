@@ -94,7 +94,7 @@ internal static class HarvestRunnerLoop
         var workbookPath = config.WorkbookPath;
         if (!useHubData && (string.IsNullOrWhiteSpace(workbookPath) || !File.Exists(workbookPath)))
             throw new InvalidOperationException(
-                "Workbook không tồn tại — kiểm tra cấu hình ở mục BigSeller.");
+                "File Excel không tồn tại — chọn lại file ở màn Lấy dữ liệu.");
 
         var endRow = config.EndRow;
         if (endRow is null || endRow < startRow)
@@ -117,7 +117,7 @@ internal static class HarvestRunnerLoop
         if (fetch.SkippedMissingProductName > 0)
             log($"Bỏ qua {fetch.SkippedMissingProductName} dòng vì cột F (tên SP) trống.");
         if (fetch.SkippedMissingLink > 0)
-            log($"Bỏ qua {fetch.SkippedMissingLink} dòng vì cột A không có link hợp lệ.");
+            log($"Bỏ qua {fetch.SkippedMissingLink} dòng vì không có link (cột link của sheet trống).");
 
         if (items.Count == 0)
         {
@@ -165,7 +165,8 @@ internal static class HarvestRunnerLoop
             cdpPort, profileRoot, config, sheet, startRow, endRow.Value,
             0, totalLinks, null, cancellationToken).ConfigureAwait(false);
 
-        var accountHeader = LauncherRunnerLoop.BuildAccountHeader(config);
+        // Harvest không có tài khoản BigSeller: overlay ghi sheet đang lấy thay cho "Bigseller Account".
+        var accountHeader = LauncherRunnerLoop.BuildAccountHeader(config, "Sheet", sheet);
 
         var processor = new HarvestRowProcessor(config, options, breaker, log);
         var host = new LoopHost(cdpPort, profileRoot, config, sheet, startRow, endRow.Value, totalLinks, onProgress,

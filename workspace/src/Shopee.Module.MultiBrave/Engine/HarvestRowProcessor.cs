@@ -226,7 +226,7 @@ internal sealed class HarvestRowProcessor
                 step.Json!,
                 step.Source ?? "",
                 step.HarvestedAtOr(row.ReceivedAt),
-                _options.DoneTarget);
+                _options.RecordDone);
             var saveError = await Book.SaveAsync(_options.Sink, harvested, cancellationToken).ConfigureAwait(false);
             if (saveError is HarvestItemRejectedException rejected)
             {
@@ -353,14 +353,14 @@ internal sealed class HarvestRowProcessor
         return new(HarvestRowNext.Done, decision.Action, saved, tabId);
     }
 
-    /// <summary>Ghi SP lỗi vĩnh viễn vào tập của target (nếu caller có theo dõi). Ghi hỏng chỉ log — dòng vẫn là lỗi dòng
-    /// thường, lượt sau thử lại.</summary>
+    /// <summary>Ghi SP lỗi vĩnh viễn vào tập lỗi (toàn cục theo khoá SP — nếu caller có theo dõi). Ghi hỏng chỉ log — dòng vẫn là
+    /// lỗi dòng thường, lượt sau thử lại.</summary>
     private async Task RecordPermanentAsync(int rowNumber, IReadOnlyList<string> keys, string reason, CancellationToken cancellationToken)
     {
-        if (_options.FailureSink is not { } sink || string.IsNullOrWhiteSpace(_options.DoneTarget) || keys.Count == 0) return;
+        if (_options.FailureSink is not { } sink || !_options.RecordDone || keys.Count == 0) return;
         try
         {
-            await sink.RecordPermanentFailureAsync(_options.DoneTarget, keys, reason, _runId, cancellationToken).ConfigureAwait(false);
+            await sink.RecordPermanentFailureAsync(keys, reason, _runId, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)

@@ -14,11 +14,6 @@ public sealed class HarvestRuntime
     /// bền trong outbox, lần mở sau đẩy tiếp).</summary>
     public static readonly TimeSpan ShutdownFlushTimeout = TimeSpan.FromSeconds(8);
 
-    /// <summary>Đóng app: chờ lần lưu debounce của tab Cấu hình (<c>PersistDebounce</c>, 500 ms, timer threadpool) chạy nốt thay
-    /// cho lưu cả bigseller.json. <c>PersistDebounce</c> dùng chung không cho biết có lần lưu đang chờ hay không → chờ cố định;
-    /// test đối chiếu với độ trễ trong mã nguồn của nó.</summary>
-    internal static readonly TimeSpan PendingSaveWait = TimeSpan.FromMilliseconds(650);
-
     public static HarvestRuntime? Current { get; private set; }
 
     /// <summary>Chỉ cho test: gắn / gỡ runtime hiện hành (app thật gắn qua <see cref="Start"/>).</summary>
@@ -37,8 +32,15 @@ public sealed class HarvestRuntime
     /// <summary>Kênh log của worker/outbox (UI gán vào log tab). null → bỏ.</summary>
     public Action<string>? Log { get; set; }
 
+    /// <summary>Hỏi Hub SP nào đã có dữ liệu còn hạn (<see cref="HubClient.GetHarvestedKnownAsync"/>). Chưa nối Hub → ném (caller
+    /// coi là "không hỏi được", chỉ dựa vào tập đã xong cục bộ). Test thay được.</summary>
+    public HarvestKnownQuery KnownQuery { get; internal set; }
+
     internal HarvestRuntime(string dbPath, Func<HubClient?> client)
     {
+        KnownQuery = async (ids, maxAgeDays, ct) =>
+            await (client() ?? throw new InvalidOperationException("chưa nối Hub")).GetHarvestedKnownAsync(ids, maxAgeDays, ct)
+                .ConfigureAwait(false);
         Outbox = new HarvestOutbox(dbPath, log: m => Log?.Invoke(m));
         Worker = new HarvestOutboxWorker(Outbox, client, log: m => Log?.Invoke(m));
         Worker.Changed += RaiseStatsChanged;

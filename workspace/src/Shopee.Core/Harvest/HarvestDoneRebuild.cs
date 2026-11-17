@@ -20,11 +20,14 @@ public static class HarvestDoneRebuild
     /// <param name="to">Dòng nén cuối của dải (&lt; from = dải rỗng).</param>
     /// <param name="items">Các dòng HỢP LỆ trong dải (có tên SP + link — đúng <see cref="ScrapeLinkResult.Items"/>). Dòng trong
     /// dải mà không có ở đây (thiếu tên / thiếu link) giữ hành vi cũ của engine: không có gì để lấy → tính là xong.</param>
-    /// <param name="done">Tập khoá SP đã lưu xong của target (<see cref="HarvestItemKey"/>).</param>
-    /// <param name="failed">Tập khoá SP đã ghi lỗi VĨNH VIỄN của target (SP không tồn tại, không phải trang SP, JSON bị từ chối
-    /// vì nội dung): không lên lịch lại, đưa vào sổ bỏ qua. null = không có.</param>
+    /// <param name="done">Tập khoá SP đã lưu xong (toàn cục, <see cref="HarvestItemKey"/>) — còn hạn.</param>
+    /// <param name="failed">Tập khoá SP đã ghi lỗi VĨNH VIỄN (SP không tồn tại, không phải trang SP, JSON bị từ chối vì nội
+    /// dung): không lên lịch lại, đưa vào sổ bỏ qua. null = không có.</param>
+    /// <param name="hubKnown">itemId Hub báo ĐÃ có dữ liệu còn hạn (lấy từ trước ở file / sheet / máy khác) — dòng có khoá
+    /// <c>id:</c> trùng itemId thì tính là đã có, không lên lịch. null = không hỏi được Hub (chỉ dựa vào <paramref name="done"/>).
+    /// Khoá <c>url:</c> / <c>txt:</c> không có itemId nên không bao giờ khớp ở đây.</param>
     public static HarvestDoneRebuildResult Build(int from, int to, IEnumerable<ScrapeLinkItem> items, IReadOnlySet<string> done,
-        IReadOnlySet<string>? failed = null)
+        IReadOnlySet<string>? failed = null, IReadOnlySet<long>? hubKnown = null)
     {
         var todo = new SortedSet<int>();
         var skipped = new SortedSet<int>();
@@ -33,6 +36,7 @@ public static class HarvestDoneRebuild
             if (it.RowNumber < from || it.RowNumber > to) continue;
             var key = HarvestItemKey.FromLink(it.Link);
             if (key is not null && done.Contains(key)) continue;
+            if (hubKnown is not null && HarvestSource.ItemIdOfKey(key) is { } itemId && hubKnown.Contains(itemId)) continue;
             if (key is not null && failed is not null && failed.Contains(key)) skipped.Add(it.RowNumber);
             else todo.Add(it.RowNumber);
         }

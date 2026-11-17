@@ -15,14 +15,15 @@ public enum RunnerMode
 
 /// <summary>Tham số riêng của lượt chạy Harvest, caller (GĐ5) truyền qua <see cref="ScrapeRunner.Harvest"/>.</summary>
 /// <param name="Sink">Nơi lưu dữ liệu (outbox GĐ4). Bắt buộc.</param>
-/// <param name="ShopId">Shop BigSeller đích của lượt chạy — đi vào <see cref="HarvestedItem.ShopId"/>.</param>
+/// <param name="ShopId">Nhãn tuỳ chọn của lượt chạy — đi vào <see cref="HarvestedItem.ShopId"/> (không gửi Hub).</param>
 /// <param name="PdpErrorBreakerThreshold">N dòng liên tiếp có pdpError thì coi như bị chặn (mặc định 3).</param>
 /// <param name="BlockErrorCodes">Mã lỗi get_pc coi là chặn bot; null = để mặc định của extension ([90309999]).</param>
 /// <param name="HubStatusText">Tuỳ chọn: một dòng tình trạng đẩy Hub (vd <see cref="HarvestOverlayText.HubLine"/>) cho bảng
 /// tổng kết cuối khối. null / ném / quá hạn → bỏ dòng Hub, không ảnh hưởng kết thúc khối.</param>
-/// <param name="DoneTarget">Target tập "SP đã lấy xong" của lượt (<see cref="HarvestDoneTarget.Of"/>) — đi vào
-/// <see cref="HarvestedItem.DoneTarget"/>; caller dựng lại tiến độ từ tập này ở lượt sau. null = không ghi.</param>
-/// <param name="FailureSink">Nơi ghi SP lỗi VĨNH VIỄN theo <paramref name="DoneTarget"/> (lượt sau không lên lịch). null = không ghi.</param>
+/// <param name="RecordDone">true → ghi khoá SP lưu được vào tập "SP đã lấy xong" TOÀN CỤC (đi vào
+/// <see cref="HarvestedItem.RecordDone"/>) và SP lỗi vĩnh viễn vào <paramref name="FailureSink"/>; caller dựng lại tiến độ từ hai
+/// tập này ở lượt sau. false = không ghi.</param>
+/// <param name="FailureSink">Nơi ghi SP lỗi VĨNH VIỄN (lượt sau không lên lịch). null = không ghi.</param>
 /// <param name="RunId">Định danh lượt chạy (job) — lỗi vĩnh viễn chỉ được xác nhận khi thấy ở nhiều lượt khác nhau. null =
 /// mỗi lần dựng bộ xử lý dòng là một lượt.</param>
 /// <param name="SampleLink">Nguồn dự phòng của link mẫu kiểm chứng phiên (vd link SP lưu được gần nhất trong outbox) khi khối
@@ -33,7 +34,7 @@ public sealed record HarvestRunOptions(
     int PdpErrorBreakerThreshold = HarvestStepPolicy.DefaultPdpErrorBreakerThreshold,
     IReadOnlyList<long>? BlockErrorCodes = null,
     Func<CancellationToken, Task<string?>>? HubStatusText = null,
-    string? DoneTarget = null,
+    bool RecordDone = false,
     IHarvestFailureSink? FailureSink = null,
     string? RunId = null,
     Func<string?>? SampleLink = null);
