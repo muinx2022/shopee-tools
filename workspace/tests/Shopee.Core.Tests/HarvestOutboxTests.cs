@@ -6,7 +6,8 @@ using static Shopee.Core.Tests.HarvestTestData;
 namespace Shopee.Core.Tests;
 
 /// <summary>
-/// GĐ4: <see cref="HarvestOutbox"/> trên file SQLite TẠM — idempotent theo (account, sheet, row), bản cũ không đè bản mới,
+/// GĐ4: <see cref="HarvestOutbox"/> trên file SQLite TẠM — idempotent theo (account, sheet, SP) (schema v2), bản cũ không đè
+/// bản mới, SP khác cùng số dòng không đè nhau,
 /// ghi song song nhiều cửa sổ + worker xoá cùng lúc, BUSY tự thử lại trong ngân sách, EnsureReady lỗi khi không ghi được.
 /// </summary>
 public sealed class HarvestOutboxTests : IDisposable
@@ -44,18 +45,19 @@ public sealed class HarvestOutboxTests : IDisposable
     }
 
     [Fact]
-    public async Task Save_CungDongNhieuLan_Idempotent_MotDong()
+    public async Task Save_CungSPNhieuLan_Idempotent_MotDongMoiSheet()
     {
         var box = new HarvestOutbox(DbPath);
         var item = Item(F1, 5);
 
         for (var i = 0; i < 3; i++) await box.SaveAsync(item, CancellationToken.None);
-        await box.SaveAsync(Item(F1, 6), CancellationToken.None);              // dòng khác
-        await box.SaveAsync(Item(F1, 5, sheet: "Shop2"), CancellationToken.None);   // sheet khác
+        await box.SaveAsync(Item(F1, 6), CancellationToken.None);              // cùng SP, dòng khác → cùng mục, row_no = 6
+        await box.SaveAsync(Item(F1, 5, sheet: "Shop2"), CancellationToken.None);   // sheet khác → mục riêng
 
-        Assert.Equal(3, box.GetStats().Pending);
-        var e = box.TakeDue(50, long.MaxValue).Single(x => x.Item.RowNo == 5 && x.Item.Sheet == "Shop1");
+        Assert.Equal(2, box.GetStats().Pending);
+        var e = box.TakeDue(50, long.MaxValue).Single(x => x.Item.Sheet == "Shop1");
         Assert.Equal(item.ItemId, e.Item.ItemId);
+        Assert.Equal(6, e.Item.RowNo);
     }
 
     [Fact]
@@ -64,14 +66,17 @@ public sealed class HarvestOutboxTests : IDisposable
         var box = new HarvestOutbox(DbPath);
         await box.SaveAsync(Item(F1, 5, at: T0.AddMinutes(10)), CancellationToken.None);
 
-        await box.SaveAsync(Item(F2, 5, at: T0), CancellationToken.None);       // cũ hơn, SP khác → bỏ qua
-        Assert.Equal(ItemIdOf(Fixture(F1)), Assert.Single(box.TakeDue(50, long.MaxValue)).Item.ItemId);
+        await box.SaveAsync(Item(F1, 7, at: T0), CancellationToken.None);       // cũ hơn, cùng SP → bỏ qua (giữ dòng 5)
+        var e = Assert.Single(box.TakeDue(50, long.MaxValue));
+        Assert.Equal((5, 1L), (e.Item.RowNo!.Value, e.Version));
 
-        await box.SaveAsync(Item(F2, 5, at: T0.AddMinutes(10)), CancellationToken.None);   // bằng → thay
-        Assert.Equal(ItemIdOf(Fixture(F2)), Assert.Single(box.TakeDue(50, long.MaxValue)).Item.ItemId);
+        await box.SaveAsync(Item(F1, 8, at: T0.AddMinutes(10)), CancellationToken.None);   // bằng → thay
+        e = Assert.Single(box.TakeDue(50, long.MaxValue));
+        Assert.Equal((8, 2L), (e.Item.RowNo!.Value, e.Version));
 
-        await box.SaveAsync(Item(F1, 5, at: T0.AddMinutes(11)), CancellationToken.None);   // mới hơn → thay
-        Assert.Equal(ItemIdOf(Fixture(F1)), Assert.Single(box.TakeDue(50, long.MaxValue)).Item.ItemId);
+        await box.SaveAsync(Item(F1, 9, at: T0.AddMinutes(11)), CancellationToken.None);   // mới hơn → thay
+        e = Assert.Single(box.TakeDue(50, long.MaxValue));
+        Assert.Equal((9, 3L), (e.Item.RowNo!.Value, e.Version));
     }
 
     /// <summary>Bản mới lưu đè TRONG LÚC lô cũ đang bay: Hub báo ok cho bản cũ thì KHÔNG được xoá bản mới.</summary>
@@ -82,12 +87,13 @@ public sealed class HarvestOutboxTests : IDisposable
         await box.SaveAsync(Item(F1, 5, at: T0), CancellationToken.None);
         var inFlight = Assert.Single(box.TakeDue(50, long.MaxValue));
 
-        await box.SaveAsync(Item(F2, 5, at: T0.AddMinutes(1)), CancellationToken.None);
+        await box.SaveAsync(Item(F1, 6, at: T0.AddMinutes(1)), CancellationToken.None);   // bản mới hơn của CÙNG SP
         box.Complete([(inFlight, true)]);
         box.MarkFailed([(inFlight, "x")]);
 
         var con = Assert.Single(box.TakeDue(50, long.MaxValue));
-        Assert.Equal(ItemIdOf(Fixture(F2)), con.Item.ItemId);
+        Assert.Equal(ItemIdOf(Fixture(F1)), con.Item.ItemId);
+        Assert.Equal(6, con.Item.RowNo);
         Assert.Equal(new HarvestOutboxStats(1, 0, 1, 1), box.GetStats());
     }
 
@@ -165,8 +171,9 @@ public sealed class HarvestOutboxTests : IDisposable
         {
             for (var r = 1; r <= rows; r++)
             {
-                await box.SaveAsync(Item(F1, r, sheet: "S" + w, json: json), CancellationToken.None);
-                if (r % 5 == 0) await box.SaveAsync(Item(F1, r, sheet: "S" + w, json: json), CancellationToken.None);
+                var spJson = SyntheticJson(10_000 + r);   // mỗi dòng một SP (khoá v2 theo SP)
+                await box.SaveAsync(Item(F1, r, sheet: "S" + w, json: spJson), CancellationToken.None);
+                if (r % 5 == 0) await box.SaveAsync(Item(F1, r, sheet: "S" + w, json: spJson), CancellationToken.None);
             }
         })).ToArray();
 
@@ -255,7 +262,7 @@ public sealed class HarvestOutboxTests : IDisposable
         var dai = "https://shopee.vn/x-i.1.2?q=" + new string('a', Coordination.HarvestedProductLimits.MaxUrlLength);
         await box.SaveAsync(Item(F1, 1) with { SourceLink = dai }, CancellationToken.None);
         var vua = "https://shopee.vn/x-i.1.2?q=" + new string('b', Coordination.HarvestedProductLimits.MaxUrlLength - 30);
-        await box.SaveAsync(Item(F1, 2) with { SourceLink = vua }, CancellationToken.None);
+        await box.SaveAsync(Item(F2, 2) with { SourceLink = vua }, CancellationToken.None);
 
         var all = box.TakeDue(50, long.MaxValue);
         var e1 = all.Single(e => e.Item.RowNo == 1).Item;
@@ -267,11 +274,11 @@ public sealed class HarvestOutboxTests : IDisposable
     }
 
     [Fact]
-    public async Task Schema_UserVersion1_VersionLaThiEnsureReadyNem()
+    public async Task Schema_UserVersion3_VersionLaThiEnsureReadyNem()
     {
         var box = new HarvestOutbox(DbPath);
         await box.EnsureReadyAsync(CancellationToken.None);
-        Assert.Equal(1L, ReadUserVersion());
+        Assert.Equal(3L, ReadUserVersion());
 
         using (var con = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = DbPath, Pooling = false }.ToString()))
         {

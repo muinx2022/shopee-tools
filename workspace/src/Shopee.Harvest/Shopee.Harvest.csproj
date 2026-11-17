@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Shopee.Harvest</RootNamespace>
+    <AssemblyName>ShopeeHarvest</AssemblyName>
+    <Version>1.0.0</Version>
+    <StartupObject>Shopee.Harvest.Program</StartupObject>
+    <ApplicationManifest>..\Shopee.Workspace\app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\harvest-icon.ico</ApplicationIcon>
+    <NoWarn>$(NoWarn);WFAC010</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="..\..\assets\harvest-icon.ico" Link="Assets\app-icon.ico" />
+    <Resource Include="..\..\assets\harvest-icon.ico" Link="Assets\harvest-icon.ico" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Shopee.Workspace\Shopee.Workspace.csproj" />
+  </ItemGroup>
+
+  <!-- 📦 Gói kèm extension shopee-harvest vào output khi build/publish (app Harvest KHÔNG nạp shopee-scrape) 📦 -->
+  <PropertyGroup>
+    <RepoRoot>$(MSBuildProjectDirectory)\..\..</RepoRoot>
+  </PropertyGroup>
+  <ItemGroup>
+    <HarvestExtFiles Include="$(RepoRoot)\extensions\shopee-harvest\**\*" Exclude="$(RepoRoot)\extensions\shopee-harvest\tests\**" />
+  </ItemGroup>
+  <Target Name="BundleHarvestAssets" AfterTargets="Build">
+    <Copy SourceFiles="@(HarvestExtFiles)" DestinationFiles="@(HarvestExtFiles->'$(OutDir)extensions\shopee-harvest\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+  <Target Name="BundleHarvestAssetsPublish" AfterTargets="Publish">
+    <Copy SourceFiles="@(HarvestExtFiles)" DestinationFiles="@(HarvestExtFiles->'$(PublishDir)extensions\shopee-harvest\%(RecursiveDir)%(Filename)%(Extension)')" SkipUnchangedFiles="true" />
+  </Target>
+</Project>

@@ -60,6 +60,12 @@ public sealed partial class ShellViewModel : ObservableObject
     {
         OnPropertyChanged(nameof(CurrentScreen));
         WorkspaceStatus?.Refresh();
+        // App Harvest (chỉ đọc workbook chung): mở màn Cấu hình BigSeller → hiện đúng cấu hình app Scrape vừa đổi.
+        if (value is not null && ReferenceEquals(value, _bigSellerTab) && WorkspaceAppConfig.IsHarvest)
+        {
+            SharedWorkbookStore.ReloadIfExternalChange();
+            _bigSeller.RefreshSharedUi();
+        }
     }
 
     public bool ShowShopeeStatus => false;
@@ -95,7 +101,9 @@ public sealed partial class ShellViewModel : ObservableObject
 
         // ── Tab 1: Workspace ──
         var wsWorkspace = new RibbonScreenItem("Workspace", AppIcons.Dashboard, workspace,
-            toolTip: "BigSeller Workspace — Scrape · Import · Update theo từng shop");
+            toolTip: WorkspaceAppConfig.IsHarvest
+                ? "Lấy dữ liệu SP Shopee theo từng shop, lưu lên Hub"
+                : "BigSeller Workspace — Scrape · Import · Update theo từng shop");
         var wsScreens = new List<object> { wsWorkspace };
         _workspaceHomeScreen = wsWorkspace;
 
@@ -109,9 +117,13 @@ public sealed partial class ShellViewModel : ObservableObject
 
         if (WorkspaceAppConfig.ShowScrape)
         {
-            var wsScrapeMulti = new RibbonScreenItem("Scrape Multi", AppIcons.CloudDownload, workspace.ScrapeMulti,
-                toolTip: "Cào 1 link Shopee đồng thời cho nhiều tài khoản BigSeller");
-            wsScreens.Add(wsScrapeMulti);
+            // Harvest: Scrape Multi là luồng bấm Scrape BigSeller cho nhiều tk → không có ở app này.
+            if (!WorkspaceAppConfig.IsHarvest)
+            {
+                var wsScrapeMulti = new RibbonScreenItem("Scrape Multi", AppIcons.CloudDownload, workspace.ScrapeMulti,
+                    toolTip: "Cào 1 link Shopee đồng thời cho nhiều tài khoản BigSeller");
+                wsScreens.Add(wsScrapeMulti);
+            }
 
             var wsAccounts = new RibbonScreenItem("Tài khoản & Proxy", AppIcons.People, accounts,
                 toolTip: "Kho tài khoản Shopee dùng chung · Check tài khoản");
@@ -121,9 +133,9 @@ public sealed partial class ShellViewModel : ObservableObject
         var wsActions = new List<object>
         {
             new RibbonActionItem("Dừng jobs", "IconStop", StopWorkspaceJobsCommand,
-                "Dừng các việc đang chạy (Scrape · Update)"),
+                WorkspaceAppConfig.IsHarvest ? "Dừng các việc lấy dữ liệu đang chạy" : "Dừng các việc đang chạy (Scrape · Update)"),
         };
-        if (WorkspaceAppConfig.ShowScrape)
+        if (WorkspaceAppConfig.ShowScrape && !WorkspaceAppConfig.IsHarvest)   // Harvest không tải video (chỉ lưu URL)
         {
             wsActions.Add(new RibbonActionItem("Đẩy video", "IconSync", PushVideosToHubCommand,
                 "Đẩy video trong thư mục video (30 ngày qua) lên hub: chỉ file hub thiếu/khác, hoặc đẩy lại toàn bộ"));
@@ -139,18 +151,21 @@ public sealed partial class ShellViewModel : ObservableObject
         // ── Tab 2: Cấu hình BigSeller ──
         var bsScreen = new RibbonScreenItem("Cấu hình BigSeller", AppIcons.Database, bigSeller,
             toolTip: "Tài khoản · workbook · cookie · shop · proxy");
+        var bsActions = new List<object>();
+        if (!WorkspaceAppConfig.IsHarvest)   // Harvest không cần cookie BigSeller → không có đăng nhập hàng loạt
+        {
+            bsActions.Add(new RibbonActionItem("Đăng nhập tất cả", "IconLogin", bigSeller.LoginAllCommand,
+                "Tự đăng nhập headless mỗi tài khoản để lấy cookie"));
+            bsActions.Add(new RibbonActionItem("Dừng", "IconStop", bigSeller.StopLoginAllCommand,
+                "Dừng tiến trình đăng nhập tất cả"));
+        }
+        if (!WorkspaceAppConfig.IsHarvest)   // đổi nguồn dữ liệu dùng chung — Harvest chỉ đọc
+            bsActions.Add(new RibbonActionItem("Workbook local", "IconSave", bigSeller.UseLocalWorkbookCommand,
+                "Đổi tài khoản BigSeller đang chọn từ kho Hub sang workbook Excel local"));
         var bigSellerTab = new RibbonTab("Cấu hình BigSeller", new List<RibbonGroup>
         {
             new RibbonGroup("Màn hình", new object[] { bsScreen }),
-            new RibbonGroup("Hành động", new object[]
-            {
-                new RibbonActionItem("Đăng nhập tất cả", "IconLogin", bigSeller.LoginAllCommand,
-                    "Tự đăng nhập headless mỗi tài khoản để lấy cookie"),
-                new RibbonActionItem("Dừng", "IconStop", bigSeller.StopLoginAllCommand,
-                    "Dừng tiến trình đăng nhập tất cả"),
-                new RibbonActionItem("Workbook local", "IconSave", bigSeller.UseLocalWorkbookCommand,
-                    "Đổi tài khoản BigSeller đang chọn từ kho Hub sang workbook Excel local"),
-            }),
+            new RibbonGroup("Hành động", bsActions),
         });
         _bigSellerTab = bigSellerTab;
 
@@ -402,7 +417,7 @@ public sealed partial class ShellViewModel : ObservableObject
     public void OnWindowActivated()
     {
         BigSellerStore.Shared.ReloadIfExternalChange();
-        ScrapeProgressStore.Shared.ReloadIfExternalChange();
+        RoleStores.ScrapeProgress.ReloadIfExternalChange();
         OpProgressStore.Shared.ReloadIfExternalChange();
         Workspace.RefreshAccountCookies();
         Workspace.RefreshSharedWorkbookIndicator();

@@ -296,32 +296,42 @@ public static class BraveFleet
     {
         try
         {
-            var procs = Process.GetProcessesByName("ShopeeWorkspace")
-                .Concat(Process.GetProcessesByName("ShopeeScrape"))
-                .Concat(Process.GetProcessesByName("ShopeeUpdate"))
-                .Concat(Process.GetProcessesByName("ShopeeSuite"))
-                .ToArray();
+            var procs = SoleAppPeerNames.SelectMany(Process.GetProcessesByName).ToArray();
             try { return procs.Length <= 1; }
             finally { foreach (var p in procs) p.Dispose(); }
         }
         catch { return true; }   // không đếm được → coi như duy nhất (giữ hành vi dọn ở máy thường)
     }
 
+    /// <summary>Exe tính là "instance khác" cho <see cref="IsSoleAppInstance"/>. Có ShopeeHarvest: Harvest dựng profile bằng
+    /// cách copy từ <c>shared\profiles\{id}</c> — StartupJanitor của app khác dọn cache thư mục đó giữa lúc Harvest đang
+    /// chạy là đụng nguồn nó đang đọc.</summary>
+    internal static readonly string[] SoleAppPeerNames =
+        ["ShopeeWorkspace", "ShopeeScrape", "ShopeeUpdate", "ShopeeSuite", "ShopeeHarvest"];
+
     private static bool IsSoleSweepInstance()
     {
         try
         {
-            string[] names = ManagedRoot.EndsWith("\\profiles", StringComparison.OrdinalIgnoreCase)
-                ? ["ShopeeScrape", "ShopeeWorkspace", "ShopeeSuite"]
-                : ManagedRoot.EndsWith("\\bigseller-profiles", StringComparison.OrdinalIgnoreCase)
-                    ? ["ShopeeUpdate", "ShopeeWorkspace", "ShopeeSuite"]
-                    : ["ShopeeWorkspace", "ShopeeScrape", "ShopeeUpdate", "ShopeeSuite"];
-            var procs = names.SelectMany(Process.GetProcessesByName).ToArray();
+            var procs = SweepPeerProcessNames(ManagedRoot).SelectMany(Process.GetProcessesByName).ToArray();
             try { return procs.Length <= 1; }
             finally { foreach (var p in procs) p.Dispose(); }
         }
         catch { return true; }
     }
+
+    /// <summary>Các exe có thể mở Brave dưới <paramref name="managedRoot"/> — quét mồ côi chỉ khi đúng 1 process trong
+    /// số này đang chạy. <c>harvest-profiles</c> chỉ app Harvest dùng (chặn 2 bản cùng máy) → app Scrape/Update chạy
+    /// song song không làm Harvest bỏ quét. Root MẶC ĐỊNH (cả <c>persistent-data</c>, app Full) BAO <c>harvest-profiles</c>
+    /// → phải đếm cả ShopeeHarvest, không thì Full chạy một mình quét-giết Brave của Harvest đang làm việc.</summary>
+    internal static string[] SweepPeerProcessNames(string managedRoot) =>
+        managedRoot.EndsWith("\\profiles", StringComparison.OrdinalIgnoreCase)
+            ? ["ShopeeScrape", "ShopeeWorkspace", "ShopeeSuite"]
+            : managedRoot.EndsWith("\\bigseller-profiles", StringComparison.OrdinalIgnoreCase)
+                ? ["ShopeeUpdate", "ShopeeWorkspace", "ShopeeSuite"]
+                : managedRoot.EndsWith("\\harvest-profiles", StringComparison.OrdinalIgnoreCase)
+                    ? ["ShopeeHarvest"]
+                    : ["ShopeeWorkspace", "ShopeeScrape", "ShopeeUpdate", "ShopeeSuite", "ShopeeHarvest"];
 
     private static bool IsUnderManagedRoot(string normalizedDir)
     {

@@ -291,6 +291,8 @@ public sealed class ScrapeRunner
                         if (Interlocked.CompareExchange(ref jobFatal[0], res.Reason, null) is null)
                             InstanceLog?.Invoke("Auto", Shopee.Core.Harvest.HarvestSinkFailure.Is(res.Reason)
                                 ? $"⛔ DỪNG JOB: {res.Reason} — lỗi chỗ lưu của máy này, không phải lỗi tk. Sửa rồi Tiếp tục (không dòng nào bị bỏ)."
+                                : Shopee.Core.Harvest.HarvestWorkbookLockedException.Is(res.Reason)
+                                ? $"⛔ DỪNG JOB: {res.Reason} Không phải lỗi tk, không dòng nào bị bỏ — Tiếp tục khi app Update xong."
                                 : "⛔ DỪNG JOB: key proxy hết hạn — mọi tk Shopee dùng chung key này. Gia hạn key rồi chạy lại. "
                                 + $"[{res.Reason}]");
                         try { jobCts.Cancel(); } catch { }   // các khối P1/P2… đang chạy cũng dừng theo
@@ -522,7 +524,7 @@ public sealed class ScrapeRunner
         var msg = cfg.LastRunnerMessage ?? "";
         // Harvest: lưu dữ liệu lỗi → giữ NGUYÊN thông điệp (có tiền tố) để ScrapeFailurePolicy ra StopJob; đứng trước
         // các luật đọc chữ "captcha"/"proxy" (thông điệp lỗi đĩa có thể chứa bất kỳ chữ nào). Scrape không có tiền tố này.
-        if (Shopee.Core.Harvest.HarvestSinkFailure.Is(msg))
+        if (Shopee.Core.Harvest.HarvestSinkFailure.Is(msg) || Shopee.Core.Harvest.HarvestWorkbookLockedException.Is(msg))
             return new ChunkResult(true, msg, 0, false);
         var captcha = cfg.CaptchaError
             || msg.Contains("captcha", StringComparison.OrdinalIgnoreCase)
@@ -572,9 +574,15 @@ public sealed class ScrapeRunner
             AutoCloseProfileOnFinish = true,
             Mode = _mode,
         };
+        if (ProfileRelativePathOverride(_mode, spec.Id) is { } rel) cfg.ProfileRelativePath = rel;
         cfg.EnsureProfileRelativePath();
         return cfg;
     }
+
+    /// <summary>Harvest: profile Brave nằm dưới <see cref="MultiBraveRuntime.HarvestProfileSubRoot"/> (tách khỏi profile
+    /// của app Scrape). Scrape: null → giữ mặc định cũ của <c>InstanceConfig.EnsureProfileRelativePath</c>.</summary>
+    internal static string? ProfileRelativePathOverride(RunnerMode mode, string accountId) =>
+        mode == RunnerMode.Harvest ? Path.Combine(MultiBraveRuntime.ProfileSubRoot(mode), accountId) : null;
 
     /// <summary>
     /// "Cào lại SP lỗi" của Scrape Multi: mở 1 Brave (tk Shopee <paramref name="spec"/>, profile bền như scrape thường),

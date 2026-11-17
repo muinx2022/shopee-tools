@@ -117,6 +117,7 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
      Không có cột tồn kho/đã bán: JSON công khai luôn trả null (xem khảo sát ở mục 1).
    - `harvested_product_sources`: `account_id text`, `sheet text`, `row_no int`, `item_id bigint`, `harvested_at
      timestamptz`, UNIQUE(`account_id`,`sheet`,`row_no`) — nối dòng của shop đích với sản phẩm.
+     *(Ghi chú: đã đổi khoá sang (`account_id`,`sheet`,`item_id`) ở migration 5 — xem GĐ5.5.)*
 2. Endpoint (cùng auth token client như `ProductApiEndpoints`):
    - `POST /api/harvested-products/batch` — upsert tối đa 50 bản ghi/lần; idempotent (gửi lại cùng `raw_hash` không
      tăng `harvest_count`, không lỗi). Trả về danh sách `item_id` đã nhận để client xoá khỏi hàng đợi.
@@ -229,7 +230,8 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
      đổ xuống** vào miệng trụ, có bóng đổ như 2 icon kia. Xuất `harvest-icon.png` + `harvest-icon.ico` (đủ cỡ 16–256).
      Phiên chính xem PNG trước khi chốt. Thêm `WorkspaceRole.Harvest => …/harvest-icon.ico` vào `WindowIcon` và nhúng
      icon làm Resource như `Shopee.Scrape.csproj`.
-2. `WorkspaceRole.Harvest` + đối số `--harvest` / `--role harvest` trong `WorkspaceAppConfig`; tiêu đề "Shopee Harvest";
+2. `WorkspaceRole.Harvest` (chỉ vào được qua `ShopeeHarvest.exe`; đối số `--harvest` / `--role harvest` trên
+   `ShopeeWorkspace.exe` đã bỏ sau phản biện vì bản cài không gói extension harvest); tiêu đề "Shopee Harvest";
    tách profile Brave riêng (như `IsScrapeOnly` → `SetManagedSubRoot`, dùng sub-root khác `profiles`).
 3. UI: dùng lại màn Workspace chế độ scrape-only, đổi nhãn (Cào → Lấy dữ liệu), ẩn mọi thứ BigSeller-login/video;
    thêm 3 số: đã lưu Hub / chờ đẩy / lỗi đẩy; cửa sổ thống kê dùng tiến độ Harvest.
@@ -242,6 +244,117 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
    chỉ xử op `scrape`; Hub `OpFamily` chưa có `harvest`) — nếu không, job dừng vì sink lỗi không hiện "failed" trên Hub.
    **Chặn chạy 2 bản `ShopeeHarvest.exe` cùng máy** (dùng chung `harvest-outbox.db` → 2 worker đẩy trùng). Khởi tạo
    outbox/worker theo "Báo cáo thực thi GĐ4"; `Nudge()` sau mỗi lần lưu; khi đóng app `StopAsync` + `FlushAsync`.
+5. **Tiến độ Harvest theo itemId đã lấy xong** (user chốt 2026-11-17, thay cơ chế dấu/vân tay workbook — bỏ hẳn
+   `SharedProgressGuard`, mọi stamp; `ScrapeProgressStore.cs` về đúng HEAD):
+   - **Tập đã xong**: bảng `done (target, item_key, saved_at)` trong `harvest-outbox.db`, ghi CÙNG giao dịch SQLite với lần
+     lưu SP vào outbox (lưu vào outbox = thành công, không chờ Hub). `target` = `HarvestDoneTarget.Of(tk, khoá tiến độ)`
+     (khoá tiến độ không phân biệt hoa thường). Khoá SP (`HarvestItemKey`): `id:{shop}.{item}` tách từ link gốc của dòng
+     (`-i.{shop}.{item}` lấy cặp cuối, `/product/{shop}/{item}`; mọi query/fragment/www/http(s)/hoa thường); không tách
+     được → `url:{host thường}{path bỏ / cuối}`; không phải URL → `txt:…`. JSON trả id khác link → ghi thêm `id:` từ JSON.
+     Engine truyền target qua `HarvestRunOptions.DoneTarget` → `HarvestedItem.DoneTarget`.
+   - **Dựng lại mỗi lần Chạy / Tiếp tục** (hai nút như nhau ở Harvest, Chạy KHÔNG xoá tập): đọc workbook hiện tại MỘT lần
+     (`HarvestWorkbookReader.ReadRangeAsync`, trong dải Từ/Đến dòng của `HarvestRunConfigStore`) → hàm thuần
+     `HarvestDoneRebuild.Build(dải, dòng hợp lệ, tập)`: dòng có khoá thuộc tập → xong; dòng thiếu tên / thiếu link → xong
+     (engine cũng không có gì để lấy); còn lại → các đoạn phải chạy. Ghi đè `harvest-progress.json` (BeginFresh +
+     MarkCompleted) rồi chạy đúng các đoạn còn lại. Workbook chèn / xoá / đổi thứ tự / gộp lại / đổi nguồn, đổi giữa lượt,
+     tiến độ fold từ ledger Hub: không cần phát hiện — lượt sau dựng lại từ tập.
+   - **Reset tiến độ**: mọi nút reset (Reset tất cả shop, menu "xoá tiến độ" của shop, Thống kê → Xoá tiến độ, Auto Run)
+     đi chung `ScrapeProgressReset.ClearKey` → ở Harvest xoá CẢ tập của đúng target (`HarvestOutbox.ClearDone`); app Scrape
+     y như `Clear` cũ. Việc Hub huỷ / nút "Hủy việc dở" chỉ xoá tiến độ dở, KHÔNG xoá tập (SP đã lấy vẫn là đã lấy).
+   - **"Đánh dấu đã xong"** tắt ở Harvest (lượt sau dựng lại sẽ ghi đè; ghi khoá vào tập mà không có dữ liệu SP là sai nghĩa).
+   - **Resolve của Harvest** (`HarvestWorkbookResolve`, đăng ký job): như `SharedWorkbookCatalog.ResolveForUpdate` khi đọc
+     được, nhưng file nguồn đã chọn mà vắng / khoá độc quyền / app Update đang ghi / đọc lỗi → DỪNG job với lý do rõ, KHÔNG
+     rơi sang file gộp (dòng mọi shop dưới khoá một shop). Chỉ dùng file gộp khi đọc được mà không có sheet khớp shop.
+   - **Workbook đang bị app Update ghi** (`<file>.lock`): đọc chờ bằng `Task.Delay(…, ct)` (huỷ được) tới
+     `HarvestWorkbookReader.LockWait` (2 phút); quá hạn → `HarvestWorkbookLockedException` (tiền tố "Workbook đang bận: ").
+     Đầu lượt: báo rõ "app Update đang ghi file workbook — thử lại sau", không mở Brave. Trong khối: `ScrapeFailurePolicy`
+     ra `StopJob` (nhả tk nguyên vẹn, không cooldown, không tính kẹt, không bỏ dòng).
+   - Harvest vẫn chỉ đọc workbook chung (`SharedWorkbookPolicy`); `SharedWorkbookStore.ReloadIfExternalChange` giữ để
+     Harvest thấy nguồn / bản gộp app Scrape vừa đổi (trước khi resolve job, mỗi nhịp 4 s, khi mở tab Cấu hình BigSeller).
+   - **Khoá theo SP, không theo vị trí dòng** (phản biện vòng 12): workbook dời dòng mà Hub đang sập thì SP B lưu vào đúng số
+     dòng của SP A đè mất A (A đã vào `done` → không bao giờ lên Hub).
+     - Outbox schema v2 (`PRAGMA user_version = 2`): `pending` UNIQUE (`account_id`,`sheet`,`item_id`), `row_no` = dòng thấy
+       gần nhất (thông tin). Migration v1 → v2 dựng lại bảng trong MỘT giao dịch, giữ `id` / `version` / trạng thái / đếm thử,
+       trùng SP thì giữ bản `harvested_at` mới nhất. `done` chỉ ghi khi giao dịch thấy pending đang giữ một bản của chính SP.
+     - Hub migration 5 (KHÔNG sửa migration 4): gộp trùng (`account_id`,`sheet`,`item_id`) giữ bản `harvested_at` mới nhất,
+       bỏ UNIQUE theo `row_no`, thêm `ux_hps_acct_sheet_item` + index (`account_id`,`sheet`,`row_no`). Upsert liên kết nguồn
+       theo SP (cập nhật `row_no`/`url` khi không cũ hơn); `stats` đếm liên kết theo SP.
+   - **Khoá `url:`** (khi link không tách được id): GIỮ query (tham số sắp theo tên, bỏ tham số theo dõi `sp_atk`, `xptdk`,
+     `utm_*`, `af_*`, `gclid`, `fbclid`, …). Trước đó tách id cả trong query: cặp `shopid`/`itemid`, link lồng đã URL-decode
+     (tới 5 lớp — `s.shopee.vn/an_redir?origin_link=…`, `universal-link?redir=…`).
+   - **Lỗi vĩnh viễn vs lỗi tạm** (`HarvestStepPolicy.IsPermanentRowFailure` + chỗ lưu):
+     - VĨNH VIỄN → bảng `failed (target, item_key, reason, at)` trong DB outbox (`IHarvestFailureSink`, truyền qua
+       `HarvestRunOptions.FailureSink`): `notProduct`; mã `pdpError` đã được cầu dao xác nhận SP chết (tái diễn ngay sau khi
+       đổi IP); JSON bị từ chối vì nội dung (`HarvestItemRejectedException`).
+     - TẠM → không ghi gì: hết giờ, thiếu JSON, lỗi RPC/CDP, `pdpError` chưa xác nhận, captcha, traffic, proxy, lỗi chỗ lưu
+       (đĩa/SQLite), khoá workbook. Không chắc thì coi là tạm.
+     - Dựng lại: khoá trong `failed` (chưa có trong `done`) không lên lịch, vào sổ bỏ qua của kho tiến độ (Thống kê hiện "bỏ N
+       dòng"). Lưu thành công thì gỡ khỏi `failed`. "Cào lại dòng đã bỏ" (Thống kê) xoá `failed` của target; Reset xoá cả
+       `done` lẫn `failed`. Hub từ chối mục lúc đẩy: mục nằm ở trạng thái lỗi đẩy của outbox ("Đẩy lại mục lỗi"), khoá vẫn ở `done`.
+   - **Chống biến lỗi tạm thành bỏ sót vĩnh viễn** (phản biện vòng 13):
+     - Tài khoản bị đăng xuất: extension nhận trang `/buyer/login|signup|register`, `/user/login`, `accounts.shopee.*` →
+       cờ `loginRequired` (KHÔNG `notProduct`). Engine: `HarvestStepAction.LoginRequired` → dừng khối, dòng không tính lỗi,
+       phase "error" → `ScrapeFailurePolicy` cho tài khoản nghỉ (Cooldown) như lỗi tạm của tk; job vẫn chạy bằng tk khác.
+     - Cầu dao notProduct: `NotProductBreakerThreshold` = 3 dòng `notProduct` LIÊN TIẾP trong khối → lỗi phiên/tài khoản: dừng
+       khối (Cooldown), cả chuỗi KHÔNG vào sổ lỗi / `failed`. Chuỗi bị cắt (dòng khác có kết quả / hết khối) mới ghi.
+     - Kiểm chứng phiên khi cầu dao nhảy (link chết thật đứng liền nhau — shop nguồn bị khoá — không được làm khối dừng ở
+       đúng chỗ mãi): mở LINK MẪU trên cùng tài khoản / Brave (`IHarvestRowHost.ProbeSampleAsync` = cùng bước harvest của
+       extension, overlay "Đang kiểm tra phiên…", không qua bộ xử lý dòng → không tính tiến độ / số đếm / không lưu). Mẫu theo
+       thứ tự: link đã lưu được gần nhất trong khối → `HarvestRunOptions.SampleLink` (outbox `LastSavedLink()`: bảng `meta`,
+       khoá `sample_link` = link đã làm sạch của SP lưu được gần nhất, ghi cùng giao dịch lưu). Mẫu lấy được JSON
+       (`HarvestStepPolicy.SampleProvesSession`) → chuỗi là lỗi thật: xả (sổ lỗi + `failed` theo luật 2 lượt), chạy tiếp, đếm
+       lại từ 0. Mẫu `notProduct` / `loginRequired` / captcha / lỗi, hoặc không có mẫu → dừng khối (Cooldown), không ghi gì.
+     - Không lặp tại chỗ (phản biện vòng 15 — cụm ≥ 12 link chết làm khối dừng đúng một chỗ ở mọi lần vá):
+       - kiểm chứng THÀNH CÔNG → xả chuỗi + ĐÓNG chuỗi (`LastCompletedRow` / `NextRunRow` tiến tới dòng đó — `ScrapeRunner` vá
+         từ `LastCompletedRow + 1`). Phần còn lại của CHÍNH chuỗi đó được GIỮ CHỜ (không ghi, không tiến `LastCompletedRow`), cứ
+         đủ `HarvestStepPolicy.ProvenChainRecheckEvery` = 10 dòng thì kiểm chứng lại (phản biện vòng 16: phiên hỏng giữa chuỗi mà
+         Shopee không đẩy về trang đăng nhập): mẫu sống → xả nhóm vào `failed` + đóng chuỗi; mẫu hỏng / captcha → nhánh dừng
+         hiện có (nhóm vào sổ bỏ qua, KHÔNG vào `failed`). Nhóm còn giữ chờ được xả khi chuỗi bị cắt bởi kết quả dòng khác hoặc
+         hết khối; khối dừng vì lý do khác thì nhóm đó làm lại (chưa tiến `LastCompletedRow`). Chọn phương án "giữ chờ" (không
+         phải "ghi ngay rồi xoá theo RunId"): dòng chưa có lần kiểm nào phía sau bảo lãnh không bao giờ vào `failed`.
+         Chuỗi mới (sau kết quả dòng khác) kiểm từ đầu. Cụm 20 SP chết = 2 lần mở mẫu, 30 = 3.
+       - KHÔNG CÓ link mẫu (máy mới, khối chưa lưu được dòng nào): không chứng minh được phiên hỏng → KHÔNG dừng khối, không đụng
+         tài khoản. Chuỗi tính là đã duyệt (tiến `LastCompletedRow`, KHÔNG ghi `failed` → lượt sau thử lại), log MỘT lần mỗi chuỗi
+         "chưa có link mẫu để kiểm phiên — N dòng không phải trang SP sẽ thử lại lượt sau"; phần còn lại của chuỗi bỏ qua lặng
+         lẽ. Khối lưu được một dòng thì link đó thành mẫu cho các chuỗi sau. Mất đăng nhập rõ ràng vẫn bắt qua `loginRequired`.
+         Cụm 20 dòng chết trên máy mới: 1 lượt, 0 tài khoản bị loại, 0 lần mở mẫu.
+       - kiểm chứng KHÔNG thành công (CÓ mẫu mà mẫu hỏng) / mẫu captcha → dừng khối (tài khoản nghỉ / cách ly như cũ) nhưng chuỗi
+         TÍNH LÀ ĐÃ DUYỆT (tiến `LastCompletedRow`, KHÔNG ghi `failed`, KHÔNG có trong `done` → lượt sau thử lại): lần vá bằng
+         tài khoản khác đi tiếp từ sau chuỗi, mỗi chuỗi tối đa MỘT tài khoản nghỉ. Đánh đổi: nếu phiên hỏng thật thì ≤ N dòng
+         của chuỗi bị bỏ ở lượt này (lấy lại lượt sau) — đổi lấy việc không đốt tài khoản / phiên Brave vô hạn.
+       - Dòng "đã duyệt" mà CHƯA kết luận (chuỗi dừng khối, chuỗi không có mẫu — kể cả phần còn lại của chuỗi đó) và các dòng
+         pdpError đang chờ bị `AdvanceTo` vượt qua → vào SỔ BỎ QUA của lượt (`Book.RowFailed`, lý do "chưa kết luận (không kiểm
+         chứng được phiên) — thử lại lượt sau"; pdpError xả bằng `FlushPendingPdpRows` thay cho `Discard`). KHÔNG vào `failed`,
+         KHÔNG vào `done`. Tổng kết cuối job hiện "⚠ BỎ QUA n dòng (chưa lấy được)…", không báo hoàn thành trọn vẹn sai.
+       - bỏ chặn trên số lần kiểm (`MaxSessionChecksPerBlock`): lần không thành công dừng khối ngay; lần thành công chỉ có sau
+         một kết quả dòng khác chen vào → ≤ số dòng / (N + 1).
+       - lần mở LẠI mẫu sau khi giải captcha cũng bắt lỗi + `SafeForClassify` như lần đầu.
+     - Xác nhận 2 lượt: outbox v3 — `failed` thêm `hits` + `last_run_id` (v2→v3 `ALTER TABLE ADD COLUMN` nếu bảng đã có;
+       khoá cũ hits = 1). Mỗi lượt chạy (`HarvestRunOptions.RunId`, một Guid / job) chỉ tăng 1; dựng lại chỉ bỏ qua khoá có
+       `hits ≥ 2` (`HarvestOutbox.FailedConfirmRuns`). Áp dụng mọi loại lỗi vĩnh viễn.
+     - Cầu dao pdpError: mã đã xác nhận "SP chết" GIỮ tới hết phiên như GĐ3 (vòng 13 từng xoá khi có dòng lưu được — đảo lại
+       ở vòng 14: quên đi thì mỗi cụm SP chết lại bật cầu dao → đổi IP rồi đổi tài khoản vô ích; ghi nhầm vĩnh viễn đã có luật
+       2 lượt chặn).
+     - Vòng dòng (`HarvestRunnerLoop.RunRowsAsync`, tách khỏi `RunAsync` qua `IHarvestLoopIo` để test cả khối bằng IO giả):
+       bước "kiểm trước link kế" CHỈ chạy sau dòng lưu được — dòng không lấy được để tab ở trang không phải SP, extension chờ
+       30 s rồi báo "URL hiện tại không phải SP" → khối dừng oan, tài khoản bị loại, dòng chết không vào `failed`. Link kế tự
+       điều hướng; bước harvest kế tự dò traffic / captcha. Mọi lối dừng sớm bỏ chuỗi notProduct đang chờ; hết khối thì xả.
+     - Duyệt hết khối → `LastCompletedRow = endRow` (kể cả dòng cuối lỗi): `ScrapeRunner` không coi khối là dở rồi vá đúng
+       dòng lỗi tới khi kẹt 3 lần. Không mất dòng: tiến độ Harvest dựng lại từ `done` mỗi lượt, dòng lỗi tạm không có trong đó.
+     - Thông điệp dừng đi qua `Classify` KHÔNG chèn tên tài khoản (ghi ở log riêng); `ex.Message` ghép vào thì qua
+       `HarvestStepPolicy.SafeForClassify` (bỏ chữ captcha / verify / proxy). Link mẫu gặp captcha: y như dòng thường — chờ giải
+       tay một lần, giải được thì mở lại mẫu, không thì dừng như captcha (cách ly tài khoản).
+     - Khoá theo SP thật: `ForSaved` chỉ ghi khoá `id:` suy từ link khi khớp item (và shop nếu JSON có) trong JSON; lệch → khoá
+       `url:` của link + khoá `id:` từ JSON. Tách id trong query CHỈ trên cặp `shopid`/`itemid` ngay ở query hoặc giá trị tham
+       số trông như URL (`http(s)://`, `//`) sau decode — `search?keyword=ao-i.5.6`, `shop?shopid=7&redir=x%26itemid%3D5` ra
+       `url:`.
+     - Migration v1→v2 gộp trùng: bản `pending` thắng bản `failed`, rồi mới tới `harvested_at`, rồi id.
+     - Log dòng bỏ qua ở Harvest chỉ "lượt sau tự thử lại / Cào lại dòng đã bỏ", không khuyên "Chạy (reset)".
+   - **API mới của kho tiến độ** (chỉ THÊM, app Scrape không gọi): `ScrapeProgressStore.ReplaceProgress(acc, sheet, name,
+     totalRows, completed, skippedRows)` — ghi đè vùng phủ + sổ bỏ qua bằng một lượt sắp-gộp, MỘT lần ghi đĩa, MỘT lần
+     `Changed` (20 000 dòng xen kẽ: ~10 ms thay cho ~23 s).
+   - Huỷ trong lúc chờ khoá `.lock` đầu lượt (trước khi dựng lại) không đụng trạng thái tiến độ; `StartJob` bị resolve chặt
+     từ chối thì log đúng lý do (không còn "đang chạy rồi").
 
 ## 4. Tiêu chí nghiệm thu
 
@@ -341,3 +454,22 @@ Giao `opus-dev` theo từng giai đoạn, mỗi giai đoạn qua nghiệm thu + 
   đóng app `await w.StopAsync(); await w.FlushAsync(timeout)`.
 - Test: workspace 292 + 905, Hub 310 (Postgres thật). 3 vòng nghiệm thu + 3 vòng phản biện (vòng 2 bắt lỗi NẶNG kẹt
   hàng đợi vĩnh viễn → thay thiết kế ghim/chia đôi bằng nghi vấn xen kẽ).
+
+### GĐ5 — Exe `ShopeeHarvest.exe` + tiến độ theo itemId (2026-11-17): XONG (chưa chạy thật, chưa deploy Hub)
+
+- Exe riêng `workspace/src/Shopee.Harvest` (icon xanh ngọc + trụ DB), mutex một bản, hồ sơ Brave `harvest-profiles`,
+  UI ẩn các lệnh không dùng (Scrape Multi, Đẩy video, workbook local), Harvest chỉ đọc workbook chung; 3 số Hub
+  (đã nhận / chờ đẩy / lỗi) + "Đẩy lại mục lỗi"; overlay từng dòng ("✓ Đã xong dòng N: … · 🎬 Có video (đã lưu
+  link)") và bảng tổng kết khối giữ 5 s. Video chỉ lưu link.
+- Tiến độ: vòng 1–10 thử đoán workbook đổi theo vị trí dòng → lộ lỗi bỏ sót / xoá oan mỗi vòng → bỏ hẳn, đổi sang
+  **tập khoá SP đã lưu** (`done`, cùng giao dịch với outbox) + dựng lại mỗi lượt Chạy/Tiếp tục (xem GĐ5.5).
+  `ScrapeProgressStore.cs` chỉ thêm `ReplaceProgress`.
+- Outbox lên v3: `pending` khoá (account, sheet, item_id); bảng `done`, `failed(hits, last_run_id)`, `meta`.
+  Hub migration 5: `harvested_product_sources` UNIQUE (account, sheet, item_id). Bản app cũ không mở được DB v3.
+- Lỗi vĩnh viễn (notProduct, pdpError đã xác nhận, JSON bị từ chối) chỉ bỏ qua khi thấy ở ≥ 2 lượt; trang đăng nhập →
+  `loginRequired` (dừng khối, tài khoản nghỉ, không ghi lỗi); chuỗi 3 notProduct → kiểm phiên bằng link mẫu (kiểm
+  lại mỗi 10 dòng; không có mẫu thì không dừng khối); khối duyệt hết thì báo xong cả khối; khoá `.lock` của Update →
+  chờ huỷ được, không phạt tài khoản; resolve chặt không rơi sang file gộp khi file nguồn bị khoá.
+- Ý "báo fatal lên Hub" trong plan không áp dụng: workspace không có AssignmentWorker.
+- Test: Workspace 386, Core 970, Hub 312 (Postgres thật), JS 110; build Release 0 warning cả hai solution.
+  16 vòng nghiệm thu / phản biện. Chưa chạy end-to-end trên Brave thật; Hub chưa deploy migration 4–5.

@@ -20,6 +20,11 @@ public static class IconGenerator
         {
             SavePngAndIco(updateBmp, outputDir, "update-icon");
         }
+
+        using (var harvestBmp = RenderHarvestIcon(1024))
+        {
+            SavePngAndIco(harvestBmp, outputDir, "harvest-icon");
+        }
     }
 
     private static GraphicsPath CreateRoundedRect(RectangleF rect, float radius)
@@ -292,6 +297,142 @@ public static class IconGenerator
                 {
                     new PointF(cx - wingW, wingY),
                     new PointF(cx, arrowTop),
+                    new PointF(cx + wingW, wingY)
+                });
+            }
+        }
+        return bmp;
+    }
+
+    public static Bitmap RenderHarvestIcon(int size)
+    {
+        var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            SetupGraphics(g);
+            g.Clear(Color.Transparent);
+
+            // Emerald squircle (#34D399 -> #10B981 -> #047857)
+            DrawSquircleBase(
+                g,
+                size,
+                Color.FromArgb(255, 52, 211, 153),
+                Color.FromArgb(255, 16, 185, 129),
+                Color.FromArgb(255, 4, 120, 87)
+            );
+
+            // Database cylinder: top ellipse + 3 stacked disc bands
+            float cx = size / 2f;
+            float rx = 236f;          // half width of cylinder
+            float ry = 74f;           // half height of ellipses
+            float topY = 440f;        // centre of top ellipse (mouth)
+            float bandH = 108f;       // height of each disc band
+            float gap = 20f;          // emerald gap between discs
+            int bands = 3;
+
+            float shOffY = 16f;
+            Color shColor = Color.FromArgb(70, 2, 60, 42);
+            Color edge = Color.FromArgb(255, 4, 120, 87);      // deep emerald for rims + mouth
+
+            // Drop shadow of the whole cylinder body
+            float bottomY = topY + bands * bandH + (bands - 1) * gap;
+            using (var shBrush = new SolidBrush(shColor))
+            using (var shPath = new GraphicsPath())
+            {
+                shPath.AddArc(cx - rx, topY - ry + shOffY, rx * 2f, ry * 2f, 180, 180);
+                shPath.AddLine(cx + rx, topY + shOffY, cx + rx, bottomY + shOffY);
+                shPath.AddArc(cx - rx, bottomY - ry + shOffY, rx * 2f, ry * 2f, 0, 180);
+                shPath.CloseFigure();
+                g.FillPath(shBrush, shPath);
+            }
+
+            // Disc bands, drawn bottom-up so each upper band's lower rim overlaps the gap above the next
+            for (int i = bands - 1; i >= 0; i--)
+            {
+                float y0 = topY + i * (bandH + gap);
+                float y1 = y0 + bandH;
+                using (var bandPath = new GraphicsPath())
+                {
+                    bandPath.AddArc(cx - rx, y0 - ry, rx * 2f, ry * 2f, 180, -180);
+                    bandPath.AddLine(cx + rx, y0, cx + rx, y1);
+                    bandPath.AddArc(cx - rx, y1 - ry, rx * 2f, ry * 2f, 0, 180);
+                    bandPath.CloseFigure();
+                    using (var white = new SolidBrush(Color.White))
+                    {
+                        g.FillPath(white, bandPath);
+                    }
+                }
+            }
+
+            // Mouth of the cylinder (top ellipse): white rim + emerald opening
+            var topRect = new RectangleF(cx - rx, topY - ry, rx * 2f, ry * 2f);
+            using (var white = new SolidBrush(Color.White))
+            {
+                g.FillEllipse(white, topRect);
+            }
+            float mouthInset = 30f;
+            var mouthRect = new RectangleF(cx - rx + mouthInset, topY - ry + mouthInset * 0.6f,
+                (rx - mouthInset) * 2f, (ry - mouthInset * 0.6f) * 2f);
+            using (var mouthBrush = new LinearGradientBrush(
+                new PointF(mouthRect.Left, mouthRect.Top),
+                new PointF(mouthRect.Left, mouthRect.Bottom),
+                Color.FromArgb(255, 6, 95, 70),
+                edge))
+            {
+                g.FillEllipse(mouthBrush, mouthRect);
+            }
+
+            // Bold white downward arrow pouring into the mouth (with shadow)
+            float arrowTop = 112f;
+            float arrowTip = topY + 6f;
+            float wingW = 112f;
+            float wingY = arrowTip - 118f;
+            float stroke = 60f;
+
+            using (var shShaft = new Pen(shColor, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawLine(shShaft, cx, arrowTop + shOffY, cx, arrowTip - 20f + shOffY);
+            }
+            using (var shHead = new Pen(shColor, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            {
+                g.DrawLines(shHead, new PointF[]
+                {
+                    new PointF(cx - wingW, wingY + shOffY),
+                    new PointF(cx, arrowTip + shOffY),
+                    new PointF(cx + wingW, wingY + shOffY)
+                });
+            }
+
+            // Emerald halo so the arrow reads clearly against the white mouth rim
+            using (var haloShaft = new Pen(edge, stroke + 28f) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawLine(haloShaft, cx, topY - ry - 10f, cx, arrowTip - 20f);
+            }
+            using (var haloHead = new Pen(edge, stroke + 28f) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            {
+                g.DrawLines(haloHead, new PointF[]
+                {
+                    new PointF(cx - wingW * 0.55f, arrowTip - 118f * 0.55f),
+                    new PointF(cx, arrowTip),
+                    new PointF(cx + wingW * 0.55f, arrowTip - 118f * 0.55f)
+                });
+            }
+
+            using (var shaftPen = new Pen(Color.White, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawLine(shaftPen, cx, arrowTop, cx, arrowTip - 20f);
+            }
+            using (var headPen = new Pen(Color.White, stroke)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+                LineJoin = LineJoin.Round
+            })
+            {
+                g.DrawLines(headPen, new PointF[]
+                {
+                    new PointF(cx - wingW, wingY),
+                    new PointF(cx, arrowTip),
                     new PointF(cx + wingW, wingY)
                 });
             }

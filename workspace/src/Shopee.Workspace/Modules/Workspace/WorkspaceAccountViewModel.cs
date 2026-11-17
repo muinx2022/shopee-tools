@@ -118,7 +118,7 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
     public LogBuffer ActiveLog => _showUpdate ? UpdateLog : ScrapeLog;
 
     /// <summary>Nhãn cửa sổ log, không gồm tên tài khoản.</summary>
-    public string ActiveLogCaption => _showUpdate ? "Log update" : "Log scrape";
+    public string ActiveLogCaption => _showUpdate ? "Log update" : $"Log {RoleText.ScrapeOpLower}";
 
     /// <summary>true nếu tk này đang scrape 1 shop nào đó (job LIVE) → khoá ▶/⏯ các shop còn lại
     /// (1 shop/account: đang chạy 1 shop thì các shop khác không cho chạy chồng).</summary>
@@ -205,8 +205,8 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
         {
             var total = Shops.Count;
             if (total == 0) return "chưa có shop";
-            var done = Shops.Count(s => s.ScrapeStatusText.Contains("đã scrape"));
-            return $"{done}/{total} shop đã scrape";
+            var done = Shops.Count(s => s.ScrapeStatusText.Contains($"đã {RoleText.ScrapeOpLower}"));
+            return $"{done}/{total} shop đã {RoleText.ScrapeOpLower}";
         }
     }
 
@@ -258,14 +258,14 @@ public sealed partial class WorkspaceAccountViewModel : ObservableObject
 
         if (WorkspaceAppConfig.IsScrapeOnly)
         {
-            if (!await Dialogs.ConfirmAsync($"Reset tiến độ Scrape của TẤT CẢ {Shops.Count} shop thuộc tài khoản '{DisplayName}'?", "Reset tất cả shop"))
+            if (!await Dialogs.ConfirmAsync($"Reset tiến độ {RoleText.ScrapeOp} của TẤT CẢ {Shops.Count} shop thuộc tài khoản '{DisplayName}'?", "Reset tất cả shop"))
                 return;
 
             foreach (var s in Shops)
             {
                 var resolved = SharedWorkbookStore.Resolve(Account, s.Shop);
                 var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, Account.Id, resolved.ProgressKey);
-                ScrapeProgressStore.Shared.Clear(Account.Id, scrapeKey);
+                ScrapeProgressReset.ClearKey(Account.Id, scrapeKey);   // Harvest: xoá cả tập SP đã lấy của shop này
                 ShopLiveLine.Clear(Account.Id, s.Shop.Id);
                 s.NotifyLiveLine();
                 s.RefreshProgress();

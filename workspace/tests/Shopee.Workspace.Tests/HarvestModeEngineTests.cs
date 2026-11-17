@@ -371,6 +371,14 @@ public sealed class HarvestModeEngineTests
             CaptchaChecks++;
             return Task.FromResult(Captcha);
         }
+        /// <summary>Kết quả bước của link mẫu (kiểm chứng phiên); null = ném lỗi.</summary>
+        public Func<string, HarvestStepResult?> Sample { get; set; } = _ => null;
+        public List<string> Probes { get; } = [];
+        public Task<HarvestStepResult> ProbeSampleAsync(string link, int rowNumber, int? tabId, CancellationToken cancellationToken)
+        {
+            Probes.Add(link);
+            return Sample(link) is { } r ? Task.FromResult(r) : throw new InvalidOperationException("mẫu hỏng");
+        }
     }
 
     private static HarvestStepResult Step(
@@ -441,6 +449,636 @@ public sealed class HarvestModeEngineTests
         Assert.Contains(x.Log, l => l.Contains("Dòng 7"));
         Assert.Equal(ScrapeFailureAction.None,
             ScrapeFailurePolicy.Decide(ScrapeRunner.Classify(x.Cfg).Errored, false, ScrapeRunner.Classify(x.Cfg).Reason));
+    }
+
+    private sealed class FakeFailureSink : IHarvestFailureSink
+    {
+        public List<(string Target, string[] Keys, string Reason)> Calls { get; } = [];
+        public Exception? Fail { get; set; }
+        public string? LastRunId { get; private set; }
+        public Task RecordPermanentFailureAsync(string target, IReadOnlyList<string> itemKeys, string reason, string runId, CancellationToken cancellationToken)
+        {
+            if (Fail is not null) throw Fail;
+            LastRunId = runId;
+            Calls.Add((target, itemKeys.ToArray(), reason));
+            return Task.CompletedTask;
+        }
+    }
+
+    private static (HarvestRowProcessor P, InstanceConfig Cfg, FakeSink Sink, FakeHost Host, List<string> Log) ProcF(
+        FakeFailureSink failures, Exception? sinkFails = null, HarvestPdpBreaker? breaker = null, Func<string?>? sampleLink = null)
+    {
+        var cfg = Cfg();
+        cfg.HubAccountId = "bs1";
+        var sink = new FakeSink(sinkFails);
+        var log = new List<string>();
+        var p = new HarvestRowProcessor(cfg, new HarvestRunOptions(sink, "shop1", 3, DoneTarget: "bs1|acc:bs1:shared:s1", FailureSink: failures,
+                SampleLink: sampleLink),
+            breaker ?? new HarvestPdpBreaker(3), log.Add);
+        return (p, cfg, sink, new FakeHost(), log);
+    }
+
+    /// <summary>Bảng phân loại: notProduct / JSON bị từ chối vì nội dung / mã pdpError đã xác nhận SP chết → VĨNH VIỄN (ghi tập
+    /// lỗi); hết giờ / thiếu JSON / pdpError chưa xác nhận / captcha / proxy / traffic / lỗi chỗ lưu → TẠM (không ghi).</summary>
+    [Fact]
+    public async Task Processor_LoiVinhVien_GhiTapLoi_LoiTam_KhongGhi()
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f);
+        await Handle(x, Step(notProduct: true, message: "không phải trang SP"), 3);
+        Assert.Empty(f.Calls);                                                               // notProduct: chờ xem có phải chuỗi
+        await Handle(x, Step(message: "hết giờ chờ get_pc"), 4);                            // tạm — cắt chuỗi → dòng 3 ghi
+        Assert.Equal(("bs1|acc:bs1:shared:s1", "id:1490438686.26393229156"), (f.Calls[0].Target, Assert.Single(f.Calls[0].Keys)));
+        Assert.False(string.IsNullOrEmpty(f.LastRunId));
+
+        await Handle(x, Step(pdpError: "90309999", message: "pdp"), 5);                     // pdpError chưa xác nhận → tạm
+        await Handle(x, Step(captcha: true), 6);                                             // tạm
+        await Handle(x, Step(proxy: true), 7);
+        await Handle(x, Step(traffic: true), 8);
+        Assert.Single(f.Calls);
+
+        var rejected = new FakeFailureSink();
+        var y = ProcF(rejected, new HarvestItemRejectedException("JSON PDP không xử lý được"));
+        await Handle(y, Step(ok: true), 9);                                                  // JSON bị từ chối vì nội dung
+        Assert.Contains("id:1490438686.26393229156", Assert.Single(rejected.Calls).Keys);
+
+        var infra = new FakeFailureSink();
+        var z = ProcF(infra, new IOException("disk full"));
+        await Handle(z, Step(ok: true), 10);                                                 // lỗi chỗ lưu → tạm
+        Assert.Empty(infra.Calls);
+
+        // Mã pdpError đã bật cầu dao rồi tái diễn trước khi có dòng lưu được → SP chết → vĩnh viễn.
+        var dead = new FakeFailureSink();
+        var breaker = new HarvestPdpBreaker(1);
+        var w = ProcF(dead, breaker: breaker);
+        await Handle(w, Step(pdpError: "4", message: "pdp"), 11);                            // bật cầu dao (tạm)
+        Assert.Empty(dead.Calls);
+        await Handle(w, Step(pdpError: "4", message: "pdp"), 12);                            // tái diễn → SP chết
+        Assert.Single(dead.Calls);
+    }
+
+    [Fact]
+    public async Task Processor_GhiTapLoiHong_ChiLog_DongVanLaLoiDongThuong()
+    {
+        var f = new FakeFailureSink { Fail = new IOException("db khoá") };
+        var x = ProcF(f);
+        await Handle(x, Step(notProduct: true), 3);
+        var o = await Handle(x, Step(ok: true), 4);                                          // cắt chuỗi → ghi dòng 3 (hỏng)
+        Assert.Equal(HarvestRowNext.Done, o.Next);
+        Assert.Contains(x.Log, l => l.Contains("không ghi được vào danh sách lỗi vĩnh viễn"));
+        Assert.Contains(x.Cfg.SnapshotFailedRows(), r => r.Row == 3);
+    }
+
+    /// <summary>Phản biện vòng 13: tài khoản bị đăng xuất → trang /buyer/login (extension báo loginRequired) — KHÔNG phải SP lỗi:
+    /// dừng khối, dòng không vào sổ lỗi / tập lỗi, tài khoản đi đường lỗi tạm (Cooldown), không dừng cả job.</summary>
+    [Fact]
+    public async Task Processor_MatDangNhap_DungKhoi_KhongGhiLoi_TaiKhoanNghi()
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f);
+        await Handle(x, Step(notProduct: true), 3);                                          // đang chờ trong chuỗi
+        var login = Step(message: "login") with { LoginRequired = true };
+        var o = await Handle(x, login, 4);
+
+        Assert.Equal(HarvestRowNext.Stop, o.Next);
+        Assert.Equal(HarvestStepAction.LoginRequired, o.Action);
+        Assert.Empty(f.Calls);
+        Assert.Empty(x.Cfg.SnapshotFailedRows());
+        Assert.Empty(x.P.PendingNotProductRows);
+        Assert.Contains("mất đăng nhập", x.Cfg.LastRunnerMessage);
+        var chunk = ScrapeRunner.Classify(x.Cfg);
+        Assert.Equal(ScrapeFailureAction.Cooldown, ScrapeFailurePolicy.Decide(chunk.Errored, chunk.IsCaptcha, chunk.Reason));
+        // Extension trả cờ loginRequired → Parse đọc được.
+        using var doc = JsonDocument.Parse("{\"loginRequired\":true,\"notProduct\":false,\"message\":\"m\"}");
+        Assert.True(HarvestStepResult.Parse(doc.RootElement, 1, "u").LoginRequired);
+    }
+
+    [Fact]
+    public async Task Processor_ChuoiNotProductLienTiep_KhongCoMau_ChayTiep_KhongGhiLoiCaChuoi()
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f);
+        await Handle(x, Step(notProduct: true), 3);
+        await Handle(x, Step(notProduct: true), 4);
+        var o = await Handle(x, Step(notProduct: true), 5);
+        Assert.Equal(HarvestRowNext.Done, o.Next);                                           // không có mẫu → KHÔNG dừng khối
+        Assert.Empty(x.Host.Probes);
+        Assert.Empty(f.Calls);                                                               // KHÔNG vào tập lỗi vĩnh viễn
+        Assert.Equal(new[] { 3, 4, 5 }, x.Cfg.SnapshotFailedRows().Select(r => r.Row));      // sổ bỏ qua của LƯỢT (lỗi tạm)
+        Assert.All(x.Cfg.SnapshotFailedRows(), r => Assert.Equal(HarvestRowProcessor.UnresolvedReason, r.Reason));
+        Assert.Equal(5, x.Cfg.LastCompletedRow);                                             // tính là đã duyệt
+        Assert.Single(x.Log, l => l.Contains("Chưa có link mẫu để kiểm phiên"));
+        await Handle(x, Step(notProduct: true), 6);                                          // phần còn lại của chuỗi: không log lại
+        Assert.Single(x.Log, l => l.Contains("Chưa có link mẫu để kiểm phiên"));
+        Assert.Contains(x.Cfg.SnapshotFailedRows(), r => r.Row == 6);
+        Assert.Equal(6, x.Cfg.LastCompletedRow);
+        Assert.Empty(f.Calls);
+        await Handle(x, Step(ok: true), 7);                                                  // lưu được → có mẫu cho chuỗi sau
+        x.Host.Sample = _ => Step(ok: true);
+        for (var r = 8; r <= 10; r++) await Handle(x, Step(notProduct: true), r);
+        Assert.Single(x.Host.Probes);
+        Assert.Equal(3, f.Calls.Count);
+
+        // Chuỗi chưa tới ngưỡng rồi bị cắt bằng một dòng lưu được → 2 dòng là lỗi thật; hết khối cũng xả.
+        var g = new FakeFailureSink();
+        var y = ProcF(g);
+        await Handle(y, Step(notProduct: true), 3);
+        await Handle(y, Step(notProduct: true), 4);
+        await Handle(y, Step(ok: true), 5);
+        Assert.Equal(2, g.Calls.Count);
+        Assert.Equal(new[] { 3, 4 }, y.Cfg.SnapshotFailedRows().Select(r => r.Row).OrderBy(r => r));
+        await Handle(y, Step(notProduct: true), 6);
+        await y.P.FlushPendingNotProductAsync(CancellationToken.None);
+        Assert.Equal(3, g.Calls.Count);
+    }
+
+    // ── Kiểm chứng phiên bằng link mẫu khi cầu dao notProduct nhảy ──
+
+    private static readonly HarvestStepResult SampleOk = Step(ok: true);
+
+    /// <summary>Link chết thật đứng liền nhau (shop nguồn bị khoá): link mẫu (dòng vừa lưu được) lấy được JSON → tài khoản ổn →
+    /// chuỗi là lỗi thật (ghi sổ + tập lỗi), khối chạy tiếp, bộ đếm chuỗi về 0. Link mẫu không tính tiến độ / số đếm.</summary>
+    [Fact]
+    public async Task KiemChungPhien_MauSong_GhiChuoi_ChayTiep()
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f);
+        x.Host.Sample = _ => SampleOk;
+        await Handle(x, Step(ok: true), 2);                                                   // dòng 2 lưu được → link mẫu
+        var savedBefore = x.Sink.Saved.Count;
+        var lastDone = x.Cfg.LastCompletedRow;
+        await Handle(x, Step(notProduct: true), 3);
+        await Handle(x, Step(notProduct: true), 4);
+        var o = await Handle(x, Step(notProduct: true), 5);
+
+        Assert.Equal(HarvestRowNext.Done, o.Next);
+        Assert.Equal(["https://shopee.vn/product/1490438686/26393229156"], x.Host.Probes);   // link đã làm sạch của dòng 2
+        Assert.Equal(new[] { 3, 4, 5 }, x.Cfg.SnapshotFailedRows().Select(r => r.Row).OrderBy(r => r));
+        Assert.Equal(3, f.Calls.Count);
+        Assert.Empty(x.P.PendingNotProductRows);
+        Assert.Equal(savedBefore, x.Sink.Saved.Count);                                        // mẫu không lưu dòng
+        Assert.Equal(5, x.Cfg.LastCompletedRow);                                              // đóng chuỗi: vá đi tiếp từ sau chuỗi
+        Assert.Equal(6, x.Cfg.NextRunRow);
+        await Handle(x, Step(notProduct: true), 6);                                           // phiên đã chứng minh: GIỮ CHỜ tới lần kiểm kế
+        Assert.Equal([6], x.P.PendingNotProductRows);
+        Assert.Equal(3, f.Calls.Count);
+        Assert.Single(x.Host.Probes);
+        Assert.Equal(5, x.Cfg.LastCompletedRow);                                              // chưa bảo lãnh → chưa tiến
+        await Handle(x, Step(ok: true), 7);                                                   // chuỗi bị cắt bằng dòng lưu được → xả
+        Assert.Equal(4, f.Calls.Count);
+    }
+
+    [Theory]
+    [InlineData("notProduct")]
+    [InlineData("login")]
+    [InlineData("throw")]
+    public async Task KiemChungPhien_MauHong_DungKhoi_KhongGhiGi(string kind)
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f, sampleLink: () => "https://shopee.vn/product/1/2");                 // không lưu được dòng nào → mẫu dự phòng
+        x.Host.Sample = kind switch
+        {
+            "notProduct" => _ => Step(notProduct: true),
+            "login" => _ => Step() with { LoginRequired = true },
+            _ => _ => null,
+        };
+        await Handle(x, Step(notProduct: true), 3);
+        await Handle(x, Step(notProduct: true), 4);
+        var o = await Handle(x, Step(notProduct: true), 5);
+
+        Assert.Equal(HarvestRowNext.Stop, o.Next);
+        Assert.Equal(["https://shopee.vn/product/1/2"], x.Host.Probes);
+        Assert.Empty(f.Calls);
+        Assert.Equal(new[] { 3, 4, 5 }, x.Cfg.SnapshotFailedRows().Select(r => r.Row));      // sổ bỏ qua của lượt, không tập lỗi
+        Assert.Contains("link mẫu", x.Cfg.LastRunnerMessage);
+        var chunk = ScrapeRunner.Classify(x.Cfg);
+        Assert.Equal(ScrapeFailureAction.Cooldown, ScrapeFailurePolicy.Decide(chunk.Errored, chunk.IsCaptcha, chunk.Reason));
+    }
+
+    /// <summary>Phản biện vòng 15–16: chuỗi đã chứng minh phiên ổn KHÔNG kiểm sau mỗi N dòng, nhưng kiểm lại sau mỗi
+    /// ProvenChainRecheckEvery dòng (giữ chờ, mẫu sống mới xả); chuỗi mới sau một dòng khác chen vào thì kiểm lại từ đầu.</summary>
+    [Fact]
+    public async Task KiemChungPhien_ChuoiDaiKiemLaiMoiKDong_ChuoiMoiSauDongKhacThiKiemLai()
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f, sampleLink: () => "https://shopee.vn/product/1/2");
+        x.Host.Sample = _ => SampleOk;
+        var row = 3;
+        for (var i = 0; i < 20; i++)
+            Assert.Equal(HarvestRowNext.Done, (await Handle(x, Step(notProduct: true), row++)).Next);
+        Assert.Equal(2, x.Host.Probes.Count);                                                // dòng 5 (3 dòng), dòng 15 (+10 dòng)
+        Assert.Equal(13, f.Calls.Count);                                                     // 7 dòng cuối còn giữ chờ
+        Assert.Equal(7, x.P.PendingNotProductRows.Count);
+        Assert.Equal(15, x.Cfg.LastCompletedRow);
+
+        for (var chain = 0; chain < 4; chain++)                                               // chuỗi mới sau một dòng lưu được
+        {
+            await Handle(x, Step(ok: true), row++);
+            for (var i = 0; i < HarvestStepPolicy.NotProductBreakerThreshold; i++)
+                Assert.Equal(HarvestRowNext.Done, (await Handle(x, Step(notProduct: true), row++)).Next);
+        }
+        Assert.Equal(6, x.Host.Probes.Count);                                                // 2 của chuỗi dài + 1 mỗi chuỗi mới
+    }
+
+    /// <summary>Link mẫu gặp captcha: y như dòng thường gặp captcha — chờ giải tay một lần; không giải được → dừng như captcha
+    /// (cách ly tài khoản); giải được → mở lại mẫu, mẫu sống thì chuỗi là lỗi thật.</summary>
+    [Fact]
+    public async Task KiemChungPhien_MauGapCaptcha_NhuDongThuong()
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f, sampleLink: () => "https://shopee.vn/product/1/2");
+        x.Host.Sample = _ => Step(captcha: true);
+        await Handle(x, Step(notProduct: true), 3);
+        await Handle(x, Step(notProduct: true), 4);
+        var o = await Handle(x, Step(notProduct: true), 5);
+        Assert.Equal(HarvestRowNext.Stop, o.Next);
+        Assert.Equal(1, x.Host.CaptchaChecks);
+        Assert.Empty(f.Calls);
+        var chunk = ScrapeRunner.Classify(x.Cfg);
+        Assert.True(chunk.IsCaptcha);
+        Assert.Equal(ScrapeFailureAction.Quarantine, ScrapeFailurePolicy.Decide(chunk.Errored, chunk.IsCaptcha, chunk.Reason));
+        var row = Step(captcha: true);   // đối chiếu: dòng thường gặp captcha không giải được cũng ra cách ly
+        var y = Proc();
+        await Handle(y, row, 3);
+        var c2 = ScrapeRunner.Classify(y.Cfg);
+        Assert.Equal(ScrapeFailureAction.Quarantine, ScrapeFailurePolicy.Decide(c2.Errored, c2.IsCaptcha, c2.Reason));
+
+        var g = new FakeFailureSink();
+        var z = ProcF(g, sampleLink: () => "https://shopee.vn/product/1/2");
+        var n = 0;
+        z.Host.Sample = _ => ++n == 1 ? Step(captcha: true) : Step(ok: true);
+        z.Host.Captcha = new(true, false, false, false, null, 5, null);                      // giải được
+        await Handle(z, Step(notProduct: true), 3);
+        await Handle(z, Step(notProduct: true), 4);
+        Assert.Equal(HarvestRowNext.Done, (await Handle(z, Step(notProduct: true), 5)).Next);
+        Assert.Equal(2, z.Host.Probes.Count);
+        Assert.Equal(3, g.Calls.Count);
+    }
+
+    /// <summary>Tên tài khoản / ex.Message có chữ captcha / verify / proxy KHÔNG được làm Classify phân loại sai thông điệp dừng.</summary>
+    [Fact]
+    public async Task ThongDiepDung_KhongChenTenTaiKhoanVaoChuoiPhanLoai()
+    {
+        var x = ProcF(new FakeFailureSink());
+        x.Cfg.Label = "shop verify captcha proxy";
+        await Handle(x, Step() with { LoginRequired = true }, 3);
+        var c = ScrapeRunner.Classify(x.Cfg);
+        Assert.Equal(ScrapeFailureAction.Cooldown, ScrapeFailurePolicy.Decide(c.Errored, c.IsCaptcha, c.Reason));
+        Assert.Contains(x.Log, l => l.Contains("shop verify captcha proxy"));               // tên vẫn có ở log riêng
+
+        var y = ProcF(new FakeFailureSink(), sampleLink: () => "https://shopee.vn/product/1/2");
+        y.Cfg.Label = "tk proxy";
+        y.Host.Sample = _ => throw new InvalidOperationException("proxy verify captcha chết");
+        await Handle(y, Step(notProduct: true), 3);
+        await Handle(y, Step(notProduct: true), 4);
+        await Handle(y, Step(notProduct: true), 5);
+        var c2 = ScrapeRunner.Classify(y.Cfg);
+        Assert.Equal(ScrapeFailureAction.Cooldown, ScrapeFailurePolicy.Decide(c2.Errored, c2.IsCaptcha, c2.Reason));
+        Assert.Equal("…-…", HarvestStepPolicy.SafeForClassify("PROXY-Verify"));
+    }
+
+    // ── Vòng dòng cả khối (HarvestRunnerLoop.RunRowsAsync) với host + IO giả ──
+
+    /// <summary>IO giả: bước theo kịch bản từng dòng; "kiểm trước link kế" mô phỏng extension: tab không ở trang SP (dòng trước
+    /// không lưu được) → ok:false "URL hiện tại không phải link SP".</summary>
+    private sealed class FakeIo(Func<int, HarvestStepResult> stepOf) : IHarvestLoopIo
+    {
+        public int CurrentLinkIndex { get; set; }
+        public DateTimeOffset Now => Received;
+        public List<int> Checks { get; } = [];
+        private HarvestStepResult? _last;
+        public Task<HarvestStepResult> ExecuteStepAsync(string link, int rowNumber, string statusText, int? tabId, CancellationToken cancellationToken)
+        {
+            _last = stepOf(rowNumber);
+            return Task.FromResult(_last);
+        }
+        public Task PushDisplayStateAsync(int linkIndex, int? tabId, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ShowOverlayAsync(int? tabId, string text, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task SimulateRestAsync(string pageUrl, int delayMs, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task DelayAsync(int ms, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<RunnerExtensionRpc.BeforeNextLinkCheckResult> CheckBeforeNextLinkAsync(int tabId, int rowNumber, string sku, CancellationToken cancellationToken)
+        {
+            Checks.Add(rowNumber);
+            var onProduct = _last is { HarvestOk: true };
+            return Task.FromResult(onProduct
+                ? new RunnerExtensionRpc.BeforeNextLinkCheckResult(true, false, false, false, null, tabId, null)
+                : new RunnerExtensionRpc.BeforeNextLinkCheckResult(false, false, false, false, "URL hien tai khong phai link san pham Shopee", tabId, null));
+        }
+    }
+
+    private static async Task<(bool Done, InstanceConfig Cfg, FakeFailureSink Failures, FakeIo Io, FakeHost Host)> RunBlock(
+        Func<int, HarvestStepResult> stepOf, int from, int to, Func<FakeHost, FakeHost>? setupHost = null)
+    {
+        var f = new FakeFailureSink();
+        var x = ProcF(f, sampleLink: () => null);
+        setupHost?.Invoke(x.Host);
+        var io = new FakeIo(stepOf);
+        var items = Enumerable.Range(from, to - from + 1)
+            .Select(r => new Shopee.Core.Scrape.SheetLinkItem(r, new Dictionary<string, object?>(), $"https://shopee.vn/sp-i.1.{r}"))
+            .ToList();
+        var done = await HarvestRunnerLoop.RunRowsAsync(items, x.Cfg, x.P, x.Host, io,
+            Shopee.Core.Scrape.ScrapeRestWindow.Resolve(1, 1), "hdr", to, "Data",
+            new System.Runtime.CompilerServices.StrongBox<int?>(5), x.Log.Add, () => { }, CancellationToken.None);
+        return (done, x.Cfg, f, io, x.Host);
+    }
+
+    private static ScrapeFailureAction AccountAction(InstanceConfig cfg)
+    {
+        var c = ScrapeRunner.Classify(cfg);
+        return ScrapeFailurePolicy.Decide(c.Errored, c.IsCaptcha, c.Reason);
+    }
+
+    /// <summary>Phản biện vòng 14 (mục 1): MỘT link chết giữa khối — trước đây bước kiểm trước link kế báo "URL không phải SP" →
+    /// dừng khối, tài khoản bị cho nghỉ, dòng chết không vào tập lỗi. Nay: khối chạy hết, dòng vào tập lỗi, không loại tài khoản.</summary>
+    [Fact]
+    public async Task VongKhoi_MotLinkChetGiuaKhoi_ChayHet_DongVaoTapLoi_KhongLoaiTaiKhoan()
+    {
+        var r = await RunBlock(row => row == 4 ? Step(notProduct: true) : Step(ok: true), 2, 6);
+        Assert.True(r.Done);
+        Assert.DoesNotContain(4, r.Io.Checks);                                               // không kiểm sau dòng không lưu được
+        Assert.Equal(["id:1.4"], Assert.Single(r.Failures.Calls).Keys);
+        Assert.Contains(r.Cfg.SnapshotFailedRows(), x => x.Row == 4);
+        Assert.Equal(ScrapeFailureAction.None, AccountAction(r.Cfg));
+        Assert.Equal(6, r.Cfg.LastCompletedRow);
+    }
+
+    [Fact]
+    public async Task VongKhoi_BaLinkChetLienTiep_KiemChungBangLinkMau_MauSong_ChayHet()
+    {
+        var r = await RunBlock(row => row is >= 3 and <= 5 ? Step(notProduct: true) : Step(ok: true), 2, 7,
+            h => { h.Sample = _ => Step(ok: true); return h; });
+        Assert.True(r.Done);
+        Assert.Equal(["https://shopee.vn/product/1/2"], r.Host.Probes);                     // link đã làm sạch của dòng 2 (lưu được)
+        Assert.Equal(3, r.Failures.Calls.Count);
+        Assert.Equal(ScrapeFailureAction.None, AccountAction(r.Cfg));
+        Assert.Equal(7, r.Cfg.LastCompletedRow);
+    }
+
+    [Fact]
+    public async Task VongKhoi_BaLinkChetLienTiep_MauChet_DungKhoi_KhongGhiGi()
+    {
+        var r = await RunBlock(row => row is >= 3 and <= 5 ? Step(notProduct: true) : Step(ok: true), 2, 7,
+            h => { h.Sample = _ => Step(notProduct: true); return h; });
+        Assert.False(r.Done);
+        Assert.Single(r.Host.Probes);
+        Assert.Empty(r.Failures.Calls);
+        Assert.Equal(ScrapeFailureAction.Cooldown, AccountAction(r.Cfg));
+        Assert.Equal(5, r.Cfg.LastCompletedRow);                                             // chuỗi tính là đã duyệt — vá đi tiếp từ 6
+    }
+
+    [Fact]
+    public async Task VongKhoi_LinkChetCuoiKhoi_XaChuoiKhiHetKhoi()
+    {
+        var r = await RunBlock(row => row == 6 ? Step(notProduct: true) : Step(ok: true), 2, 6);
+        Assert.True(r.Done);
+        Assert.Equal(["id:1.6"], Assert.Single(r.Failures.Calls).Keys);
+        Assert.Equal(6, r.Cfg.LastCompletedRow);
+    }
+
+    /// <summary>Mô phỏng ScrapeRunner: chạy khối, khối dừng thì cho tài khoản đó nghỉ và VÁ phần còn lại từ LastCompletedRow + 1
+    /// bằng tài khoản mới (bộ xử lý + config mới) cho tới khi phủ hết khối. Trả số lần chạy (phiên Brave), số tài khoản bị cho
+    /// nghỉ / cách ly, số lần mở link mẫu, các dòng đã lưu, các khoá vào tập lỗi.</summary>
+    private sealed record PatchResult(int Runs, int AccountsOut, int Quarantined, int Probes, List<int> Saved, List<string> FailedKeys,
+        List<int> SkippedRows)
+    {
+        public void Deconstruct(out int runs, out int accountsOut, out int probes, out List<int> saved, out List<string> failedKeys)
+            => (runs, accountsOut, probes, saved, failedKeys) = (Runs, AccountsOut, Probes, Saved, FailedKeys);
+    }
+
+    private static async Task<PatchResult> RunWithPatching(
+        Func<int, HarvestStepResult> stepOf, int from, int to, Func<string, HarvestStepResult?> sample, Func<string?> sampleLink,
+        RunnerExtensionRpc.BeforeNextLinkCheckResult? captchaAnswer = null)
+    {
+        var failures = new FakeFailureSink();
+        var saved = new List<int>();
+        var skipped = new List<int>();
+        int runs = 0, out_ = 0, quarantined = 0, probes = 0, next = from;
+        while (next <= to)
+        {
+            Assert.True(++runs <= 50, "vòng vá không tiến");
+            var x = ProcF(failures, sampleLink: sampleLink);
+            x.Host.Sample = sample;
+            if (captchaAnswer is not null) x.Host.Captcha = captchaAnswer;
+            var io = new FakeIo(stepOf);
+            var items = Enumerable.Range(next, to - next + 1)
+                .Select(r => new Shopee.Core.Scrape.SheetLinkItem(r, new Dictionary<string, object?>(), $"https://shopee.vn/sp-i.1.{r}"))
+                .ToList();
+            var done = await HarvestRunnerLoop.RunRowsAsync(items, x.Cfg, x.P, x.Host, io,
+                Shopee.Core.Scrape.ScrapeRestWindow.Resolve(1, 1), "hdr", to, "Data",
+                new System.Runtime.CompilerServices.StrongBox<int?>(5), x.Log.Add, () => { }, CancellationToken.None);
+            probes += x.Host.Probes.Count;
+            saved.AddRange(x.Sink.Saved.Select(i => i.RowNo));
+            skipped.AddRange(x.Cfg.SnapshotFailedRows().Select(r => r.Row));
+            // Như ScrapeRunner: kẹp LastCompletedRow vào khối; khối chưa phủ (lỗi, HOẶC không lỗi mà LastCompletedRow < to) →
+            // tài khoản đó bị loại khỏi lượt vá kế (nghỉ / cách ly), phần còn lại vá bằng tài khoản khác.
+            var lastDone = Shopee.Core.Scrape.ScrapeChunkMath.ClampLastDone(x.Cfg.LastCompletedRow, next, to);
+            var action = AccountAction(x.Cfg);
+            if (action == ScrapeFailureAction.Quarantine) quarantined++;
+            if (!done || lastDone < to) out_++;
+            Assert.True(lastDone >= next, $"lần vá {runs} không tiến (dừng ở {lastDone}, bắt đầu {next})");
+            next = lastDone + 1;
+        }
+        return new PatchResult(runs, out_, quarantined, probes, saved, failures.Calls.SelectMany(c => c.Keys).ToList(), skipped);
+    }
+
+    /// <summary>Phản biện vòng 15: khối 2–30, dòng 3–22 chết (shop nguồn bị khoá), link mẫu sống — trước đây khối dừng đúng một chỗ ở
+    /// mọi lần vá (~30 phiên Brave, ~30 tài khoản bị loại). Nay: một lượt đi hết, một lần mở mẫu, không loại tài khoản nào.</summary>
+    [Fact]
+    public async Task VongKhoi_CumChet20Dong_MauSong_DiHetKhoi_HaiLanKiem()
+    {
+        var r = await RunWithPatching(row => row is >= 3 and <= 22 ? Step(notProduct: true) : Step(ok: true), 2, 30,
+            _ => Step(ok: true), () => null);
+        Assert.Equal(1, r.Runs);
+        Assert.Equal(0, r.AccountsOut);
+        Assert.Equal(2, r.Probes);                                                           // lần đầu + một lần kiểm lại sau 10 dòng
+        Assert.Equal([2, .. Enumerable.Range(23, 8)], r.Saved.Order());                     // dòng sống phía sau đều lấy được
+        Assert.Equal(20, r.FailedKeys.Count);
+    }
+
+    /// <summary>Phản biện vòng 16: cụm 30 dòng chết, mẫu sống → kiểm 3 lần (dòng thứ 3, +10, +10), ghi đủ 30 dòng.</summary>
+    [Fact]
+    public async Task VongKhoi_CumChet30Dong_MauSong_KiemBaLan_GhiDu()
+    {
+        var r = await RunWithPatching(row => row is >= 3 and <= 32 ? Step(notProduct: true) : Step(ok: true), 2, 36,
+            _ => Step(ok: true), () => null);
+        Assert.Equal(1, r.Runs);
+        Assert.Equal(3, r.Probes);
+        Assert.Equal(30, r.FailedKeys.Count);
+        Assert.Equal([2, 33, 34, 35, 36], r.Saved.Order());
+    }
+
+    /// <summary>Cụm 30 dòng chết, mẫu sống ở lần đầu rồi HỎNG từ lần thứ 2 (phiên hỏng giữa chuỗi mà Shopee không đẩy về trang đăng
+    /// nhập) → chỉ 3 dòng được lần kiểm thứ nhất bảo lãnh vào tập lỗi; các dòng sau đó vào sổ bỏ qua, KHÔNG vào tập lỗi.</summary>
+    [Fact]
+    public async Task VongKhoi_CumChet30Dong_MauHongLanHai_DongSauLanKiemDauKhongVaoTapLoi()
+    {
+        var probes = 0;
+        var r = await RunWithPatching(row => row is >= 3 and <= 32 ? Step(notProduct: true) : Step(ok: true), 2, 36,
+            _ => ++probes == 1 ? Step(ok: true) : Step(notProduct: true), () => "https://shopee.vn/product/1/2");
+        Assert.Contains("id:1.3", r.FailedKeys);                                             // 3 dòng được lần kiểm thứ nhất bảo lãnh
+        Assert.Contains("id:1.5", r.FailedKeys);
+        for (var row = 6; row <= 30; row++)                                                  // dòng sau lần kiểm thứ nhất: không bảo lãnh
+            Assert.DoesNotContain($"id:1.{row}", r.FailedKeys);
+        // (31–32: lần vá cuối gặp 2 dòng chết rồi một dòng LƯU ĐƯỢC cắt chuỗi → lỗi dòng thật như luật chuỗi < N.)
+        Assert.Contains(6, r.SkippedRows);
+        Assert.Contains(15, r.SkippedRows);
+        Assert.Equal([2, 33, 34, 35, 36], r.Saved.Order());                                  // vá vẫn đi hết khối
+    }
+
+    /// <summary>Không có link mẫu (máy mới): không chứng minh được phiên hỏng → KHÔNG dừng khối: cụm 20 dòng chết đi qua trong một
+    /// lượt, không đụng tài khoản nào, dòng chết không vào tập lỗi (lượt sau thử lại), dòng sống phía sau được lưu.</summary>
+    [Fact]
+    public async Task VongKhoi_CumChet20Dong_KhongCoMau_MotLanChay_KhongDungTaiKhoan()
+    {
+        // Khối bắt đầu ngay ở cụm chết (chưa lưu được dòng nào) + máy chưa từng lưu SP → không có link mẫu nào.
+        var r = await RunWithPatching(row => row is >= 3 and <= 22 ? Step(notProduct: true) : Step(ok: true), 3, 30,
+            _ => null, () => null);
+        Assert.Equal(1, r.Runs);
+        Assert.Equal(0, r.AccountsOut);
+        Assert.Equal(0, r.Probes);
+        Assert.Equal(Enumerable.Range(23, 8), r.Saved.Order());
+        Assert.Empty(r.FailedKeys);
+    }
+
+    /// <summary>Nghiệm thu vòng 16: link mẫu gặp captcha không giải được — khối dừng, tài khoản bị CÁCH LY (như dòng thường gặp
+    /// captcha), lần vá đi tiếp từ sau chuỗi (chuỗi tính đã duyệt), các dòng của chuỗi KHÔNG vào tập lỗi mà vào sổ bỏ qua của lượt.</summary>
+    [Fact]
+    public async Task VongKhoi_MauGapCaptchaKhongGiai_CachLy_VaDiTiepSauChuoi()
+    {
+        var r = await RunWithPatching(row => row is >= 3 and <= 5 ? Step(notProduct: true) : Step(ok: true), 2, 10,
+            _ => Step(captcha: true), () => "https://shopee.vn/product/1/2");                 // FakeHost.Captcha mặc định: không giải được
+        Assert.Equal(2, r.Runs);
+        Assert.Equal(1, r.Quarantined);
+        Assert.Equal(1, r.AccountsOut);
+        Assert.Equal([2, 6, 7, 8, 9, 10], r.Saved.Order());                                  // lần vá đi tiếp từ dòng 6
+        Assert.Empty(r.FailedKeys);
+        Assert.Equal([3, 4, 5], r.SkippedRows.Order());
+    }
+
+    /// <summary>Cụm không có mẫu: sổ bỏ qua của lượt có các dòng đó (tổng kết cuối job hiện "BỎ QUA n dòng"), tập lỗi rỗng.</summary>
+    [Fact]
+    public async Task VongKhoi_KhongCoMau_DongChuoiVaoSoBoQua_TapLoiRong()
+    {
+        var r = await RunWithPatching(row => row is >= 3 and <= 7 ? Step(notProduct: true) : Step(ok: true), 3, 10,
+            _ => null, () => null);
+        Assert.Equal(1, r.Runs);
+        Assert.Equal([3, 4, 5, 6, 7], r.SkippedRows.Order());
+        Assert.Empty(r.FailedKeys);
+    }
+
+    /// <summary>Dòng pdpError đang chờ bị AdvanceTo vượt qua khi chuỗi notProduct dừng khối → phải vào sổ bỏ qua (trước đây bị bỏ
+    /// ở nhánh dừng → mất dấu, tổng kết báo hoàn thành sai).</summary>
+    [Fact]
+    public async Task ChuoiDungKhoi_DongPdpErrorDangCho_VaoSoBoQua()
+    {
+        var x = ProcF(new FakeFailureSink(), sampleLink: () => "https://shopee.vn/product/1/2");
+        x.Host.Sample = _ => Step(notProduct: true);                                         // mẫu hỏng → dừng
+        await Handle(x, Step(pdpError: "77", message: "pdp 2"), 2);                          // pdpError đang chờ
+        await Handle(x, Step(notProduct: true), 3);
+        await Handle(x, Step(notProduct: true), 4);
+        var o = await Handle(x, Step(notProduct: true), 5);
+        Assert.Equal(HarvestRowNext.Stop, o.Next);
+        Assert.Equal(5, x.Cfg.LastCompletedRow);
+        Assert.Equal(new[] { 2, 3, 4, 5 }, x.Cfg.SnapshotFailedRows().Select(r => r.Row).OrderBy(r => r));
+        Assert.Empty(x.P.Book.PendingPdpRows);
+    }
+
+    [Fact]
+    public async Task VongKhoi_MauHong_Cum5Dong_HaiLanChay_MotTaiKhoanNghi()
+    {
+        var r = await RunWithPatching(row => row is >= 3 and <= 7 ? Step(notProduct: true) : Step(ok: true), 2, 10,
+            _ => Step(notProduct: true), () => "https://shopee.vn/product/1/2");
+        Assert.Equal(2, r.Runs);
+        Assert.Equal(1, r.AccountsOut);
+        Assert.Equal(1, r.Probes);
+        Assert.Equal([2, 8, 9, 10], r.Saved.Order());
+        Assert.DoesNotContain("id:1.3", r.FailedKeys);                                       // chuỗi dừng (3–5) không vào tập lỗi
+    }
+
+    /// <summary>Huỷ giữa khối: không báo xong cả khối.</summary>
+    [Fact]
+    public async Task VongKhoi_Huy_KhongBaoXongCaKhoi()
+    {
+        using var cts = new CancellationTokenSource();
+        var x = ProcF(new FakeFailureSink());
+        var io = new FakeIo(row => { if (row == 4) cts.Cancel(); return Step(ok: true); });
+        var items = Enumerable.Range(2, 5)
+            .Select(r => new Shopee.Core.Scrape.SheetLinkItem(r, new Dictionary<string, object?>(), $"https://shopee.vn/sp-i.1.{r}"))
+            .ToList();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => HarvestRunnerLoop.RunRowsAsync(items, x.Cfg, x.P, x.Host, io,
+            Shopee.Core.Scrape.ScrapeRestWindow.Resolve(1, 1), "hdr", 6, "Data",
+            new System.Runtime.CompilerServices.StrongBox<int?>(5), x.Log.Add, () => { }, cts.Token));
+        Assert.True(x.Cfg.LastCompletedRow < 6, $"LastCompletedRow={x.Cfg.LastCompletedRow}");
+    }
+
+    /// <summary>Lần mở LẠI link mẫu sau khi giải captcha ném lỗi → bắt như lần đầu, thông điệp đã làm sạch cho Classify.</summary>
+    [Fact]
+    public async Task KiemChungPhien_MoLaiMauSauCaptchaNem_BatVaLamSach()
+    {
+        var x = ProcF(new FakeFailureSink(), sampleLink: () => "https://shopee.vn/product/1/2");
+        var n = 0;
+        x.Host.Sample = _ => ++n == 1 ? Step(captcha: true) : throw new InvalidOperationException("proxy chết captcha");
+        x.Host.Captcha = new(true, false, false, false, null, 5, null);
+        await Handle(x, Step(notProduct: true), 3);
+        await Handle(x, Step(notProduct: true), 4);
+        var o = await Handle(x, Step(notProduct: true), 5);
+        Assert.Equal(HarvestRowNext.Stop, o.Next);
+        Assert.Equal(2, x.Host.Probes.Count);
+        Assert.Equal(ScrapeFailureAction.Cooldown, AccountAction(x.Cfg));
+        Assert.Contains("mở lại link mẫu lỗi", x.Cfg.LastRunnerMessage);
+    }
+
+    /// <summary>Mục 2: dòng cuối khối lỗi (hết giờ) — duyệt hết khối thì báo xong cả khối (ScrapeRunner không vá lại đúng dòng lỗi
+    /// tới khi kẹt 3 lần); dòng lỗi không vào done nên lượt sau tự lấy lại.</summary>
+    [Fact]
+    public async Task VongKhoi_DongCuoiLoi_VanBaoXongCaKhoi()
+    {
+        var r = await RunBlock(row => row == 6 ? Step(message: "hết giờ chờ get_pc") : Step(ok: true), 2, 6);
+        Assert.True(r.Done);
+        Assert.Equal(6, r.Cfg.LastCompletedRow);
+        Assert.Equal(7, r.Cfg.NextRunRow);
+        Assert.Contains(r.Cfg.SnapshotFailedRows(), x => x.Row == 6);
+        Assert.Empty(r.Failures.Calls);                                                      // lỗi tạm: không vào tập lỗi
+        Assert.Equal(ScrapeFailureAction.None, AccountAction(r.Cfg));
+    }
+
+    [Theory]
+    [InlineData(true, false, true, true)]
+    [InlineData(true, true, true, false)]     // loginRequired dù ok
+    [InlineData(true, false, false, false)]   // ok mà thiếu JSON
+    [InlineData(false, false, true, false)]
+    public void MauChungMinhPhien(bool ok, bool login, bool json, bool proves)
+    {
+        var r = Step(ok: ok) with { LoginRequired = login, Json = json ? "{\"error\":null}" : null };
+        Assert.Equal(proves, HarvestStepPolicy.SampleProvesSession(r));
+    }
+
+    /// <summary>Phản biện vòng 14: mã đã xác nhận "SP chết" GIỮ tới hết phiên dù sau đó có dòng lưu được (quên đi thì mỗi cụm SP
+    /// chết lại bật cầu dao → đổi IP rồi đổi tài khoản vô ích).</summary>
+    [Fact]
+    public void CauDao_LuuDuoc_VanNhoMaDaXacNhanSPChet()
+    {
+        var b = new HarvestPdpBreaker(1);
+        var err = Step(pdpError: "4");
+        Assert.Equal(HarvestStepAction.PdpBreakerTrip, HarvestStepPolicy.Decide(err, b).Action);
+        Assert.Equal(HarvestStepAction.RowFailed, HarvestStepPolicy.Decide(err, b).Action);   // tái diễn → nhớ "SP chết"
+        Assert.Equal(HarvestStepAction.Save, HarvestStepPolicy.Decide(Step(ok: true), b).Action);
+        Assert.Contains("4", b.ConfirmedDeadCodes);
+        Assert.Equal(HarvestStepAction.RowFailed, HarvestStepPolicy.Decide(err, b).Action);
+    }
+
+    [Theory]
+    [InlineData(true, false, false, null, true)]       // notProduct
+    [InlineData(false, false, false, "4", true)]       // mã pdpError đi vào RowFailed = mã đã xác nhận SP chết
+    [InlineData(false, false, false, null, false)]     // hết giờ / thiếu JSON / RPC
+    [InlineData(false, true, false, null, false)]      // ok (không phải lỗi)
+    public void PhanLoai_LoiVinhVien(bool notProduct, bool ok, bool unused, string? pdp, bool permanent)
+    {
+        _ = unused;
+        var step = Step(ok: ok, notProduct: notProduct, pdpError: pdp);
+        Assert.Equal(permanent, HarvestStepPolicy.IsPermanentRowFailure(HarvestStepAction.RowFailed, step));
+        Assert.False(HarvestStepPolicy.IsPermanentRowFailure(HarvestStepAction.PdpError, step));
+        Assert.False(HarvestStepPolicy.IsPermanentRowFailure(HarvestStepAction.Captcha, step));
     }
 
     [Fact]
@@ -595,6 +1233,8 @@ public sealed class HarvestModeEngineTests
         var x = Proc();
         var o = await Handle(x, Step(notProduct: true, message: "không phải trang SP"), 3);
         Assert.Equal(HarvestRowNext.Done, o.Next);
+        Assert.Empty(x.Cfg.SnapshotFailedRows());                     // notProduct chờ xem có phải chuỗi không
+        await x.P.FlushPendingNotProductAsync(CancellationToken.None);   // hết khối → lỗi dòng thật
         Assert.Equal(new[] { 3 }, x.Cfg.SnapshotFailedRows().Select(r => r.Row));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => Handle(Proc(), Step(message: "No SW: bước harvest không gửi được"), 3));

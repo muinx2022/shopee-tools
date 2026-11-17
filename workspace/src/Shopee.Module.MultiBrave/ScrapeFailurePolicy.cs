@@ -10,7 +10,7 @@ public enum ScrapeFailureAction
     None,
     /// <summary>Captcha → LOẠI tk khỏi khung (đổi tk khác, phần dở vá).</summary>
     Quarantine,
-    /// <summary>Lỗi HẠ TẦNG TOÀN CỤC (key proxy chết; Harvest: lưu dữ liệu lỗi) → DỪNG cả job: đổi tk vô ích, vá/bỏ dòng chỉ tổ thủng dữ liệu.</summary>
+    /// <summary>Lỗi HẠ TẦNG TOÀN CỤC (key proxy chết; Harvest: lưu dữ liệu lỗi / workbook đang bị app Update ghi) → DỪNG cả job: đổi tk vô ích, vá/bỏ dòng chỉ tổ thủng dữ liệu.</summary>
     StopJob,
     /// <summary>Lỗi tạm của một tk (proxy lẻ/đứt) → cho tk nghỉ, vá phần dở bằng tk khác.</summary>
     Cooldown,
@@ -28,6 +28,8 @@ public static class ScrapeFailurePolicy
         // Harvest: sink (outbox) lỗi = hạ tầng máy, không phải lỗi tk → dừng job như key proxy chết. Scrape không bao
         // giờ sinh tiền tố này nên không đổi hành vi.
         if (HarvestSinkFailure.Is(reason)) return ScrapeFailureAction.StopJob;
+        // Harvest: app Update giữ khoá workbook quá hạn chờ → việc của máy, không phải tk (không cooldown / kẹt / bỏ dòng).
+        if (HarvestWorkbookLockedException.Is(reason)) return ScrapeFailureAction.StopJob;
         if (isCaptcha) return ScrapeFailureAction.Quarantine;
         if (ProxyFailure.IsFleetWideProxyFailure(reason)) return ScrapeFailureAction.StopJob;
         return ScrapeFailureAction.Cooldown;
@@ -37,7 +39,7 @@ public static class ScrapeFailurePolicy
     public static string FleetWideReason(string? reason)
     {
         // Lý do sink có thể là thông điệp lỗi dài nhiều dòng (exception SQLite…) → một dòng, ≤120 ký tự cho ô Hub.
-        if (HarvestSinkFailure.Is(reason)) return HarvestSinkFailure.ShortReason(reason!);
+        if (HarvestSinkFailure.Is(reason) || HarvestWorkbookLockedException.Is(reason)) return HarvestSinkFailure.ShortReason(reason!);
         if (reason is not null && reason.Contains("KEY_NOT_FOUND", StringComparison.OrdinalIgnoreCase))
             return "key proxy không tồn tại (KEY_NOT_FOUND) — sửa key rồi chạy lại";
         if (reason is not null && reason.Contains("KEY_EXPIRED", StringComparison.OrdinalIgnoreCase))

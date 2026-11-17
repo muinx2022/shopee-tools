@@ -235,6 +235,14 @@ public sealed class InstanceConfig
         Running = RunnerRunning,
     }.IsInterruptedMidRun();
 
+    /// <summary>Harvest: số dòng đã lấy / bỏ qua-lỗi của KHỐI hiện tại cho bảng tổng kết cuối khối. Sống trên chính config
+    /// này nên qua được lần watchdog mở lại profile giữa khối; vòng Harvest đặt lại khi khối chạy từ dòng đầu.</summary>
+    [JsonIgnore]
+    public int HarvestSavedRows { get; set; }
+
+    [JsonIgnore]
+    public int HarvestFailedRows { get; set; }
+
     [JsonIgnore]
     public int? StoppedAtRow => new ExtensionRunnerState
     {

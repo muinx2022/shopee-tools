@@ -22,6 +22,12 @@ public static class ScrapeWorkbook
     public static int TotalDataRows(string workbookPath, string sheet)
     {
         using var wb = Open(workbookPath);
+        return TotalDataRows(wb, sheet);
+    }
+
+    /// <summary>Như <see cref="TotalDataRows(string, string)"/> trên workbook đã mở sẵn (người gọi tự mở / đóng).</summary>
+    public static int TotalDataRows(XLWorkbook wb, string sheet)
+    {
         var ws = GetSheet(wb, sheet);
         return DataRowNumbers(ws).Count;
     }
@@ -36,6 +42,13 @@ public static class ScrapeWorkbook
         string workbookPath, string sheet, int excelStart, int excelEnd)
     {
         using var wb = Open(workbookPath);
+        return ExcelRowsToDenseRange(wb, sheet, excelStart, excelEnd);
+    }
+
+    /// <summary>Như <see cref="ExcelRowsToDenseRange(string, string, int, int)"/> trên workbook đã mở sẵn.</summary>
+    public static (int denseStart, int denseEnd) ExcelRowsToDenseRange(
+        XLWorkbook wb, string sheet, int excelStart, int excelEnd)
+    {
         var ws = GetSheet(wb, sheet);
         var rows = DataRowNumbers(ws);
         if (rows.Count == 0) return (1, 0);
@@ -69,6 +82,15 @@ public static class ScrapeWorkbook
         if (endRow < startRow) throw new ArgumentException("endRow phải >= startRow.");
 
         using var wb = Open(workbookPath);
+        return FetchLinks(wb, sheet, startRow, endRow);
+    }
+
+    /// <summary>Như <see cref="FetchLinks(string, string, int, int)"/> trên workbook đã mở sẵn — CÙNG quy tắc lọc / đánh số.</summary>
+    public static ScrapeLinkResult FetchLinks(XLWorkbook wb, string sheet, int startRow, int endRow)
+    {
+        if (startRow < 1) throw new ArgumentException("startRow phải >= 1.");
+        if (endRow < startRow) throw new ArgumentException("endRow phải >= startRow.");
+
         var ws = GetSheet(wb, sheet);
 
         var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;

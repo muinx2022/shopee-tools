@@ -18,6 +18,8 @@ namespace Shopee.Core.Harvest;
 /// <param name="Source"><c>"hook"</c> | <c>"hook-reload"</c>.</param>
 /// <param name="HarvestedAt">Giờ cào: <c>capturedAt</c> của extension nếu có, không thì giờ máy lúc engine nhận kết quả
 /// bước (không phải giờ ghi outbox) — xem <see cref="HarvestStepResult.HarvestedAtOr"/>.</param>
+/// <param name="DoneTarget">Target của tập "SP đã lấy xong" (<see cref="HarvestDoneTarget.Of"/>): sink lưu xong thì ghi khoá SP
+/// (<see cref="HarvestItemKey.ForSaved"/>) vào tập này CÙNG lần lưu. null → không ghi (caller không theo dõi tiến độ).</param>
 public sealed record HarvestedItem(
     string AccountId,
     string ShopId,
@@ -29,7 +31,8 @@ public sealed record HarvestedItem(
     long? ShopeeShopId,
     string Json,
     string Source,
-    DateTimeOffset HarvestedAt);
+    DateTimeOffset HarvestedAt,
+    string? DoneTarget = null);
 
 /// <summary>Lỗi lưu dữ liệu (sink) là lỗi HẠ TẦNG của máy (đĩa / outbox), không phải lỗi tài khoản Shopee: engine dừng
 /// CẢ job như ca key proxy chết (nhả tài khoản nguyên vẹn, không cooldown, không tính kẹt, không bỏ dòng). Thông điệp
@@ -76,4 +79,14 @@ public interface IHarvestSink
     Task EnsureReadyAsync(CancellationToken cancellationToken);
 
     Task SaveAsync(HarvestedItem item, CancellationToken cancellationToken);
+}
+
+/// <summary>Nơi engine Harvest ghi SP lỗi VĨNH VIỄN (SP không tồn tại / không phải trang SP / JSON bị từ chối vì nội dung) để
+/// lượt sau không lên lịch lại (<see cref="HarvestDoneRebuild"/>). Lỗi TẠM (hết giờ, captcha, mạng, proxy, khoá workbook, mã
+/// pdpError chưa xác nhận) KHÔNG ghi gì. Ghi hỏng không được làm hỏng dòng — engine nuốt lỗi và log (lượt sau thử lại).</summary>
+public interface IHarvestFailureSink
+{
+    /// <param name="runId">Định danh LƯỢT chạy — mỗi lượt chỉ tính một lần thấy lỗi (cần nhiều lượt mới bỏ qua hẳn).</param>
+    Task RecordPermanentFailureAsync(string target, IReadOnlyList<string> itemKeys, string reason, string runId,
+        CancellationToken cancellationToken);
 }

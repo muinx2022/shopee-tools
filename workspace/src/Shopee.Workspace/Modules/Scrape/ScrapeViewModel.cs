@@ -7,6 +7,7 @@ using CommunityToolkit.Mvvm.Input;
 using Shopee.Core.Accounts;
 using Shopee.Core.BigSeller;
 using Shopee.Core.Browser;
+using Shopee.Core.Harvest;
 using Shopee.Core.Infrastructure;
 using Shopee.Core.Scrape;
 using Shopee.Modules.MultiBrave;
@@ -79,8 +80,12 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
     // điều kiện như cũ (bám cả AccountStore.Changed lẫn thay đổi shop trên acc sẵn có).
     private readonly ObservableProjection<BigSellerAccount, ScrapeTargetViewModel> _targets;
 
-    public ScrapeViewModel() : base("workspace-scrape.log", "Shopee Scrape")
+    // Harvest: file log RIÊNG — app Scrape chạy song song đang ghi workspace-scrape.log.
+    public ScrapeViewModel() : base(
+        WorkspaceAppConfig.IsHarvest ? "workspace-harvest.log" : "workspace-scrape.log",
+        WorkspaceAppConfig.IsHarvest ? "Shopee Harvest" : "Shopee Scrape")
     {
+        if (HarvestRuntime.Current is { } harvest) harvest.Log = m => Log($"[Hub] {m}");
         // Mỗi ScrapeTargetViewModel TỰ nạp config đã lưu (tick chọn + shop + số dòng/process) theo Account.Id
         // từ ScrapeTargetConfigStore → giữ nguyên lựa chọn người dùng qua reload + khởi động lại.
         _targets = new ObservableProjection<BigSellerAccount, ScrapeTargetViewModel>(
@@ -208,6 +213,8 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
     private async Task StartCoreAsync(bool resume, IReadOnlyList<ScrapeTargetViewModel>? only, bool silent,
         TaskCompletionSource<bool>? launched)
     {
+        // App Harvest: app Scrape có thể vừa đổi workbook chung (nguồn / gộp / ngừng dùng) → nạp lại TRƯỚC khi resolve.
+        if (WorkspaceAppConfig.IsHarvest) SharedWorkbookStore.ReloadIfExternalChange();
         // only != null (màn gộp v1.1): chạy RIÊNG danh sách được chỉ định, KHÔNG đụng tick của tk khác.
         var picked = (only ?? ScrapeTargets.Where(t => t.IsSelected)).ToList();
         if (picked.Count == 0) { Warn("Tick chọn ít nhất 1 tài khoản BigSeller.", silent); return; }
@@ -333,12 +340,23 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         var ct = h.Cts.Token;
 
         ScrapeRunner? runner = null;
-        var coordKey = new CoordKey(account.Id, shop.Id, sheet, CoordOp.Scrape);
+        var coordKey = new CoordKey(account.Id, shop.Id, sheet, RoleStores.ScrapeOp);
+        var harvest = WorkspaceAppConfig.IsHarvest;
         ILeaseHandle? lease = null;
         SessionAccountPool? pool = null;
+        // Harvest: đã ghi đè tiến độ bằng kết quả dựng lại chưa — huỷ TRƯỚC đó (vd đang chờ app Update nhả khoá workbook) thì
+        // KHÔNG được đụng trạng thái tiến độ (FinishRun kéo "đã xong" về "việc dở").
+        var progressTouched = !harvest;
         List<string>? frameIds = null;
         try
         {
+            // Harvest: chưa có chỗ lưu (outbox không mở được lúc khởi động) → dừng TRƯỚC khi đụng tiến độ / mở Brave.
+            if (harvest && HarvestRuntime.Current is null)
+            {
+                LogA($"[{account.DisplayName}] ✘ Chưa mở được kho lưu dữ liệu (harvest-outbox.db) — xem log khởi động, khởi động lại app.");
+                outcome = ScrapeJobOutcome.Failed("chưa mở được kho lưu dữ liệu harvest");
+                return;
+            }
             if (account.UsesHubData && !SharedWorkbookStore.IsActive)
             {
                 LogA("Tài khoản đang ở chế độ kho Hub — app local chỉ chạy workbook, đổi nguồn dữ liệu trong Cấu hình BigSeller.");
@@ -347,29 +365,67 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             }
 
             int totalRows;
+            // App Harvest: dải dòng + các dòng hợp lệ đọc từ CÙNG một bản workbook (HarvestWorkbookReader: byte vào RAM, đóng handle
+            // ngay; app Update đang ghi → chờ huỷ được) để dựng lại tiến độ từ tập SP đã lấy xong.
+            HarvestWorkbookRange? harvestRange = null;
             try
             {
                 // App local: luôn dùng workbook (hub mode đã gỡ).
                 int denseStart, denseEnd;
-                (denseStart, denseEnd) = await Task.Run(
-                    () => ScrapeWorkbook.ExcelRowsToDenseRange(dataPath, dataSheet, excelStart, excelEnd), ct).ConfigureAwait(false);
+                if (harvest)
+                {
+                    harvestRange = await HarvestWorkbookReader.ReadRangeAsync(dataPath, dataSheet, excelStart, excelEnd, ct).ConfigureAwait(false);
+                    (denseStart, denseEnd) = (harvestRange.DenseStart, harvestRange.DenseEnd);
+                }
+                else
+                    (denseStart, denseEnd) = await Task.Run(
+                        () => ScrapeWorkbook.ExcelRowsToDenseRange(dataPath, dataSheet, excelStart, excelEnd), ct).ConfigureAwait(false);
                 startRow = denseStart;
                 totalRows = denseEnd;
             }
-            catch (Exception ex) { LogA($"[{account.DisplayName}] ✘ lỗi đọc workbook: {ex.Message} — bỏ qua."); outcome = ScrapeJobOutcome.Failed("lỗi đọc workbook: " + ex.Message); return; }
+            catch (HarvestWorkbookLockedException ex)
+            {
+                // Không phải lỗi workbook / tài khoản: app Update đang lưu file quá hạn chờ → báo rõ, thử lại sau.
+                LogA($"[{account.DisplayName}] ⏳ {ex.Message}");
+                outcome = ScrapeJobOutcome.Failed("app Update đang ghi file workbook — thử lại sau");
+                return;
+            }
+            catch (Exception ex) when (!harvest || ex is not OperationCanceledException) { LogA($"[{account.DisplayName}] ✘ lỗi đọc workbook: {ex.Message} — bỏ qua."); outcome = ScrapeJobOutcome.Failed("lỗi đọc workbook: " + ex.Message); return; }
             if (totalRows < startRow) { LogA($"[{account.DisplayName}] sheet \"{dataSheet}\" không còn dòng nào trong khoảng Excel {Math.Max(2, excelStart)}→{(excelEnd > 0 ? excelEnd.ToString() : "hết")} — bỏ qua."); outcome = ScrapeJobOutcome.Failed($"sheet \"{dataSheet}\" không còn dòng nào trong khoảng đã chọn"); return; }
 
-            // RESET → xoá tiến độ cũ. Tính các khoảng cần chạy (reset = cả đoạn; resume = phần còn thiếu).
-            if (!resume)
+            List<(int from, int to)> segments;
+            if (harvest)
             {
-                ScrapeProgressReset.Reset(account.Id, sheet, shop, account.DisplayName, m => LogA($"[{account.DisplayName}] {m}"));
+                // App Harvest: Chạy hay Tiếp tục đều DỰNG LẠI tiến độ từ tập SP đã lấy xong (outbox) trên workbook HIỆN TẠI —
+                // workbook chèn / xoá / đổi thứ tự / gộp lại / đổi nguồn thì dòng có SP đã lấy vẫn là xong, còn lại phải lấy.
+                // Không tin số dòng của lượt trước (kể cả tiến độ fold từ ledger Hub): ghi đè kho harvest-progress.json.
+                // SP đã ghi lỗi VĨNH VIỄN (không tồn tại / không phải trang SP / JSON bị từ chối) → không lên lịch, vào sổ bỏ qua
+                // ("Cào lại dòng đã bỏ" ở Thống kê xoá danh sách này để thử lại).
+                var doneTarget = HarvestDoneTarget.Of(account.Id, sheet);
+                var outbox = HarvestRuntime.Current!.Outbox;
+                var rebuilt = HarvestDoneRebuild.Build(startRow, totalRows, harvestRange!.Links?.Items ?? [],
+                    outbox.DoneKeys(doneTarget), outbox.FailedKeys(doneTarget));
+                RoleStores.ScrapeProgress.ReplaceProgress(account.Id, sheet, account.DisplayName, totalRows, rebuilt.Completed, rebuilt.Skipped);
+                progressTouched = true;
+                segments = rebuilt.Remaining;
+                LogA($"[{account.DisplayName}] Dựng lại tiến độ từ SP đã lấy: {rebuilt.DoneRows} dòng đã xong · "
+                     + $"{rebuilt.Skipped.Count} dòng bỏ qua/lỗi · {rebuilt.TodoRows} dòng còn phải lấy.");
             }
+            else
+            {
+                // RESET → xoá tiến độ cũ. Tính các khoảng cần chạy (reset = cả đoạn; resume = phần còn thiếu).
+                if (!resume)
+                {
+                    ScrapeProgressReset.Reset(account.Id, sheet, shop, account.DisplayName, m => LogA($"[{account.DisplayName}] {m}"));
+                }
 
-            var segments = resume
-                ? ScrapeProgressStore.Shared.RemainingSegments(account.Id, sheet, startRow, totalRows)
-                : new List<(int from, int to)> { (startRow, totalRows) };
+                segments = resume
+                    ? RoleStores.ScrapeProgress.RemainingSegments(account.Id, sheet, startRow, totalRows)
+                    : new List<(int from, int to)> { (startRow, totalRows) };
+            }
             if (segments.Count == 0)
             {
+                if (harvest) RoleStores.ScrapeProgress.FinishRun(account.Id, sheet, startRow, totalRows);   // dựng lại = đã xong hết
                 LogA($"[{account.DisplayName}] ✓ Không còn dòng nào để chạy (đã xong tới {totalRows}). Thêm dòng mới rồi Tiếp tục.");
                 outcome = ScrapeJobOutcome.Completed();   // không còn gì để chạy = đã xong
                 return;
@@ -385,7 +441,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             frameIds = frame.Select(a => a.Id).ToList();
             if (frame.Count == 0) { LogA($"[{account.DisplayName}] kho tk Shopee đã cạn (mọi tk đang thuộc khung khác / Search đang giữ / bị tắt) — bỏ qua."); outcome = ScrapeJobOutcome.Failed("kho tk Shopee đã cạn"); return; }
 
-            ScrapeProgressStore.Shared.SaveFrame(account.Id, sheet, frameIds);
+            RoleStores.ScrapeProgress.SaveFrame(account.Id, sheet, frameIds);
             var procs = Math.Max(1, Math.Min(maxProc, frame.Count));
             // Mỗi tk BigSeller (job) 1 màu nền → các process CÙNG tk BigSeller cùng màu, dễ nhìn khi chạy nhiều tk.
             var jobBrush = JobPalette[(seq - 1) % JobPalette.Length];
@@ -401,13 +457,27 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             LogA($"── {(resume ? "⏯ Tiếp tục" : "▶")} BigSeller \"{account.DisplayName}\" · shop \"{shop.DisplayName}\" · {totalSeg} dòng cần chạy (tổng sheet {totalRows}) · {procs} cửa sổ · KHUNG {frame.Count} tk Shopee (lỗi tự thay tk mới từ kho) · nghỉ giữa link {restWindow} · trần tổng app {Shopee.Core.Browser.BraveFleet.MaxConcurrentWindows} cửa sổ ──");
 
             // Ghi nhận lượt chạy (chỉ tiến độ DÒNG — không đặt-chỗ tk nữa vì tk xoay vòng/tự trả về kho).
-            if (resume) ScrapeProgressStore.Shared.BeginResume(account.Id, sheet, account.DisplayName, totalRows);
-            else ScrapeProgressStore.Shared.BeginFresh(account.Id, sheet, account.DisplayName, totalRows);
+            // Harvest: tiến độ vừa dựng lại ở trên — chỉ đánh dấu đang chạy, không xoá.
+            if (resume || harvest) RoleStores.ScrapeProgress.BeginResume(account.Id, sheet, account.DisplayName, totalRows);
+            else RoleStores.ScrapeProgress.BeginFresh(account.Id, sheet, account.DisplayName, totalRows);
             OnUi(target.RefreshProgress);
 
-            runner = new ScrapeRunner(dataPath, VideoDir, braveExe: null, s.SourceUserData, bigSellerAccountName: account.DisplayName,
-                bigSellerAccountId: account.Id, useHubData: false,
-                restWindow: restWindow);
+            runner = harvest
+                // Harvest: không video (chỉ lưu URL), engine chế độ Harvest giao JSON cho outbox (sink Nudge worker đẩy Hub).
+                ? new ScrapeRunner(dataPath, "", braveExe: null, s.SourceUserData, bigSellerAccountName: account.DisplayName,
+                    bigSellerAccountId: account.Id, useHubData: false,
+                    restWindow: restWindow, mode: RunnerMode.Harvest)
+                {
+                    Harvest = new HarvestRunOptions(HarvestRuntime.Current!.Sink, shop.Id,
+                        HubStatusText: HarvestRuntime.Current.HubStatusLineAsync,
+                        DoneTarget: HarvestDoneTarget.Of(account.Id, sheet),
+                        FailureSink: HarvestRuntime.Current.Outbox,
+                        RunId: Guid.NewGuid().ToString("N"),   // mỗi lượt chạy một id: lỗi vĩnh viễn cần thấy ở ≥ 2 lượt
+                        SampleLink: () => HarvestRuntime.Current?.Outbox.LastSavedLink()),   // link mẫu kiểm chứng phiên
+                }
+                : new ScrapeRunner(dataPath, VideoDir, braveExe: null, s.SourceUserData, bigSellerAccountName: account.DisplayName,
+                    bigSellerAccountId: account.Id, useHubData: false,
+                    restWindow: restWindow);
             s.Jobs.TryUpdate(account.Id, j => j.Runner = runner);
 
             RunnerCreated?.Invoke(runner);   // gán Runner DƯỚI lock (vs snapshot ở Stop)
@@ -415,7 +485,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             var liveSheet = Shopee.Workspace.Modules.Workspace.ShopLiveLine.SheetLabel(shop, dataSheet);
             int GetCompletedCount()
             {
-                var p = ScrapeProgressStore.Shared.Find(account.Id, sheet);
+                var p = RoleStores.ScrapeProgress.Find(account.Id, sheet);
                 return p?.Completed.Sum(r => r.To - r.From + 1) ?? 0;
             }
             void UpdateProgressDisplay()
@@ -433,14 +503,17 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             runner.RowOpened += _ => UpdateProgressDisplay();
             runner.RowsCompleted += (from, to) =>
             {
-                ScrapeProgressStore.Shared.MarkCompleted(account.Id, sheet, from, to);
+                RoleStores.ScrapeProgress.MarkCompleted(account.Id, sheet, from, to);
                 UpdateProgressDisplay();
                 OnUi(target.RefreshProgress);
             };
             runner.RowSkipped += (row, reason) =>
             {
-                ScrapeProgressStore.Shared.MarkSkipped(account.Id, sheet, row);
-                LogA($"[{account.DisplayName}] ⚠ BỎ QUA dòng {row}: {reason} — SP dòng này KHÔNG được cào; muốn cào lại hãy Chạy (reset) hoặc bấm \"Cào lại dòng đã bỏ\" trong Thống kê.");
+                RoleStores.ScrapeProgress.MarkSkipped(account.Id, sheet, row);
+                LogA(harvest
+                    // Harvest: Chạy không reset (dựng lại từ SP đã lấy); lỗi tạm tự thử lại lượt sau, lỗi vĩnh viễn cần 2 lượt mới bỏ qua.
+                    ? $"[{account.DisplayName}] ⚠ Dòng {row} chưa lấy được: {reason} — lượt Chạy / Tiếp tục sau sẽ thử lại; SP đã bị bỏ qua thì bấm \"Cào lại dòng đã bỏ\" trong Thống kê."
+                    : $"[{account.DisplayName}] ⚠ BỎ QUA dòng {row}: {reason} — SP dòng này KHÔNG được cào; muốn cào lại hãy Chạy (reset) hoặc bấm \"Cào lại dòng đã bỏ\" trong Thống kê.");
                 OnUi(target.RefreshProgress);
             };
             WireRunner(runner, seq, account);
@@ -452,16 +525,20 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
                 frame,
                 (excludeIds, _) => Task.FromResult(s.ClaimReplacement(excludeIds)),
                 msg => LogA($"[{account.DisplayName}] {msg}"));
-            await runner.RunAutoAsync(pool, procs, segments, rowsPer, account.CookieFile, ct).ConfigureAwait(false);
+            // Harvest không dùng cookie BigSeller.
+            await runner.RunAutoAsync(pool, procs, segments, rowsPer, harvest ? null : account.CookieFile, ct).ConfigureAwait(false);
             var cancelledByUser = ct.IsCancellationRequested;
 
             // Kết thúc: xong hết [startRow..total] → completed; còn dở → stopped (resume chạy nốt theo dòng).
-            ScrapeProgressStore.Shared.FinishRun(account.Id, sheet, startRow, totalRows);
-            var after = ScrapeProgressStore.Shared.Find(account.Id, sheet);
+            RoleStores.ScrapeProgress.FinishRun(account.Id, sheet, startRow, totalRows);
+            var after = RoleStores.ScrapeProgress.Find(account.Id, sheet);
             var skipped = after?.SkippedRows ?? [];
             var skipNote = skipped.Count == 0
                 ? ""
-                : $" ⚠ BỎ QUA {skipped.Count} dòng (không cào được): {string.Join(", ", skipped.Take(20))}{(skipped.Count > 20 ? "…" : "")} — muốn cào lại hãy Chạy (reset).";
+                : harvest
+                    // Harvest: Chạy không reset (dựng lại từ SP đã lấy) — lỗi tạm tự thử lại lượt sau; SP đã bị bỏ qua thì dùng nút riêng.
+                    ? $" ⚠ BỎ QUA {skipped.Count} dòng (chưa lấy được): {string.Join(", ", skipped.Take(20))}{(skipped.Count > 20 ? "…" : "")} — lượt sau tự thử lại; SP đã bị bỏ qua thì bấm \"Cào lại dòng đã bỏ\" trong Thống kê."
+                    : $" ⚠ BỎ QUA {skipped.Count} dòng (không cào được): {string.Join(", ", skipped.Take(20))}{(skipped.Count > 20 ? "…" : "")} — muốn cào lại hãy Chạy (reset).";
             LogA(string.Equals(after?.Status, LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase)
                 ? $"[{account.DisplayName}] ✔ Hoàn thành toàn bộ.{skipNote}"
                 : $"[{account.DisplayName}] ■ Chưa xong (xong tới dòng {after?.LastRowReached ?? 0}) — Tiếp tục để chạy nốt.{skipNote}");
@@ -477,7 +554,8 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
         {
             outcome = ScrapeJobOutcome.Stopped();
             LogA($"[{account.DisplayName}] ■ đã dừng — giữ tiến độ cho lần Tiếp tục.");
-            try { ScrapeProgressStore.Shared.FinishRun(account.Id, sheet, startRow, 0); } catch { }
+            if (progressTouched)
+                try { RoleStores.ScrapeProgress.FinishRun(account.Id, sheet, startRow, 0); } catch { }
         }
         catch (Exception ex) { outcome = ScrapeJobOutcome.Failed(ex.Message); LogA($"[{account.DisplayName}] ✘ lỗi: {ex.Message}"); }
         finally
@@ -487,7 +565,7 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
             {
                 try
                 {
-                    ScrapeProgressStore.Shared.SaveFrame(account.Id, sheet, pool.ActiveFrameIds());
+                    RoleStores.ScrapeProgress.SaveFrame(account.Id, sheet, pool.ActiveFrameIds());
                     ShopeeAccountUsage.Shared.ReleaseReservation(pool.AllFrameIds());
                 }
                 catch { }
@@ -510,14 +588,34 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
     /// <summary>Tạo + phóng 1 job cho tk BigSeller. Factory CHẠY DƯỚI lock của registry → gán Task xong mới
     /// vào sổ (coordinator không thấy Task rỗng) và Remove của body phải chờ → "add trước, remove sau".
     /// Trả false nếu phiên đang kết thúc (sổ đã chốt) hoặc tk đó đã có job đang chạy.</summary>
-    private bool StartJob(RunSession s, ScrapeTargetViewModel target, bool resume, bool force = false)
+    private bool StartJob(RunSession s, ScrapeTargetViewModel target, bool resume, bool force = false) =>
+        StartJob(s, target, resume, out _, force);
+
+    /// <param name="refused">Lý do không phóng job khi KHÔNG phải vì tk đang chạy (vd Harvest không đọc được file nguồn — đã
+    /// log); null = không phóng vì đang chạy / phiên kết thúc.</param>
+    private bool StartJob(RunSession s, ScrapeTargetViewModel target, bool resume, out string? refused, bool force = false)
     {
+        refused = null;
         // CHỐT shop/sheet của job NGAY tại đây, trước khi vào sổ: từ lúc này job KHÔNG đọc SelectedShop nữa
         // (state mutable — xem chú thích ở JobHandle). Đích chưa chọn shop thì không có gì để chạy → false
         // (đường gọi đã ValidateTarget trước nên đây chỉ là chốt an toàn).
         var shop = target.SelectedShop;
         if (shop is null) return false;
-        var resolved = SharedWorkbookStore.Resolve(target.Account, shop);
+        SharedWorkbookTarget resolved;
+        if (WorkspaceAppConfig.IsHarvest)
+        {
+            // App Harvest: file nguồn đã chọn tạm không đọc được (Excel mở độc quyền / app Update đang ghi / vắng) thì DỪNG,
+            // không rơi sang file gộp (dòng của MỌI shop dưới khoá của shop này → lấy nhầm SP shop khác). Vai trò khác: như cũ.
+            if (HarvestWorkbookResolve.ResolveCurrent(target.Account, shop, out var resolveError) is not { } strict)
+            {
+                LogAcc(target.Account.Id, target.DisplayName, $"✘ [{target.DisplayName}] {resolveError}");
+                Status = resolveError!;
+                refused = resolveError;
+                return false;
+            }
+            resolved = strict;
+        }
+        else resolved = SharedWorkbookStore.Resolve(target.Account, shop);
         var started = s.Jobs.TryAdd(target.Account.Id, () =>
         {
             var h = new JobHandle
@@ -571,16 +669,18 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
     {
         var s = _session;
         if (s is null || s.MasterCts.IsCancellationRequested) return false;
+        if (WorkspaceAppConfig.IsHarvest) SharedWorkbookStore.ReloadIfExternalChange();   // Harvest: cấu hình workbook chung mới nhất trước khi resolve
         var poolCount = AccountStore.Shared.Accounts.Count(a => !a.Disabled);
         if (!ValidateTarget(target, target.SelectedShop, poolCount, out var problem)) { Warn($"Không chạy được: {problem}", silent); return false; }
         // Kho tk Shopee dùng chung → acc thêm giữa chừng chỉ việc mượn từ kho như mọi job khác (không cần
         // đòi lại tk đặt-chỗ vì không còn pin tk vào BigSeller nào).
-        if (StartJob(s, target, resume: true))
+        if (StartJob(s, target, resume: true, out var refused))
         {
             LogAcc(target.Account.Id, target.DisplayName, $"➕ [{target.DisplayName}] đã thêm vào lượt chạy (tiếp tục phần còn thiếu)…");
             return true;
         }
-        LogAcc(target.Account.Id, target.DisplayName, $"[{target.DisplayName}] đang chạy rồi — bỏ qua.");
+        if (refused is null)   // lý do khác (Harvest không đọc được file nguồn…) đã log ở StartJob
+            LogAcc(target.Account.Id, target.DisplayName, $"[{target.DisplayName}] đang chạy rồi — bỏ qua.");
         return false;
     }
 
@@ -622,7 +722,8 @@ public sealed partial class ScrapeViewModel : ModuleViewModelBase
     {
         var a = t.Account; var s = shop;
         if (s is null) { problem = $"{a.DisplayName}: chưa chọn shop"; return false; }
-        if (!a.HasCookie) { problem = $"{a.DisplayName}: chưa có cookie BigSeller (đăng nhập ở mục BigSeller)"; return false; }
+        // Harvest không bấm Scrape BigSeller → không cần cookie BigSeller.
+        if (!WorkspaceAppConfig.IsHarvest && !a.HasCookie) { problem = $"{a.DisplayName}: chưa có cookie BigSeller (đăng nhập ở mục BigSeller)"; return false; }
         var missing = SharedWorkbookStore.MissingMergedProblem();
         if (missing is not null) { problem = missing; return false; }
         var resolved = SharedWorkbookStore.Resolve(a, s);

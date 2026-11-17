@@ -122,6 +122,18 @@ CREATE TABLE harvested_product_sources (
   UNIQUE (account_id, sheet, row_no)
 );
 CREATE INDEX ix_hps_item ON harvested_product_sources(item_id);"),
+        // Dòng nguồn → SP khoá theo SP chứ không theo VỊ TRÍ dòng: (account_id, sheet, item_id). Khoá cũ (… row_no) để SP
+        // B lưu vào đúng số dòng của SP A (workbook dời dòng / chèn) GHI ĐÈ mất liên kết "A thuộc shop đích" — bước up lên
+        // Shopee sau này cần đúng liên kết đó. row_no giờ là dòng thấy SP gần nhất (thông tin). Gộp trùng TRƯỚC khi đổi
+        // khoá: mỗi (account_id, sheet, item_id) giữ bản harvested_at mới nhất (bằng nhau → ctid lớn hơn).
+        (5, @"
+DELETE FROM harvested_product_sources a
+USING harvested_product_sources b
+WHERE a.account_id = b.account_id AND a.sheet = b.sheet AND a.item_id = b.item_id
+  AND (a.harvested_at < b.harvested_at OR (a.harvested_at = b.harvested_at AND a.ctid < b.ctid));
+ALTER TABLE harvested_product_sources DROP CONSTRAINT IF EXISTS harvested_product_sources_account_id_sheet_row_no_key;
+ALTER TABLE harvested_product_sources ADD CONSTRAINT ux_hps_acct_sheet_item UNIQUE (account_id, sheet, item_id);
+CREATE INDEX ix_hps_acct_sheet_row ON harvested_product_sources(account_id, sheet, row_no);"),
     };
 
     public ProductDb(string connString)

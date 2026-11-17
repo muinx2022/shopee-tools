@@ -23,7 +23,9 @@ public sealed class UpdateRunTargetViewModel : ObservableObject
         Account = account;
         Shops = new ObservableCollection<BigSellerShop>(account.Shops);
         // Cấu hình CHẠY giờ ở mức account (Account.RunConfig) — migrate 1 lần từ nguồn cũ nếu chưa có.
-        Shopee.Workspace.Infrastructure.RunConfigMigration.EnsureRunConfig(account);
+        // App Harvest (màn Update không dùng nhưng VM vẫn được dựng): không migrate/ghi bigseller.json.
+        if (!Shopee.Workspace.Infrastructure.WorkspaceAppConfig.IsHarvest)
+            Shopee.Workspace.Infrastructure.RunConfigMigration.EnsureRunConfig(account);
         // Khôi phục shop đã chọn từ Id đã LƯU; nếu chưa lưu (hoặc Id không còn khớp) thì MẶC ĐỊNH shop đầu —
         // GIỐNG ScrapeTargetViewModel. SelectedShop vẫn cần cho sheet/map/import; cấu hình chạy KHÔNG còn theo
         // shop nên đổi shop KHÔNG đổi giá trị. (Gán field trực tiếp để không trigger Persist lúc dựng VM.)

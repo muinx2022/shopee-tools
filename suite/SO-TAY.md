@@ -659,3 +659,87 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/src/Shopee.Core/Harvest/HarvestOutboxWorker.cs` (nhánh lỗi thoáng qua)
 - **Bằng chứng**: **nghi ngờ** — uplink rất chậm (~0,4 Mbps) với lô ~15 MB có thể timeout mãi mà worker vẫn gửi lại lô 50 mục; chưa dựng ca.
 - **Vì sao không sửa ngay**: cần số liệu đường truyền thật của các máy.
+
+### P-20261117-1 · [MỞ] · VỪA — Harvest chưa tự đăng nhập lại tài khoản Shopee bị đăng xuất
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/HarvestRowProcessor.cs` (case LoginRequired); `BraveInstanceSession.RunnerLoop.cs:265`
+- **Bằng chứng**: đọc code — các nhánh tự đăng nhập lại đều kèm `!harvest`; tài khoản chỉ được cho nghỉ, job sau lại chọn đúng tài khoản đó.
+- **Vì sao không sửa ngay**: việc riêng, cần chạy thật với tài khoản bị đăng xuất.
+
+### P-20261117-2 · [MỞ] · VỪA — `checkCurrentLinkBeforeNext` gộp dò captcha/traffic với dò "không phải trang SP" (chờ 30 s)
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/extensions/shopee-harvest/background.js` (checkCurrentLinkBeforeNext); `workspace/src/Shopee.Module.MultiBrave/Engine/RunnerExtensionRpc.cs`
+- **Bằng chứng**: đọc code + probe phản biện vòng 14 — Harvest phải bỏ hẳn bước kiểm sau dòng không lưu được; captcha sau dòng lỗi chỉ được dò ở dòng kế.
+- **Vì sao không sửa ngay**: hàm C# dùng chung với Scrape.
+
+### P-20261117-3 · [MỞ] · VỪA — `WorkbookSheets.ListSheetNames` nuốt lỗi đọc → `ResolveForUpdate` rơi sang file gộp khi file nguồn bị Excel khoá (app Scrape/Update)
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Core/BigSeller/WorkbookSheets.cs`; `SharedWorkbookCatalog.ResolveForUpdate`
+- **Bằng chứng**: test `HarvestResolve_NguonMoDocQuyen…`: bản chuẩn trả `gop.xlsx` khi nguồn mở FileShare.None. Harvest đã có resolve chặt riêng.
+- **Vì sao không sửa ngay**: đổi hành vi app Scrape/Update, ngoài phạm vi GĐ5.
+
+### P-20261117-4 · [MỞ] · VỪA — `ScrapeWorkbook.Open` không đóng FileStream, handle giữ tới khi GC chạy
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/ScrapeWorkbook.cs` (Open)
+- **Bằng chứng**: probe phản biện vòng 10 — ghi độc quyền ngay sau `FetchLinks` báo "being used by another process". Harvest đọc qua `HarvestWorkbookReader` nên không dính.
+- **Vì sao không sửa ngay**: code dùng chung Scrape/Update.
+
+### P-20261117-5 · [MỞ] · NHẸ — `ScrapeRunner.Classify` phân loại lỗi theo chữ trong thông điệp (captcha/verify/proxy)
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/ScrapeRunner.cs` (Classify)
+- **Bằng chứng**: gặp thật ở vòng 13–14 GĐ5: thông điệp có tên tài khoản / ex.Message suýt thành Quarantine. Harvest đã làm sạch qua `SafeForClassify`.
+- **Vì sao không sửa ngay**: đổi cơ chế phân loại chung là việc riêng.
+
+### P-20261117-6 · [MỞ] · NHẸ — Outbox Harvest schema v3: bản app cũ mở DB này từ chối chạy
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Core/Harvest/HarvestOutbox.cs` (SchemaVersion)
+- **Bằng chứng**: đọc code — đúng thiết kế; khi phát hành phải cập nhật mọi máy cùng lúc.
+- **Vì sao không sửa ngay**: lưu ý phát hành.
+
+### P-20261117-7 · [MỞ] · NHẸ — App Scrape/Update lúc đóng lưu nguyên `bigseller.json` từ RAM, có thể đè thay đổi của app khác
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Workspace/App.xaml.cs` (nhánh else của RunShutdownHooks)
+- **Bằng chứng**: **nghi ngờ** — đọc code, chưa dựng ca.
+- **Vì sao không sửa ngay**: hành vi Scrape/Update.
+
+### P-20261117-8 · [MỞ] · NHẸ — Harvest máy mới (chưa có link mẫu) + phiên hỏng mà không bị đẩy về trang đăng nhập → duyệt cả khối không lấy được gì
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/HarvestRowProcessor.cs:288-299`
+- **Bằng chứng**: phản biện vòng 16 — khối 50 dòng tốn 2–3 giờ, mọi dòng vào sổ bỏ qua; không ghi lỗi, không phạt tài khoản.
+- **Vì sao không sửa ngay**: đánh đổi có chủ ý để không đốt tài khoản.
+
+### P-20261117-9 · [MỞ] · NHẸ — Link mẫu toàn máy (`meta.sample_link`) là SP đã bị gỡ → khối mở đầu bằng cụm chết bị dừng oan, cho tới khi lưu được SP mới
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/HarvestRowProcessor.cs` (ResolveSample)
+- **Bằng chứng**: phản biện vòng 16, đọc code; xác suất thấp vì mẫu làm mới ở mỗi lần lưu.
+- **Vì sao không sửa ngay**: nâng cấp sau: thử vài mẫu gần nhất.
+
+### P-20261117-10 · [MỞ] · NHẸ — Dòng notProduct đang giữ chờ (≤ 9) được ghi `failed` khi hết khối mà không có lần kiểm chứng nào phía sau
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/HarvestRunnerLoop.cs` (FlushPendingNotProductAsync trước CompleteBlock)
+- **Bằng chứng**: suy từ luật — nếu phiên hỏng đúng ở cuối khối thì các dòng đó có 1 lượt thấy; luật 2 lượt vẫn chặn bỏ qua vĩnh viễn.
+- **Vì sao không sửa ngay**: có thể thêm một lần kiểm mẫu trước khi xả.
+
+### P-20261117-11 · [MỞ] · NHẸ — Khối mà dòng nén vượt số dòng hiện tại (workbook bị xoá dòng giữa lúc chia và lúc đọc) ném "Không có link hợp lệ…" → Cooldown oan
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/HarvestRunnerLoop.cs:126-127` (khuôn LauncherRunnerLoop)
+- **Bằng chứng**: **nghi ngờ** — suy từ code (phản biện vòng 12), Scrape cũng dính.
+- **Vì sao không sửa ngay**: hành vi chung engine.
+
+### P-20261117-12 · [MỞ] · NHẸ — Lối Stop đọc tiến độ từ file profile rồi gán thẳng `LastCompletedRow`, có thể lùi nếu extension chưa ghi xuống đĩa
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/InstanceConfig.cs:172-173`; `BraveInstanceSession.Progress.cs:33-48`
+- **Bằng chứng**: **nghi ngờ** — suy từ code (phản biện vòng 16); hậu quả chỉ làm lại vài dòng.
+- **Vì sao không sửa ngay**: hành vi chung engine.
+
+### P-20261117-13 · [MỞ] · NHẸ — Stats Harvest trên Hub nay đếm liên kết theo SP chứ không theo dòng
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `suite/server/Shopee.Hub.Web/Data/ProductDb.Harvest.cs` (GetHarvestedStatsAsync)
+- **Bằng chứng**: đọc code — trang/báo cáo nào hiểu là "số dòng" cần đổi cách gọi; **nghi ngờ** về nơi hiển thị.
+- **Vì sao không sửa ngay**: chưa có UI Hub cho harvest.
+
+### P-20261117-14 · [MỞ] · NHẸ — Scrape và Harvest có thể dùng chung một tài khoản Shopee cùng lúc; `harvest-profiles` không được janitor dọn
+- **Thấy lúc**: GĐ5 plan harvest (nghiệm thu / phản biện vòng 10–16)
+- **Ở đâu**: `workspace/src/Shopee.Core/Browser/BraveFleet.cs`; `workspace/src/Shopee.Workspace/App.xaml.cs`
+- **Bằng chứng**: **nghi ngờ** — đọc code GĐ5, chưa dựng ca chạy song song.
+- **Vì sao không sửa ngay**: cần quyết định chính sách dùng chung tài khoản.

@@ -208,6 +208,33 @@ const getCurrentTabUrl = async (tabId, fallback = "") => {
   return tab?.url || fallback || "";
 };
 
+/**
+ * Trang ĐĂNG NHẬP / đăng ký của Shopee (tài khoản trong profile bị đăng xuất, Shopee đẩy link SP sang
+ * /buyer/login?next=…): KHÔNG phải "không phải trang SP" — là lỗi phiên của tài khoản, launcher không được ghi SP vào
+ * danh sách lỗi vĩnh viễn. Nhận: /buyer/login, /buyer/signup, /buyer/login/…, /user/login, accounts.shopee.*.
+ */
+const isShopeeLoginUrl = (url) => {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    if (!/(^|\.)shopee\./i.test(host)) return false;
+    if (/^accounts\.shopee\./i.test(host)) return true;
+    return /^\/(buyer\/(login|signup|register)|user\/login|login)(\/|$)/i.test(parsed.pathname);
+  } catch (_) {
+    return false;
+  }
+};
+
+/** Kết quả "tài khoản mất đăng nhập" (C# đọc cờ loginRequired — không tính lỗi dòng). */
+const loginRequiredResult = ({ rowNumber, tabId, pageUrl, itemId, shopId }) => harvestResult({
+  loginRequired: true,
+  message: `Tai khoan Shopee mat dang nhap (bi chuyen toi trang dang nhap) dong ${rowNumber}: ${pageUrl || "(trong)"}`,
+  tabId,
+  pageUrl,
+  itemId,
+  shopId,
+});
+
 const isShopeeProductUrl = (url) => {
   try {
     const parsed = new URL(url);
@@ -525,6 +552,7 @@ const harvestResult = (fields) => ({
   trafficError: false,
   blocked: false,
   notProduct: false,
+  loginRequired: false,
   aborted: false,
   superseded: false,
   message: "",
@@ -806,6 +834,7 @@ globalThis.__launcherExecuteHarvestStep = async (payload) => {
 
     if (!itemId || !isShopeeProductUrl(await getCurrentTabUrl(tabId, currentPageUrl))) {
       const pageUrl = await getCurrentTabUrl(tabId, currentPageUrl || link);
+      if (isShopeeLoginUrl(pageUrl)) return loginRequiredResult({ rowNumber, tabId, pageUrl, itemId, shopId });
       return harvestResult({
         notProduct: true,
         message: `URL hien tai khong phai link san pham Shopee: ${pageUrl || "(trong)"}`,
@@ -882,6 +911,8 @@ globalThis.__launcherExecuteHarvestStep = async (payload) => {
     }
     if (!isShopeeProductUrl(await getCurrentTabUrl(tabId, beforeReloadUrl))) {
       await bump("miss");
+      const leftUrl = await getCurrentTabUrl(tabId, beforeReloadUrl);
+      if (isShopeeLoginUrl(leftUrl)) return loginRequiredResult({ rowNumber, tabId, pageUrl: leftUrl, itemId, shopId });
       return harvestResult({
         notProduct: true,
         message: `Trang roi khoi san pham khi cho du lieu: ${beforeReloadUrl || "(trong)"}`,

@@ -8,7 +8,8 @@ namespace Shopee.Hub;
 
 /// <summary>
 /// Phần ProductDb: kho dữ liệu SP Shopee do app Harvest cào (bảng <c>harvested_products</c> +
-/// <c>harvested_product_sources</c>, migration 4). SQL viết TAY như các phần khác.
+/// <c>harvested_product_sources</c>, migration 4; khoá dòng nguồn đổi sang (account_id, sheet, item_id) ở migration 5). SQL
+/// viết TAY như các phần khác.
 /// </summary>
 public sealed partial class ProductDb
 {
@@ -101,8 +102,9 @@ public sealed partial class ProductDb
     // (Applied=true). Hash TRÙNG → chỉ đẩy harvested_at lên GREATEST(cũ, mới) — không đụng raw/cột khác/đếm/updated_at,
     // để bản CŨ hơn hash khác tới sau không lật được bản vừa cào lại. Bản CŨ hơn hash khác → không đổi gì. Hai ca này
     // Ok=true (client xoá khỏi hàng đợi) nhưng Applied=false. Dòng nguồn upsert
-    // theo (account_id, sheet, row_no) kể cả khi hash trùng (dòng của shop đích có thể vừa đổi SP), cũng chỉ khi
-    // harvested_at gửi lên không cũ hơn bản đang giữ. Kết quả trả THEO CHỈ SỐ MỤC (cùng itemId có thể ở nhiều mục;
+    // theo (account_id, sheet, item_id) — migration 5 — kể cả khi hash trùng: SP đã thuộc shop đích thì luôn giữ liên kết,
+    // SP khác cùng số dòng là liên kết RIÊNG (không đè); row_no / url cập nhật về lần thấy mới nhất, chỉ khi harvested_at gửi
+    // lên không cũ hơn bản đang giữ. Kết quả trả THEO CHỈ SỐ MỤC (cùng itemId có thể ở nhiều mục;
     // khi đó harvest_count có thể đếm dư — chỉ là số thống kê, chấp nhận).
     // PostgresException của MỤC (IsItemFaultPg: 22/23/54) → Ok=false cho đúng mục đó, rollback, làm tiếp mục sau —
     // nếu ném 500 thì client gửi lại lần nào cũng chết ở đúng mục đó, hàng đợi tắc vĩnh viễn. Lớp khác và lỗi không
@@ -128,8 +130,8 @@ WHERE harvested_products.raw_hash IS DISTINCT FROM EXCLUDED.raw_hash
         const string sqlSource = @"
 INSERT INTO harvested_product_sources (account_id, sheet, row_no, item_id, url, harvested_at)
 VALUES ($1, $2, $3, $4, $5, $6)
-ON CONFLICT (account_id, sheet, row_no) DO UPDATE SET
-  item_id = EXCLUDED.item_id, url = EXCLUDED.url, harvested_at = EXCLUDED.harvested_at
+ON CONFLICT (account_id, sheet, item_id) DO UPDATE SET
+  row_no = EXCLUDED.row_no, url = EXCLUDED.url, harvested_at = EXCLUDED.harvested_at
 WHERE EXCLUDED.harvested_at >= harvested_product_sources.harvested_at;";
         // Upsert bị WHERE chặn mà hash TRÙNG: cùng dữ liệu, chỉ là lần cào mới hơn → nhích mốc lên (GREATEST).
         const string sqlBumpAt = @"
@@ -207,9 +209,10 @@ WHERE item_id = $1 AND raw_hash = $2 AND harvested_at < $3;";
         return new HarvestedProductBatchResponse(results);
     }
 
-    // ── Đếm: số dòng nguồn khớp lọc + số SP khác nhau ───────────────────────────────
-    // account/sheet rỗng = không lọc chiều đó. Không lọc gì cả → Products đếm THẲNG harvested_products (gồm SP cào
-    // không kèm dòng nguồn); có lọc → đếm item_id khác nhau trong các dòng nguồn khớp.
+    // ── Đếm: số liên kết nguồn khớp lọc + số SP khác nhau ───────────────────────────────
+    // account/sheet rỗng = không lọc chiều đó. Từ migration 5 mỗi liên kết là một (account, sheet, SP) — số đầu đếm theo SP
+    // của từng shop đích (không còn theo vị trí dòng). Không lọc gì cả → Products đếm THẲNG harvested_products (gồm SP cào
+    // không kèm dòng nguồn); có lọc → đếm item_id khác nhau trong các liên kết khớp.
     public async Task<HarvestedProductStats> GetHarvestedStatsAsync(string account, string sheet, CancellationToken ct)
     {
         const string sql = @"

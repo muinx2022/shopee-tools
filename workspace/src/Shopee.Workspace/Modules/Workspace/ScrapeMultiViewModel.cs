@@ -75,7 +75,7 @@ public sealed partial class ScrapeMultiAccountItem : ObservableObject
         {
             var resolved = SharedWorkbookStore.Resolve(Account.Account, shop.Shop);
             var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, Account.Account.Id, resolved.ProgressKey);
-            var prog = ScrapeProgressStore.Shared.Find(Account.Account.Id, scrapeKey);
+            var prog = RoleStores.ScrapeProgress.Find(Account.Account.Id, scrapeKey);
             if (prog != null)
             {
                 totalDone = Math.Max(totalDone, prog.Completed.Sum(r => Math.Max(0, r.To - r.From + 1)));
@@ -270,7 +270,7 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
         var shop = lead.Account.Shops[0];
         var resolved = SharedWorkbookStore.Resolve(lead.Account.Account, shop.Shop);
         var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, lead.Account.Account.Id, resolved.ProgressKey);
-        var prog = ScrapeProgressStore.Shared.Find(lead.Account.Account.Id, scrapeKey);
+        var prog = RoleStores.ScrapeProgress.Find(lead.Account.Account.Id, scrapeKey);
 
         if (prog is null || prog.Completed.Count == 0)
         {
@@ -397,7 +397,7 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
             {
                 var resolved = SharedWorkbookStore.Resolve(item.Account.Account, shop.Shop);
                 var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, item.Account.Account.Id, resolved.ProgressKey);
-                ScrapeProgressStore.Shared.BeginFresh(item.Account.Account.Id, scrapeKey, item.DisplayName, 0);
+                RoleStores.ScrapeProgress.BeginFresh(item.Account.Account.Id, scrapeKey, item.DisplayName, 0);
                 shop.RefreshStatus();
             }
             item.Status = "Đã reset tiến độ";
@@ -829,7 +829,7 @@ public sealed partial class ScrapeMultiViewModel : ObservableObject
                 {
                     var resolved = SharedWorkbookStore.Resolve(target.Account.Account, s.Shop);
                     var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, target.Account.Account.Id, resolved.ProgressKey);
-                    ScrapeProgressStore.Shared.MarkCompleted(target.Account.Account.Id, scrapeKey, row, row);
+                    RoleStores.ScrapeProgress.MarkCompleted(target.Account.Account.Id, scrapeKey, row, row);
                 }
             }
 

@@ -199,7 +199,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     public bool UpdateToggleEnabled => IsUpdatingShop || CanStartUpdate;
     public bool RewriteToggleEnabled => IsRewriting || CanStartUpdate;
 
-    public string ScrapeToggleTip => ToggleTip("scrape", IsScraping, CoordOp.Scrape, "Scrape shop này (tiếp tục dòng còn thiếu)");
+    public string ScrapeToggleTip => ToggleTip(RoleText.ScrapeOpLower, IsScraping, RoleStores.ScrapeOp, $"{RoleText.ScrapeOp} shop này (tiếp tục dòng còn thiếu)");
     public string ImportToggleTip => ToggleTip("import", IsImporting, CoordOp.Import, "Import to store cho shop này");
     public string UpdateToggleTip => ToggleTip("update", IsUpdatingShop, CoordOp.Update, "Update product cho shop này");
     public string RewriteToggleTip => ToggleTip("đặt tên SP", IsRewriting, CoordOp.Rewrite, "Update tên SP (AI) cho shop này");
@@ -219,7 +219,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
         {
             var scrapeResolved = SharedWorkbookStore.Resolve(account, Shop);
             var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, scrapeResolved.ProgressKey);
-            var progress = ScrapeProgressStore.Shared.Find(account.Id, key);
+            var progress = RoleStores.ScrapeProgress.Find(account.Id, key);
             if (progress is not null && string.Equals(progress.Status, LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase))
                 return true;
 
@@ -227,7 +227,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
             if (!string.IsNullOrWhiteSpace(updateResolved.ProgressKey))
             {
                 var altKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, updateResolved.ProgressKey);
-                var altProg = ScrapeProgressStore.Shared.Find(account.Id, altKey);
+                var altProg = RoleStores.ScrapeProgress.Find(account.Id, altKey);
                 if (altProg is not null && string.Equals(altProg.Status, LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
@@ -294,16 +294,21 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
     //    Đặt command Ở ĐÂY (không phải WorkspaceViewModel) để MenuItem trong ContextMenu bind qua DataContext
     //    kế thừa (= shop này); popup của ContextMenu KHÔNG nằm trong visual tree UserControl nên $parent[...]
     //    không tra ngược tới WorkspaceViewModel được. Fire-and-forget: ResetOpProgressAsync tự nuốt lỗi Hub. ──
-    [RelayCommand]
+    /// <summary>App Harvest: tiến độ dựng lại từ tập SP đã lấy mỗi lần chạy → "đánh dấu xong" bị ghi đè ngay lượt sau, và ghi
+    /// khoá vào tập mà không có dữ liệu SP thì Hub thiếu SP mà app báo đã lấy → tắt lệnh ở Harvest. Vai trò khác: như cũ.</summary>
+    public bool CanMarkScrapeDone => !WorkspaceAppConfig.IsHarvest;
+
+    [RelayCommand(CanExecute = nameof(CanMarkScrapeDone))]
     private void MarkScrapeDone()
     {
+        if (!CanMarkScrapeDone) return;
         var account = Parent.Account;
         var resolved = SharedWorkbookStore.Resolve(account, Shop);
         var progressKey = !string.IsNullOrWhiteSpace(resolved.ProgressKey)
             ? resolved.ProgressKey
             : SharedWorkbookStore.ResolveForUpdate(account, Shop).ProgressKey;
         var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, progressKey);
-        ScrapeProgressStore.Shared.MarkCompleted(account.Id, key);
+        RoleStores.ScrapeProgress.MarkCompleted(account.Id, key);
         RefreshStatus();
         Parent.ScrapeTarget.RefreshProgress();
     }
@@ -314,12 +319,12 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
         var account = Parent.Account;
         var resolved = SharedWorkbookStore.Resolve(account, Shop);
         var key = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
-        ScrapeProgressStore.Shared.Clear(account.Id, key);
+        ScrapeProgressReset.ClearKey(account.Id, key);   // Harvest: xoá cả tập SP đã lấy của target này
         var updateResolved = SharedWorkbookStore.ResolveForUpdate(account, Shop);
         if (!string.Equals(resolved.ProgressKey, updateResolved.ProgressKey, StringComparison.OrdinalIgnoreCase))
         {
             var altKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, updateResolved.ProgressKey);
-            ScrapeProgressStore.Shared.Clear(account.Id, altKey);
+            ScrapeProgressReset.ClearKey(account.Id, altKey);
         }
         RefreshStatus();
         Parent.ScrapeTarget.RefreshProgress();
@@ -386,7 +391,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
         var resolved = SharedWorkbookStore.Resolve(account, Shop);
         var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
 
-        ScrapeProgressStore.Shared.Clear(account.Id, scrapeKey);
+        ScrapeProgressReset.ClearKey(account.Id, scrapeKey);
         ShopLiveLine.Clear(account.Id, Shop.Id);
         NotifyLiveLine();
 
@@ -417,7 +422,7 @@ public sealed partial class WorkspaceShopViewModel : ObservableObject
         var resolvedUpdate = SharedWorkbookStore.ResolveForUpdate(account, Shop);
         var scrapeKey = SharedWorkbookCatalog.ScrapeProgressKey(SharedWorkbookStore.IsActive, account.Id, resolved.ProgressKey);
 
-        ScrapeProgressStore.Shared.Clear(account.Id, scrapeKey);
+        ScrapeProgressReset.ClearKey(account.Id, scrapeKey);
         OpProgressStore.Shared.ClearAllOps(account.Id, resolved.ProgressKey);
         if (!string.Equals(resolved.ProgressKey, resolvedUpdate.ProgressKey, StringComparison.OrdinalIgnoreCase))
             OpProgressStore.Shared.ClearAllOps(account.Id, resolvedUpdate.ProgressKey);

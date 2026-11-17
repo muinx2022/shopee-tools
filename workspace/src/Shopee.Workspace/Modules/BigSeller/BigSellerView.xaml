@@ -33,7 +33,8 @@
                 <TextBlock Text="Một file cho mọi shop của mọi tài khoản. Tick sheet rồi bấm Gộp và dùng. Workbook riêng từng tài khoản vẫn giữ."
                            Style="{StaticResource caption}" Margin="0,3,0,0" TextWrapping="Wrap" />
                 <DockPanel Margin="0,8,0,0">
-                    <Button DockPanel.Dock="Right" Style="{StaticResource primary}" Command="{Binding PickSharedWorkbookCommand}">
+                    <Button DockPanel.Dock="Right" Style="{StaticResource primary}" Command="{Binding PickSharedWorkbookCommand}"
+                            Visibility="{Binding CanEditSharedWorkbook, Converter={StaticResource BoolToVis}}">
                         <StackPanel Orientation="Horizontal">
                             <c:PathIcon Data="{StaticResource IconFolder}" />
                             <TextBlock Style="{StaticResource btnLabel}" Text="Chọn file" />
@@ -56,7 +57,12 @@
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
                 </ScrollViewer>
-                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                <!-- App Harvest chỉ đọc workbook chung: ẩn Gộp / Ngừng dùng, hiện chú thích. -->
+                <TextBlock Text="{Binding SharedWorkbookReadOnlyNote}" Style="{StaticResource caption}" Margin="0,8,0,0"
+                           TextWrapping="Wrap"
+                           Visibility="{Binding ShowSharedWorkbookReadOnlyNote, Converter={StaticResource BoolToVis}}" />
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0"
+                            Visibility="{Binding CanEditSharedWorkbook, Converter={StaticResource BoolToVis}}">
                     <Button Style="{StaticResource primary}" Command="{Binding MergeSharedCommand}">
                         <TextBlock Style="{StaticResource btnLabel}" Text="Gộp và dùng" />
                     </Button>

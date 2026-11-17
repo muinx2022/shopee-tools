@@ -172,6 +172,37 @@ public sealed class ScrapeProgressStore
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// GHI ĐÈ tiến độ một khoá bằng kết quả dựng lại (app Harvest — dựng từ tập SP đã lấy, không tin số dòng cũ): vùng phủ =
+    /// <paramref name="completed"/> ∪ <paramref name="skippedRows"/>, sổ bỏ qua = <paramref name="skippedRows"/>, trạng thái
+    /// running. MỘT lần ghi đĩa + MỘT lần <see cref="Changed"/> (khác MarkCompleted từng vùng). App Scrape không gọi.
+    /// </summary>
+    public void ReplaceProgress(string accountId, string sheet, string accountName, int totalRows,
+        IEnumerable<RowRange> completed, IEnumerable<int> skippedRows)
+    {
+        lock (_lock)
+        {
+            var p = GetOrCreateLocked(accountId, sheet, accountName);
+            var skipped = skippedRows.Where(r => r > 0).Distinct().OrderBy(r => r).ToList();
+            // Một lượt sắp + gộp (đoạn chồng / liền kề nhập làm một) — gọi Merge từng đoạn là O(n²) với vài nghìn đoạn.
+            var ranges = new List<RowRange>();
+            foreach (var r in completed.Where(r => r.To >= r.From).Select(r => (r.From, r.To))
+                         .Concat(skipped.Select(r => (From: r, To: r))).OrderBy(r => r.From))
+            {
+                if (ranges.Count > 0 && r.From <= ranges[^1].To + 1) ranges[^1].To = Math.Max(ranges[^1].To, r.To);
+                else ranges.Add(new RowRange { From = r.From, To = r.To });
+            }
+            p.Completed = ranges;
+            p.SkippedRows = skipped;
+            p.LastRowReached = RowRangeMath.MaxRow(p.Completed);
+            p.TotalRowsAtLastRun = totalRows;
+            p.Status = LedgerStatus.Running;
+            p.LastRunAt = DateTimeOffset.Now;
+            SaveLocked();
+        }
+        Changed?.Invoke();
+    }
+
     /// <summary>Đánh dấu toàn bộ hoàn thành thủ công (status = Completed).</summary>
     public void MarkCompleted(string accountId, string sheet)
     {

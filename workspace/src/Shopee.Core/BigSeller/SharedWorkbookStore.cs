@@ -32,6 +32,37 @@ public static class SharedWorkbookStore
 
     public static SharedWorkbookState Current { get; private set; } = Load();
 
+    /// <summary>Mốc ghi của <see cref="ConfigPath"/> ứng với <see cref="Current"/> (đặt lúc nạp / lúc process này ghi) — để
+    /// <see cref="ReloadIfExternalChange"/> biết app khác đã đổi cấu hình. Không có giá trị khởi tạo: <see cref="Load"/> chạy
+    /// trong khởi tạo <see cref="Current"/> và tự gán.</summary>
+    private static DateTime _configWriteUtc;
+
+    private static DateTime ConfigWriteUtc()
+    {
+        try { return File.Exists(ConfigPath) ? File.GetLastWriteTimeUtc(ConfigPath) : DateTime.MinValue; }
+        catch { return DateTime.MinValue; }
+    }
+
+    /// <summary>Nạp lại cấu hình nếu file đã bị process KHÁC đổi (app Scrape chọn nguồn / gộp / ngừng dùng). Đọc lỗi (file
+    /// đang khoá / hỏng) → giữ bản đang có và KHÔNG cập nhật mốc (nhịp sau thử lại). Đổi → bắn <see cref="Changed"/>.
+    /// Chỉ app Harvest gọi (chỉ đọc workbook chung); app khác không gọi nên hành vi của chúng không đổi.</summary>
+    public static bool ReloadIfExternalChange()
+    {
+        lock (Gate)
+        {
+            var stamp = ConfigWriteUtc();
+            if (stamp == _configWriteUtc) return false;
+            var loaded = JsonAtomicFile.TryLoad<SharedWorkbookState>(ConfigPath, JsonOpts);
+            if (loaded is null && File.Exists(ConfigPath)) return false;
+            loaded ??= new SharedWorkbookState();
+            loaded.UseSharedSource = true;
+            Current = loaded;
+            _configWriteUtc = stamp;
+        }
+        Changed?.Invoke();
+        return true;
+    }
+
     /// <summary>Bắn sau khi chọn file, gộp, hoặc ngừng dùng — UI Workspace đọc lại dòng workbook.</summary>
     public static event Action? Changed;
 
@@ -142,6 +173,7 @@ public static class SharedWorkbookStore
 
     private static SharedWorkbookState Load()
     {
+        _configWriteUtc = ConfigWriteUtc();   // mốc lấy TRƯỚC khi đọc: process khác ghi chen giữa → lần reload sau vẫn nhận ra
         var loaded = JsonAtomicFile.TryLoad<SharedWorkbookState>(ConfigPath, JsonOpts);
         var state = loaded ?? new SharedWorkbookState();
 
@@ -149,5 +181,9 @@ public static class SharedWorkbookStore
         return state;
     }
 
-    private static void SaveLocked() => JsonAtomicFile.Save(ConfigPath, Current, JsonOpts);
+    private static void SaveLocked()
+    {
+        JsonAtomicFile.Save(ConfigPath, Current, JsonOpts);
+        _configWriteUtc = ConfigWriteUtc();   // lần ghi của chính process này không tính là "đổi từ ngoài"
+    }
 }

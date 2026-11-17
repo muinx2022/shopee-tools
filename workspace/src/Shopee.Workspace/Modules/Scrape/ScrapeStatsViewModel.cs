@@ -5,6 +5,7 @@ using Shopee.Core.Accounts;
 using Shopee.Core.BigSeller;
 using Shopee.Core.Scrape;
 using Shopee.Core.Coordination;
+using Shopee.Workspace.Infrastructure;
 
 namespace Shopee.Workspace.Modules.Scrape;
 
@@ -63,14 +64,16 @@ public sealed partial class ScrapeStatsViewModel : ObservableObject
     public ScrapeStatsViewModel(string accountId, string accountName)
     {
         _accountId = accountId;
-        Title = $"Thống kê scrape — BigSeller: {accountName}";
+        Title = WorkspaceAppConfig.IsHarvest
+            ? $"Thống kê lấy dữ liệu — BigSeller: {accountName}"
+            : $"Thống kê scrape — BigSeller: {accountName}";
         Load();
     }
 
     public void Load()
     {
         Sheets.Clear();
-        var items = ScrapeProgressStore.Shared.All()
+        var items = RoleStores.ScrapeProgress.All()
             .Where(p => p.AccountId == _accountId)
             .OrderBy(p => p.Sheet)
             .ToList();
@@ -96,9 +99,13 @@ public sealed partial class ScrapeStatsViewModel : ObservableObject
     /// <see cref="ScrapeProgressReset"/> — cùng đường với nút Chạy (reset) — để xoá CẢ ledger Hub: trước đây
     /// chỗ này chỉ Clear local nên khi có Hub, "Xoá tiến độ" là no-op (lượt sau fold ledger kéo tiến độ cũ về).</summary>
     [RelayCommand]
-    private void ClearProgress(SheetProgressRow row)
+    private async Task ClearProgress(SheetProgressRow row)
     {
         if (row is null) return;
+        // App Harvest: xoá cả danh sách SP đã lấy của target này (lượt sau lấy lại từ đầu) → hỏi trước. App Scrape: như cũ.
+        if (WorkspaceAppConfig.IsHarvest
+            && !await Dialogs.ConfirmAsync($"Xóa tiến độ {RoleText.ScrapeOp} của sheet \"{row.Sheet}\" (cả danh sách SP đã lấy) để lấy lại từ đầu?", "Reset tiến độ"))
+            return;
         string? note = null;
         ScrapeProgressReset.Reset(_accountId, row.Sheet, m => note = m);
         Load();
@@ -121,7 +128,7 @@ public sealed partial class ScrapeStatsViewModel : ObservableObject
         var sheet = row.Sheet ?? "";
         // Sổ dòng của LOCAL — gửi kèm cho hub union (dòng bỏ trước khi hub có cột skipped chỉ còn dấu ở đây),
         // và cũng là thứ còn nguyên nếu phải dừng giữa chừng → bấm lại vẫn mở được đủ.
-        var localRows = ScrapeProgressStore.Shared.Find(_accountId, sheet)?.SkippedRows ?? [];
+        var localRows = RoleStores.ScrapeProgress.Find(_accountId, sheet)?.SkippedRows ?? [];
         // App local: không có Hub — bỏ qua nhánh ReopenSkippedAsync trên Hub.
 
 
@@ -154,7 +161,8 @@ public sealed partial class ScrapeStatsViewModel : ObservableObject
 
 
 
-        var reopened = ScrapeProgressStore.Shared.ReopenSkipped(_accountId, sheet);
+        ScrapeProgressReset.ClearHarvestFailed(_accountId, sheet);   // Harvest: bỏ danh sách lỗi vĩnh viễn → lượt sau thử lại
+        var reopened = RoleStores.ScrapeProgress.ReopenSkipped(_accountId, sheet);
         Load();   // Load() ghi đè Summary → câu báo kết quả phải đặt SAU.
         Summary = $"Đã mở lại {reopened} dòng đã bỏ của sheet \"{(string.IsNullOrWhiteSpace(sheet) ? "(mặc định)" : sheet)}\" " +
                   "— bấm Tiếp tục để cào nốt các dòng này.";

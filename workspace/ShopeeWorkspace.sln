@@ -25,6 +25,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Scrape", "src\Shopee
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Update", "src\Shopee.Update\Shopee.Update.csproj", "{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Shopee.Harvest", "src\Shopee.Harvest\Shopee.Harvest.csproj", "{C8204EC8-53C1-4C50-9B80-AE661DB8A338}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -71,9 +73,14 @@ Global
 		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C8204EC8-53C1-4C50-9B80-AE661DB8A338}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{C8204EC8-53C1-4C50-9B80-AE661DB8A338}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{C8204EC8-53C1-4C50-9B80-AE661DB8A338}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{C8204EC8-53C1-4C50-9B80-AE661DB8A338}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{61529ED5-43CB-4277-A26F-A741B74C0A99} = {2BCABE3D-71BF-4058-B44B-0D50614F36DA}
 		{9CD0F8E7-298E-4DCB-BF15-7C9EFBBD700F} = {2BCABE3D-71BF-4058-B44B-0D50614F36DA}
+		{C8204EC8-53C1-4C50-9B80-AE661DB8A338} = {2BCABE3D-71BF-4058-B44B-0D50614F36DA}
 	EndGlobalSection
 EndGlobal

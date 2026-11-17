@@ -396,17 +396,18 @@ FROM harvested_products WHERE item_id = $1;", conn);
         Assert.Equal("may-body", (await DocSp(tuBody))!.MachineId);
     }
 
-    /// <summary>Dòng nguồn upsert theo (account, sheet, row): cùng dòng đổi SP → ghi đè item_id; không có trường nguồn
-    /// nào → chỉ lưu SP; có 1–2 trường → mục bị từ chối source-partial; stats đếm đúng theo lọc.</summary>
+    /// <summary>Liên kết nguồn upsert theo (account, sheet, SP) — migration 5: cùng SP ở dòng khác → cập nhật row_no (dòng
+    /// thấy gần nhất); SP khác cùng số dòng → liên kết riêng; không có trường nguồn nào → chỉ lưu SP; có 1–2 trường → mục bị
+    /// từ chối source-partial; stats đếm đúng theo lọc.</summary>
     [PgFact]
-    public async Task DongNguon_UpsertTheoAccountSheetRow_StatsDemDung()
+    public async Task DongNguon_UpsertTheoAccountSheetSP_StatsDemDung()
     {
         var c = await _app.KhachCoTokenAsync();
         var acct = "acc-" + Guid.NewGuid().ToString("N");
         long a = IdMoi(), b = IdMoi(), le = IdMoi();
 
         await PostOk(c, Sp(a, "h", acct: acct, sheet: "Shop1", rowNo: 5), Sp(a, "h", acct: acct, sheet: "Shop1", rowNo: 6));
-        await PostOk(c, Sp(b, "h", acct: acct, sheet: "Shop1", rowNo: 5));      // dòng 5 đổi sang SP b
+        await PostOk(c, Sp(b, "h", acct: acct, sheet: "Shop1", rowNo: 5));      // SP b ở dòng 5: liên kết riêng
         await PostOk(c, Sp(a, "h", acct: acct, sheet: "Shop2", rowNo: 5));      // cùng row_no, khác sheet = dòng khác
         await PostOk(c, Sp(le, "h"));                                            // không có trường nguồn → chỉ lưu SP
         var thieu = await PostOk(c, Sp(IdMoi(), "h", acct: acct, sheet: null, rowNo: 7));   // thiếu sheet → từ chối
@@ -432,6 +433,77 @@ FROM harvested_products WHERE item_id = $1;", conn);
         Assert.True(tatCa!.Rows >= 3 && tatCa.Products >= 3, $"không lọc phải đếm toàn bộ (kể cả SP không nối dòng): {tatCa}");
     }
 
+    /// <summary>Migration 5 trên DB đang ở v4 có dữ liệu: cùng (account, sheet, SP) ở nhiều dòng → gộp còn MỘT bản (harvested_at
+    /// mới nhất, row_no của bản đó); SP khác cùng số dòng giữ nguyên; sau migration khoá mới chặn trùng SP, cho phép trùng dòng.</summary>
+    [PgFact]
+    public async Task Migration5_GopTrungTheoSP_DoiKhoa()
+    {
+        var db = "hub_mig5_test_" + Guid.NewGuid().ToString("N");
+        PgAdmin.Exec($"CREATE DATABASE \"{db}\";");
+        var conn = new NpgsqlConnectionStringBuilder(PgAdmin.ConnString) { Database = db, Pooling = false }.ConnectionString;
+        try
+        {
+            await using (var pdb = new ProductDb(conn)) await pdb.InitAsync(CancellationToken.None);
+            async Task Exec(string sql)
+            {
+                await using var c = new NpgsqlConnection(conn);
+                await c.OpenAsync();
+                await using var cmd = new NpgsqlCommand(sql, c);
+                await cmd.ExecuteNonQueryAsync();
+            }
+            // Đưa về đúng hình v4: khoá theo dòng, chưa có bản ghi version 5.
+            await Exec(@"ALTER TABLE harvested_product_sources DROP CONSTRAINT ux_hps_acct_sheet_item;
+DROP INDEX ix_hps_acct_sheet_row;
+ALTER TABLE harvested_product_sources ADD CONSTRAINT harvested_product_sources_account_id_sheet_row_no_key UNIQUE (account_id, sheet, row_no);
+DELETE FROM schema_version WHERE version = 5;
+INSERT INTO harvested_product_sources (account_id, sheet, row_no, item_id, url, harvested_at) VALUES
+ ('a', 'S1', 2, 100, 'u-cu',  '2026-01-01T00:00:00Z'),
+ ('a', 'S1', 7, 100, 'u-moi', '2026-01-02T00:00:00Z'),
+ ('a', 'S1', 3, 200, 'u2',    '2026-01-01T00:00:00Z'),
+ ('a', 'S2', 2, 100, 'u3',    '2026-01-01T00:00:00Z');");
+
+            await using (var pdb = new ProductDb(conn)) await pdb.InitAsync(CancellationToken.None);
+
+            var dong = new List<(string, int, long, string)>();
+            await using (var c = new NpgsqlConnection(conn))
+            {
+                await c.OpenAsync();
+                await using var cmd = new NpgsqlCommand(
+                    "SELECT sheet, row_no, item_id, url FROM harvested_product_sources ORDER BY sheet, item_id;", c);
+                await using var rd = await cmd.ExecuteReaderAsync();
+                while (await rd.ReadAsync()) dong.Add((rd.GetString(0), rd.GetInt32(1), rd.GetInt64(2), rd.GetString(3)));
+            }
+            Assert.Equal([("S1", 7, 100L, "u-moi"), ("S1", 3, 200L, "u2"), ("S2", 2, 100L, "u3")], dong);
+            await Exec("INSERT INTO harvested_product_sources (account_id, sheet, row_no, item_id) VALUES ('a', 'S1', 7, 300);");   // trùng dòng: được
+            await Assert.ThrowsAsync<PostgresException>(() =>
+                Exec("INSERT INTO harvested_product_sources (account_id, sheet, row_no, item_id) VALUES ('a', 'S1', 9, 100);"));   // trùng SP: chặn
+        }
+        finally
+        {
+            NpgsqlConnection.ClearAllPools();
+            try { PgAdmin.Exec($"DROP DATABASE IF EXISTS \"{db}\" WITH (FORCE);"); } catch { }
+        }
+    }
+
+    /// <summary>Ca phản biện vòng 12: workbook dời dòng — SP A lưu ở dòng 5, sau đó SP B cũng ở dòng 5 → cả HAI liên kết "SP thuộc
+    /// shop đích" còn nguyên (khoá cũ theo row_no để B đè mất A).</summary>
+    [PgFact]
+    public async Task HaiSPCungSoDong_GiuCaHaiLienKet()
+    {
+        var c = await _app.KhachCoTokenAsync();
+        var acct = "acc-" + Guid.NewGuid().ToString("N");
+        long a = IdMoi(), b = IdMoi();
+        var t = DateTimeOffset.UtcNow.AddMinutes(-10);
+
+        await PostOk(c, Sp(a, "h", acct: acct, sheet: "S1", rowNo: 5, harvestedAt: t));
+        await PostOk(c, Sp(b, "h", acct: acct, sheet: "S1", rowNo: 5, harvestedAt: t.AddMinutes(1)));
+
+        Assert.Equal(5, (await DocNguon(acct, "S1", a)).RowNo);
+        Assert.Equal(5, (await DocNguon(acct, "S1", b)).RowNo);
+        Assert.Equal(new HarvestedProductStats(2, 2),
+            await c.GetFromJsonAsync<HarvestedProductStats>($"{HubRoutes.HarvestedProductsStats}?account={acct}&sheet=S1"));
+    }
+
     /// <summary>Bản cào CŨ (harvested_at nhỏ hơn) tới SAU bản mới — vd. outbox máy A dồn lâu mới đẩy — KHÔNG được
     /// ghi đè SP lẫn dòng nguồn; vẫn ok=true để client xoá khỏi hàng đợi.</summary>
     [PgFact]
@@ -442,12 +514,12 @@ FROM harvested_products WHERE item_id = $1;", conn);
         long moi = IdMoi(), cu = IdMoi();
         var t = DateTimeOffset.UtcNow.AddMinutes(-5);   // lệch hẳn khỏi now() của Hub → bắt được nếu Hub ghi now()
 
-        await PostOk(c, Sp(cu, "h", acct: acct, sheet: "S1", rowNo: 2, harvestedAt: t.AddHours(-2)));
-        // Nhánh UPDATE của dòng nguồn: bản mới hơn (t) ghi đè dòng 2 → harvested_at phải là t của client.
+        await PostOk(c, Sp(moi, "h-moi", title: "Ban moi", acct: acct, sheet: "S1", rowNo: 9, harvestedAt: t.AddHours(-2)));
+        // Nhánh UPDATE của liên kết nguồn: bản mới hơn (t) của CÙNG SP → row_no = dòng mới, harvested_at = t của client.
         await PostOk(c, Sp(moi, "h-moi", title: "Ban moi", acct: acct, sheet: "S1", rowNo: 2, harvestedAt: t));
         var r = await PostOk(c,
             Sp(moi, "h-cu", title: "Ban cu", harvestedAt: t.AddHours(-1)),
-            Sp(cu, "h", acct: acct, sheet: "S1", rowNo: 2, harvestedAt: t.AddHours(-1)));   // dòng 2 cũ hơn → giữ SP moi
+            Sp(moi, "h-moi", acct: acct, sheet: "S1", rowNo: 7, harvestedAt: t.AddHours(-1)));   // liên kết cũ hơn → giữ dòng 2
 
         Assert.True(r.Results[0].Ok);
         Assert.True(r.Results[1].Ok);
@@ -455,16 +527,10 @@ FROM harvested_products WHERE item_id = $1;", conn);
         Assert.Equal("Ban moi", d!.Name);
         Assert.Equal("h-moi", d.Hash);
         Assert.Equal(1, d.HarvestCount);
-        await using var conn = await _app.MoDbAsync();
-        await using var cmd = new NpgsqlCommand(
-            "SELECT item_id, harvested_at FROM harvested_product_sources WHERE account_id = $1 AND sheet = 'S1' AND row_no = 2;", conn);
-        cmd.Parameters.AddWithValue(acct);
-        await using var rd = await cmd.ExecuteReaderAsync();
-        Assert.True(await rd.ReadAsync());
-        Assert.Equal(moi, rd.GetInt64(0));
-        // harvested_at của dòng nguồn = giá trị CLIENT gửi (đã quy đồng hồ — client test cùng đồng hồ Hub nên chỉ lệch
+        var (rowNo, luu) = await DocNguon(acct, "S1", moi);
+        Assert.Equal(2, rowNo);
+        // harvested_at của liên kết nguồn = giá trị CLIENT gửi (đã quy đồng hồ — client test cùng đồng hồ Hub nên chỉ lệch
         // vài ms độ trễ), KHÔNG phải now() của Hub (lệch 5 phút).
-        var luu = new DateTimeOffset(rd.GetDateTime(1));
         Assert.True((luu - t).Duration() < TimeSpan.FromSeconds(10), $"harvested_at dòng nguồn {luu:O} lệch t {t:O}");
     }
 
@@ -593,17 +659,19 @@ FROM harvested_products WHERE item_id = $1;", conn);
         GanBang(at, await DocMoc(id), "offset +07");
     }
 
-    private async Task<(long ItemId, DateTimeOffset At)> DocNguon(string acct, string sheet, int rowNo)
+    private async Task<(int RowNo, DateTimeOffset At)> DocNguon(string acct, string sheet, long itemId)
     {
         await using var conn = await _app.MoDbAsync();
         await using var cmd = new NpgsqlCommand(
-            "SELECT item_id, harvested_at FROM harvested_product_sources WHERE account_id = $1 AND sheet = $2 AND row_no = $3;", conn);
+            "SELECT row_no, harvested_at FROM harvested_product_sources WHERE account_id = $1 AND sheet = $2 AND item_id = $3;", conn);
         cmd.Parameters.AddWithValue(acct);
         cmd.Parameters.AddWithValue(sheet);
-        cmd.Parameters.AddWithValue(rowNo);
+        cmd.Parameters.AddWithValue(itemId);
         await using var rd = await cmd.ExecuteReaderAsync();
-        Assert.True(await rd.ReadAsync(), "không thấy dòng nguồn");
-        return (rd.GetInt64(0), new DateTimeOffset(rd.GetDateTime(1)));
+        Assert.True(await rd.ReadAsync(), "không thấy liên kết nguồn");
+        var kq = (rd.GetInt32(0), new DateTimeOffset(rd.GetDateTime(1)));
+        Assert.False(await rd.ReadAsync(), "mỗi (account, sheet, SP) chỉ một liên kết");
+        return kq;
     }
 
     /// <summary>Máy chạy NHANH 20 giờ: ClientNow và HarvestedAt cùng +20h → Hub quy về "bây giờ" cho CẢ SP lẫn dòng
@@ -619,16 +687,17 @@ FROM harvested_products WHERE item_id = $1;", conn);
 
         var r1 = await PostLo(c, May1, nhanh, Sp(id, "h-nhanh", acct: acct, sheet: "S1", rowNo: 2, harvestedAt: nhanh));
         GanBang(DateTimeOffset.UtcNow, await DocMoc(id), "mốc SP máy nhanh phải quy về giờ Hub");
-        GanBang(DateTimeOffset.UtcNow, (await DocNguon(acct, "S1", 2)).At, "mốc dòng nguồn máy nhanh phải quy về giờ Hub");
+        GanBang(DateTimeOffset.UtcNow, (await DocNguon(acct, "S1", id)).At, "mốc dòng nguồn máy nhanh phải quy về giờ Hub");
         await Task.Delay(50);
         var r2 = await PostLo(c, May1, DateTimeOffset.UtcNow,
-            Sp(id, "h-dung", harvestedAt: DateTimeOffset.UtcNow),
+            Sp(id, "h-dung", acct: acct, sheet: "S1", rowNo: 3, harvestedAt: DateTimeOffset.UtcNow),
             Sp(id2, "h", acct: acct, sheet: "S1", rowNo: 2, harvestedAt: DateTimeOffset.UtcNow));
 
         Assert.True(r1.Results[0].Applied);
         Assert.True(r2.Results[0].Applied);
         Assert.Equal("h-dung", (await DocSp(id))!.Hash);
-        Assert.Equal(id2, (await DocNguon(acct, "S1", 2)).ItemId);
+        Assert.Equal(3, (await DocNguon(acct, "S1", id)).RowNo);   // không bị liên kết +20h chặn
+        Assert.Equal(2, (await DocNguon(acct, "S1", id2)).RowNo);
     }
 
     /// <summary>Nhích mốc (hash trùng) cũng dùng mốc ĐÃ QUY: máy chậm 3 ngày gửi lại cùng hash, cào cách đây 1h theo

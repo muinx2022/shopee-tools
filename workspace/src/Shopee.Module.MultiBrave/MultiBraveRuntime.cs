@@ -18,4 +18,16 @@ public static class MultiBraveRuntime
     /// <summary>Đặt chế độ process — gọi MỘT lần lúc khởi động (exe Harvest), trước khi dựng <see cref="ScrapeRunner"/>
     /// và mở Brave. Đổi giữa chừng khi phiên đang chạy là sai cách dùng (phiên cũ đang giữ extension của chế độ cũ).</summary>
     public static void SetMode(RunnerMode mode) => Mode = mode;
+
+    /// <summary>Thư mục con (dưới persistent-data) chứa profile Brave của chế độ Scrape — giá trị cũ của
+    /// <c>InstanceConfig.EnsureProfileRelativePath</c>.</summary>
+    public const string ScrapeProfileSubRoot = "profiles";
+
+    /// <summary>Profile Brave RIÊNG của chế độ Harvest: extension harvest dùng chung khoá <c>runnerState</c>/
+    /// <c>lastCompletedRow</c> với extension scrape, và app Scrape chạy song song được trên cùng tk Shopee → không được
+    /// dùng chung thư mục profile với Scrape.</summary>
+    public const string HarvestProfileSubRoot = "harvest-profiles";
+
+    public static string ProfileSubRoot(RunnerMode mode) =>
+        mode == RunnerMode.Harvest ? HarvestProfileSubRoot : ScrapeProfileSubRoot;
 }

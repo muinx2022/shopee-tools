@@ -361,11 +361,24 @@ public sealed class HttpCoordinationHub : ICoordinationHub, IUpdateAckSink, IDis
         catch { return null; }
     }
 
+    /// <summary>Op mà <see cref="SyncIntoProgressAsync"/> fold từ ledger về tiến độ local của PROCESS này. Mặc định
+    /// <see cref="CoordOp.Scrape"/> (hành vi cũ: ledger scrape → <c>scrape-progress.json</c>). App Harvest đặt
+    /// <see cref="CoordOp.Harvest"/> TRƯỚC khi dựng hub → chỉ fold ledger harvest vào <c>harvest-progress.json</c>, KHÔNG
+    /// đụng tiến độ scrape (file chung với app Scrape có thể đang chạy song song).</summary>
+    public static CoordOp ProgressFoldOp { get; set; } = CoordOp.Scrape;
+
+    /// <summary>Luật thuần: op ledger cần fold + kho tiến độ đích ứng với <paramref name="op"/>.</summary>
+    internal static (string LedgerOp, ScrapeProgressStore Store) FoldTarget(CoordOp op) =>
+        op == CoordOp.Harvest
+            ? (AssignmentOps.Harvest, ScrapeProgressStore.Harvest)
+            : (AssignmentOps.Scrape, ScrapeProgressStore.Shared);
+
     // ── Ledger → tiến độ local (để Resume bỏ qua dòng máy khác đã làm) ──
     public async Task SyncIntoProgressAsync()
     {
         try
         {
+            var (ledgerOp, store) = FoldTarget(ProgressFoldOp);
             // Gom theo (acc, sheet) để RECONCILE sổ bỏ qua sau khi fold hết: 1 sheet có thể trải NHIỀU
             // shop-record trên ledger, phải nhìn TẤT CẢ mới biết dòng nào còn bị (máy nào đó) bỏ. Nếu không
             // gỡ, SkippedRows chỉ-ghi-thêm: máy khác cào lại xong dòng đó rồi mà máy này vẫn hiện "bỏ n dòng"
@@ -374,17 +387,17 @@ public sealed class HttpCoordinationHub : ICoordinationHub, IUpdateAckSink, IDis
             var skippedBySheet = new Dictionary<(string acc, string sheet), HashSet<int>>();
             foreach (var r in await _client.AllLedgerAsync())
             {
-                // CHỈ fold op=scrape: import/update/rewrite GIỜ cũng đẩy Completed (dòng đã làm) lên ledger để
-                // Thống kê xem "dòng nào đã import/update"; nhưng ĐÓ KHÔNG phải tiến độ scrape → nếu fold vào
-                // ScrapeProgressStore thì scrape sẽ tưởng các dòng ấy đã cào xong → BỎ SÓT khi Tiếp tục.
-                if (r.Op != AssignmentOps.Scrape) continue;
+                // CHỈ fold op=scrape (Harvest: op=harvest — xem ProgressFoldOp): import/update/rewrite GIỜ cũng đẩy
+                // Completed (dòng đã làm) lên ledger để Thống kê xem "dòng nào đã import/update"; nhưng ĐÓ KHÔNG phải
+                // tiến độ scrape → nếu fold vào ScrapeProgressStore thì scrape sẽ tưởng các dòng ấy đã cào xong → BỎ SÓT khi Tiếp tục.
+                if (r.Op != ledgerOp) continue;
                 if (string.IsNullOrEmpty(r.BigsellerId) || (r.Completed.Count == 0 && r.Skipped.Count == 0)) continue;
                 foreach (var rr in r.Completed)
-                    ScrapeProgressStore.Shared.MarkCompleted(r.BigsellerId, r.Sheet ?? "", rr.From, rr.To);
+                    store.MarkCompleted(r.BigsellerId, r.Sheet ?? "", rr.From, rr.To);
                 // Sổ dòng bỏ qua đi kèm vùng phủ: không fold thì máy này thấy "✔ Hoàn thành toàn bộ" trong khi
                 // máy kia đã bỏ mất mấy dòng. MarkSkipped idempotent (dedup + tự kéo dòng vào vùng phủ).
                 foreach (var row in r.Skipped)
-                    ScrapeProgressStore.Shared.MarkSkipped(r.BigsellerId, r.Sheet ?? "", row);
+                    store.MarkSkipped(r.BigsellerId, r.Sheet ?? "", row);
                 var key = (r.BigsellerId, r.Sheet ?? "");
                 if (!completedBySheet.TryGetValue(key, out var cl)) completedBySheet[key] = cl = [];
                 cl.AddRange(r.Completed);
@@ -392,7 +405,7 @@ public sealed class HttpCoordinationHub : ICoordinationHub, IUpdateAckSink, IDis
                 sl.UnionWith(r.Skipped);
             }
             foreach (var (key, completed) in completedBySheet)
-                ScrapeProgressStore.Shared.UnmarkResolvedSkipped(key.acc, key.sheet, completed,
+                store.UnmarkResolvedSkipped(key.acc, key.sheet, completed,
                     skippedBySheet.TryGetValue(key, out var sk) ? sk : []);
         }
         catch { }

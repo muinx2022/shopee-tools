@@ -475,10 +475,10 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         UiThread.Post(Apply);
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanEditSharedWorkbook))]
     private async Task PickSharedWorkbookAsync()
     {
-        if (BlockIfJobsBusy()) return;
+        if (BlockIfSharedReadOnly() || BlockIfJobsBusy()) return;
         var path = await FilePicker.OpenFileAsync("Chọn workbook chung", "Excel|*.xlsx;*.xlsm|Tất cả|*.*");
         if (path is null) return;
         try
@@ -504,10 +504,10 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanEditSharedWorkbook))]
     private async Task MergeSharedAsync()
     {
-        if (BlockIfJobsBusy()) return;
+        if (BlockIfSharedReadOnly() || BlockIfJobsBusy()) return;
         var sheets = SharedSheets.Where(s => s.IsChecked).Select(s => s.Name).ToList();
         if (sheets.Count == 0) { Status = "Chưa tick sheet nào."; return; }
         if (!File.Exists(SharedWorkbookStore.SourcePath)) { Status = "Chưa chọn file workbook chung."; return; }
@@ -527,10 +527,10 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         }
     }
 
-    [RelayCommand]
+    [RelayCommand(CanExecute = nameof(CanEditSharedWorkbook))]
     private void StopShared()
     {
-        if (BlockIfJobsBusy()) return;
+        if (BlockIfSharedReadOnly() || BlockIfJobsBusy()) return;
         SharedWorkbookStore.Disable();
         LoadSharedUi();
         Status = "Đang dùng workbook riêng của từng tài khoản.";
@@ -546,6 +546,19 @@ public sealed partial class BigSellerViewModel : ModuleViewModelBase
         foreach (var (accountId, sheet) in keys)
             ScrapeProgressStore.Shared.Clear(accountId, sheet);
         return keys.Count;
+    }
+
+    /// <summary>App Harvest chỉ ĐỌC workbook chung (xem <see cref="SharedWorkbookPolicy"/>): nút chọn file / gộp / ngừng dùng
+    /// bị khoá. Vai trò khác: luôn true như cũ.</summary>
+    public bool CanEditSharedWorkbook => SharedWorkbookPolicy.CanEditCurrent;
+    public bool ShowSharedWorkbookReadOnlyNote => !CanEditSharedWorkbook;
+    public string SharedWorkbookReadOnlyNote => SharedWorkbookPolicy.ReadOnlyNote;
+
+    private bool BlockIfSharedReadOnly()
+    {
+        if (CanEditSharedWorkbook) return false;
+        Status = SharedWorkbookPolicy.ReadOnlyNote;
+        return true;
     }
 
     private bool BlockIfJobsBusy()

@@ -21,6 +21,9 @@ public partial class App : Application
     /// <summary>Quét video hub quá 30 ngày: một lần ngay sau init, rồi mỗi 6 giờ khi app còn mở.</summary>
     private System.Threading.Timer? _hubVideoSweep;
 
+    /// <summary>App Harvest: mutex chặn bản thứ hai — giữ tham chiếu suốt đời process (GC thu là mất chặn).</summary>
+    private Mutex? _harvestInstance;
+
     /// <summary>
     /// Bọc lỗi gọi khởi tạo module Workspace — LÝ DO TỒN TẠI DUY NHẤT là để tránh lỗi nạp assembly.
     /// </summary>
@@ -34,10 +37,30 @@ public partial class App : Application
     private static void DongUpdateProduct() => Shopee.Modules.UpdateProduct.UpdateProductRuntime.Shutdown();
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static void DongMultiBrave() => MultiBraveRuntime.Shutdown();
+    /// <summary>App Harvest: đặt chế độ engine của CẢ process (extension shopee-harvest, probe, profile) — phải trước mọi
+    /// chỗ đọc <see cref="MultiBraveRuntime.Mode"/>.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void DatCheDoHarvest() => MultiBraveRuntime.SetMode(RunnerMode.Harvest);
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+
+        if (WorkspaceAppConfig.IsHarvest)
+        {
+            // Chặn bản thứ hai TRƯỚC mọi thứ (2 bản = 2 worker đẩy trùng chung harvest-outbox.db + chung harvest-profiles).
+            _harvestInstance = HarvestSingleInstance.TryAcquire(HarvestSingleInstance.DefaultMutexName());
+            if (_harvestInstance is null)
+            {
+                MessageBox.Show("Shopee Harvest đang chạy trên máy này. Dùng cửa sổ đang mở (xem thanh tác vụ).",
+                    WorkspaceAppConfig.WindowTitle, MessageBoxButton.OK, MessageBoxImage.Information);
+                Shutdown(0);
+                return;
+            }
+            DatCheDoHarvest();
+            // Poller Hub chỉ fold ledger harvest vào harvest-progress.json — KHÔNG đụng scrape-progress.json.
+            Shopee.Core.Coordination.HttpCoordinationHub.ProgressFoldOp = Shopee.Core.Coordination.CoordOp.Harvest;
+        }
 
         // Kiểm tra Brave trước khi làm gì khác
         if (Shopee.Toolkit.Browser.BraveRequirement.LyDoChanKhoiDong(
@@ -75,7 +98,8 @@ public partial class App : Application
             Shopee.Core.Browser.BraveFleet.MaxConcurrentWindows =
                 Shopee.Core.Browser.BraveFleet.WindowsForBudget(perf.UsableCpuCores, perf.UsableRamGb);
             Shopee.Core.Browser.BraveFleet.ConfigureJobLimits();
-            if (WorkspaceAppConfig.IsScrapeOnly) Shopee.Core.Browser.BraveFleet.SetManagedSubRoot("profiles");
+            if (WorkspaceAppConfig.IsHarvest) Shopee.Core.Browser.BraveFleet.SetManagedSubRoot(MultiBraveRuntime.HarvestProfileSubRoot);
+            else if (WorkspaceAppConfig.IsScrapeOnly) Shopee.Core.Browser.BraveFleet.SetManagedSubRoot("profiles");
             else if (WorkspaceAppConfig.IsImportUpdateOnly) Shopee.Core.Browser.BraveFleet.SetManagedSubRoot("bigseller-profiles");
             var swept = Shopee.Core.Browser.BraveFleet.StartupSweep();
             if (swept > 0) TryLog("BraveFleet.StartupSweep", new Exception($"Đã dọn {swept} Brave mở cũ lúc khởi động."));
@@ -87,19 +111,31 @@ public partial class App : Application
         // null: đẩy/kéo video và xóa video quá hạn đều không chạy. Lỗi init không được chặn cửa sổ.
         try { Shopee.Core.Coordination.CoordinationRuntime.InitForCurrentMode(); }
         catch (Exception ex) { TryLog("Coordination.Init", ex); }
-        try
+        if (WorkspaceAppConfig.IsHarvest)
         {
-            _hubVideoSweep = new System.Threading.Timer(
-                _ => SweepHubVideos(), null, TimeSpan.Zero, TimeSpan.FromHours(6));
+            // Outbox + worker đẩy Hub. Lỗi ở đây không chặn cửa sổ: bấm chạy sẽ báo "chưa có chỗ lưu" thay vì treo.
+            try { HarvestRuntime.Start(); }
+            catch (Exception ex) { TryLog("HarvestRuntime.Start", ex); }
         }
-        catch (Exception ex) { TryLog("HubVideoSweep", ex); }
+        // Harvest không có video (chỉ lưu URL) → không quét video hub. Cũng không chạy dọn đĩa khởi động: StartupJanitor chỉ
+        // biết các thư mục profile của Scrape/Update/check-account (không dọn gì của harvest-profiles) — dọn hộ app khác là
+        // việc của chính app đó (StartupJanitor của chúng đếm ShopeeHarvest nên không dọn khi Harvest đang chạy).
+        if (!WorkspaceAppConfig.IsHarvest)
+        {
+            try
+            {
+                _hubVideoSweep = new System.Threading.Timer(
+                    _ => SweepHubVideos(), null, TimeSpan.Zero, TimeSpan.FromHours(6));
+            }
+            catch (Exception ex) { TryLog("HubVideoSweep", ex); }
 
-        try
-        {
-            Shopee.Core.Infrastructure.StartupJanitor.Notice = msg => TryLog("StartupJanitor", new Exception(msg));
-            Shopee.Core.Infrastructure.StartupJanitor.RunInBackground();
+            try
+            {
+                Shopee.Core.Infrastructure.StartupJanitor.Notice = msg => TryLog("StartupJanitor", new Exception(msg));
+                Shopee.Core.Infrastructure.StartupJanitor.RunInBackground();
+            }
+            catch (Exception ex) { TryLog("StartupJanitor.Init", ex); }
         }
-        catch (Exception ex) { TryLog("StartupJanitor.Init", ex); }
 
         var window = new MainWindow { DataContext = new ShellViewModel() };
         MainWindow = window;
@@ -118,12 +154,33 @@ public partial class App : Application
         try { _hubVideoSweep?.Dispose(); } catch { }
         _hubVideoSweep = null;
 
-        try { Shopee.Core.BigSeller.BigSellerStore.Shared.Save(); } catch { }
+        // App Harvest: KHÔNG lưu cả bigseller.json lúc đóng (bản trong RAM có thể cũ hơn thay đổi app Scrape vừa ghi → đè mất);
+        // chỉ ghi nốt lần lưu đang chờ của màn Cấu hình (nếu có). Vai trò khác: như cũ.
+        if (WorkspaceAppConfig.IsHarvest)
+        {
+            // Lần lưu đang chờ của tab Cấu hình (PersistDebounce, 500 ms) tự chạy trên threadpool — chờ nó xong rồi mới đóng.
+            System.Threading.Thread.Sleep(HarvestRuntime.PendingSaveWait);
+        }
+        else
+        {
+            try { Shopee.Core.BigSeller.BigSellerStore.Shared.Save(); } catch { }
+        }
         if (WorkspaceAppConfig.ShowImportUpdate)
         {
             try { DongUpdateProduct(); } catch { }
         }
         try { DongMultiBrave(); } catch { }
+        if (HarvestRuntime.Current is { } harvest)
+        {
+            // Dừng worker + đẩy nốt có GIỚI HẠN (Hub chậm/sập không được treo đóng app; phần còn lại nằm bền trong
+            // outbox). Task.Run: hook chạy trên UI thread, chờ đồng bộ phần async ngay trên đó dễ kẹt.
+            try
+            {
+                Task.Run(() => harvest.ShutdownAsync(HarvestRuntime.ShutdownFlushTimeout))
+                    .Wait(HarvestRuntime.ShutdownFlushTimeout + TimeSpan.FromSeconds(4));
+            }
+            catch (Exception ex) { TryLog("HarvestRuntime.Shutdown", ex); }
+        }
     }
 
     private static void HookBindingTrace()

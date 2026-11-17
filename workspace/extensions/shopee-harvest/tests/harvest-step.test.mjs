@@ -129,7 +129,7 @@ const since = (ms) => clock >= t0 + ms;
 
 // Các trường C# (RunnerExtensionRpc.ScrapeStepResult) + phần Harvest — phải có mặt ở MỌI lối ra.
 const assertFields = (r) => {
-  for (const k of ["ok", "scrapeOk", "harvestOk", "captcha", "proxyError", "trafficError", "blocked", "notProduct", "aborted", "superseded"]) {
+  for (const k of ["ok", "scrapeOk", "harvestOk", "captcha", "proxyError", "trafficError", "blocked", "notProduct", "loginRequired", "aborted", "superseded"]) {
     assert.equal(typeof r[k], "boolean", `thiếu cờ ${k}`);
   }
   assert.equal(typeof r.message, "string");
@@ -304,6 +304,29 @@ test("trang không phải SP (bị đẩy về trang chủ) → notProduct ngay,
   assert.equal(r.notProduct, true);
   assert.equal(count("reload"), 0);
   assert.ok(count("readStore") <= 1, "chỉ được đọc kho một lần (lượt đọc ngay sau khi tải)");
+});
+
+for (const loginUrl of [
+  "https://shopee.vn/buyer/login?next=https%3A%2F%2Fshopee.vn%2Fao-i.1.2",
+  "https://shopee.vn/buyer/signup?next=x",
+  "https://accounts.shopee.vn/login?next=y",
+]) {
+  test(`trang đăng nhập (${loginUrl.slice(0, 40)}…) → loginRequired, KHÔNG notProduct`, async () => {
+    reset({ redirect: () => loginUrl });
+    const r = await step({ link: LINK, rowNumber: 17, tabId: 7 });
+    assertFields(r);
+    assert.equal(r.loginRequired, true);
+    assert.equal(r.notProduct, false);
+    assert.equal(r.ok, false);
+    assert.equal(count("reload"), 0);
+  });
+}
+
+test("trang không phải SP và không phải đăng nhập (vd /buyer/orders) → vẫn notProduct", async () => {
+  reset({ redirect: () => "https://shopee.vn/user/purchase" });
+  const r = await step({ link: LINK, rowNumber: 18, tabId: 7 });
+  assert.equal(r.notProduct, true);
+  assert.equal(r.loginRequired, false);
 });
 
 test("thiếu link → ok=false đủ cờ", async () => {

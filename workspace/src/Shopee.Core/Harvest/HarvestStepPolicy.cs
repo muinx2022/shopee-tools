@@ -8,6 +8,9 @@ public enum HarvestStepAction
     Superseded,
     /// <summary>Người dùng dừng (<c>aborted</c>, không phải bị thay) → dừng vòng như bước scrape bị huỷ.</summary>
     Abort,
+    /// <summary>Tài khoản Shopee mất đăng nhập (<c>loginRequired</c> — trang bị đẩy sang /buyer/login…) → dừng khối, dòng KHÔNG
+    /// tính lỗi (làm lại bằng tài khoản khác), tài khoản đi đường lỗi tạm (nghỉ). Không bao giờ là lỗi vĩnh viễn của SP.</summary>
+    LoginRequired,
     /// <summary>Shopee chặn traffic / chặn get_pc (<c>trafficError</c>, kể cả <c>blocked</c>) → đường traffic của
     /// scrape: lần đầu đổi IP, lần sau đổi tài khoản.</summary>
     Traffic,
@@ -66,7 +69,9 @@ public sealed class HarvestPdpBreaker
         Streak = 0;
     }
 
-    /// <summary>Một dòng lưu được: cắt chuỗi đếm; mã đang chờ xác nhận chưa tái diễn → là chặn theo IP, quên nó.</summary>
+    /// <summary>Một dòng lưu được: cắt chuỗi đếm; mã đang chờ xác nhận chưa tái diễn → là chặn theo IP, quên nó. Mã ĐÃ xác nhận
+    /// là "SP chết" thì GIỮ tới hết phiên (quên đi thì mỗi cụm SP chết lại bật cầu dao → đổi IP rồi đổi tài khoản vô ích); ghi
+    /// nhầm vĩnh viễn đã có luật "thấy ở ≥ 2 lượt" của tập lỗi chặn.</summary>
     internal void RecordSave()
     {
         ResetStreak();
@@ -106,6 +111,35 @@ public static class HarvestStepPolicy
     /// <summary>Ngưỡng mặc định của cầu dao pdpError.</summary>
     public const int DefaultPdpErrorBreakerThreshold = 3;
 
+    /// <summary>Số dòng <c>notProduct</c> LIÊN TIẾP trong một khối thì coi là lỗi phiên / tài khoản (vd bị đẩy về trang chủ, trang
+    /// lạ) chứ không phải N SP hỏng: dừng khối, cả chuỗi KHÔNG vào sổ lỗi / tập lỗi vĩnh viễn (làm lại bằng tài khoản khác).</summary>
+    public const int NotProductBreakerThreshold = 3;
+
+    private static readonly System.Text.RegularExpressions.Regex ClassifyWords =
+        new("captcha|verify|proxy", System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    /// <summary>Làm sạch chuỗi tự do (tên tài khoản, <c>ex.Message</c>…) trước khi ghép vào thông điệp dừng đi qua
+    /// <c>ScrapeRunner.Classify</c>: bộ phân loại đọc chữ "captcha" / "verify" / "proxy" ra cách ly / lỗi proxy.</summary>
+    public static string SafeForClassify(string? text) => ClassifyWords.Replace(text ?? "", "…");
+
+    /// <summary>Chuỗi notProduct ĐÃ được link mẫu chứng minh phiên ổn: các dòng chết tiếp theo được GIỮ CHỜ, cứ đủ chừng này dòng thì
+    /// kiểm chứng lại — mẫu sống thì xả cả nhóm vào tập lỗi, mẫu hỏng / captcha thì nhóm đó vào sổ bỏ qua (không vào tập lỗi). Phiên
+    /// hỏng giữa chuỗi mà Shopee không đẩy về trang đăng nhập không làm SP sống phía sau bị ghi lỗi mà chưa kiểm lần nào.</summary>
+    public const int ProvenChainRecheckEvery = 10;
+
+    /// <summary>Kết quả bước của link mẫu có chứng minh phiên / tài khoản đang lấy được dữ liệu không.</summary>
+    public static bool SampleProvesSession(HarvestStepResult result) =>
+        result.HarvestOk && !result.LoginRequired && !string.IsNullOrWhiteSpace(result.Json) && result.ItemId is > 0;
+
+    /// <summary>Dòng lỗi (<see cref="HarvestStepAction.RowFailed"/>) có phải lỗi VĨNH VIỄN của SP (lượt sau không lấy lại) không:
+    /// <c>notProduct</c> (trang không phải SP / SP đã xoá) hoặc mã pdpError đã được cầu dao xác nhận là SP chết (tái diễn ngay
+    /// sau khi đổi IP). Mọi lỗi khác (hết giờ, thiếu JSON, lỗi RPC, pdpError chưa xác nhận, captcha / traffic / proxy) là TẠM —
+    /// không chắc thì coi là tạm. Lỗi "JSON bị từ chối vì nội dung" (<see cref="HarvestItemRejectedException"/>) xét riêng ở
+    /// chỗ lưu (luôn vĩnh viễn).</summary>
+    public static bool IsPermanentRowFailure(HarvestStepAction action, HarvestStepResult result) =>
+        action == HarvestStepAction.RowFailed && !result.HarvestOk
+        && (result.NotProduct || !string.IsNullOrWhiteSpace(result.PdpError));
+
     /// <param name="result">Kết quả bước.</param>
     /// <param name="breaker">Cầu dao của phiên — được cập nhật theo kết quả này.</param>
     public static HarvestStepDecision Decide(HarvestStepResult result, HarvestPdpBreaker breaker)
@@ -119,6 +153,7 @@ public static class HarvestStepPolicy
         // superseded / abort / proxy / captcha: dòng chưa có kết luận (làm lại hoặc dừng) → giữ nguyên chuỗi.
         if (result.Superseded) return HarvestStepAction.Superseded;
         if (result.Aborted) return HarvestStepAction.Abort;
+        if (result.LoginRequired && !result.HarvestOk) { breaker.ResetStreak(); return HarvestStepAction.LoginRequired; }
         if (result.TrafficError) { breaker.ResetStreak(); return HarvestStepAction.Traffic; }
         if (result.ProxyError) return HarvestStepAction.ProxyError;
         if (result.Captcha && !result.HarvestOk) return HarvestStepAction.Captcha;

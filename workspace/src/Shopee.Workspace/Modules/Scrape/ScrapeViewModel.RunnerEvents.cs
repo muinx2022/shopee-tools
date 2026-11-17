@@ -50,7 +50,10 @@ public sealed partial class ScrapeViewModel
             _jobFatal[account.Id] = ScrapeFailurePolicy.FleetWideReason(reason);
             OnUi(() =>
             {
-                var text = $"⛔ [{bigSellerName}] DỪNG job: {reason} — mọi tk Shopee dùng CHUNG key proxy này nên đổi tk vô ích. Gia hạn key rồi Tiếp tục.";
+                // Harvest: lỗi chỗ lưu (outbox) cũng dừng job như key proxy chết — lời khuyên khác hẳn.
+                var text = Shopee.Core.Harvest.HarvestSinkFailure.Is(reason)
+                    ? $"⛔ [{bigSellerName}] DỪNG job: {reason}"
+                    : $"⛔ [{bigSellerName}] DỪNG job: {reason} — mọi tk Shopee dùng CHUNG key proxy này nên đổi tk vô ích. Gia hạn key rồi Tiếp tục.";
                 LogAcc(account.Id, bigSellerName, text);
             });
         };
@@ -86,7 +89,8 @@ public sealed partial class ScrapeViewModel
         if (string.IsNullOrWhiteSpace(accountId)) return;
         try
         {
-            var braveProfile = Path.Combine(SuitePaths.ModuleDir("persistent-data"), "profiles", accountId);
+            // Thư mục profile theo chế độ process (Scrape: profiles; Harvest: harvest-profiles — không xoá profile của app Scrape).
+            var braveProfile = Path.Combine(SuitePaths.ModuleDir("persistent-data"), MultiBraveRuntime.ProfileSubRoot(MultiBraveRuntime.Mode), accountId);
             var cookieProfile = Path.Combine(SuitePaths.ModuleDir("shared"), "profiles", accountId);
             var freed = BraveCachePolicy.DeleteDirBestEffort(braveProfile)
                       + BraveCachePolicy.DeleteDirBestEffort(cookieProfile);
