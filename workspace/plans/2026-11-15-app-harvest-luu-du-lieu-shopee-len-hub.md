@@ -579,6 +579,13 @@ null → `known` không chạy, extension không nhận được cấu hình Hub
    nút "Cài đặt Hub" mở thẳng màn này) · Hiệu năng (giữ: CPU/RAM → `BraveFleet.MaxConcurrentWindows` chặn số Brave của Harvest) · Thu phóng ·
    Kho tài khoản Shopee & Proxy · Extension (`extensions\shopee-harvest` cạnh exe, "Mở thư mục", hướng dẫn Load unpacked); bỏ AI ở Harvest,
    app Scrape / Update giữ màn `LocalSettingsView` cũ có AI.
+6. **Dải "Từ dòng / Đến dòng" từng sheet** (số dòng Excel thật; mặc định dòng dữ liệu đầu → 0 = tới hết; nhớ theo (file, sheet) ở
+   `harvest-settings.json` → `SheetRanges`): `HarvestRowRange.Restrict` đổi dải Excel sang dòng nén qua `HarvestWorkbookRange.ExcelRows`
+   — màn đếm và job (`HarvestSheetJob.FromRow/ToRow`) cùng gọi. Nhập: Từ < dòng dữ liệu đầu → kẹp; Đến < Từ (≠ 0) → báo lỗi, giữ
+   dải cũ (không tự thành "tới hết"). Reset / "Cào lại dòng đã bỏ" chỉ đụng SP trong dải. Nút "Áp dải cho sheet đã tick" (lấy dải sheet
+   đang chọn). Mọi chỗ HIỂN THỊ số dòng của job Harvest (log, overlay "✓ Đã xong dòng N" / "Xong dòng a–b", cột Dòng + Trạng thái bảng
+   Tiến trình, tổng kết bỏ qua) là số dòng Excel: `HarvestRunOptions.DisplayRow` = `HarvestRowRange.ExcelRowMap` chụp một lần đầu job;
+   engine, tiến độ, sổ bỏ qua, `row_no` gửi Hub vẫn theo dòng nén.
 
 **Tiêu chí nghiệm thu GĐ7.1:**
 - [ ] Ô số không xén chữ, không đè hàng nút ở 1100 / 1900 px × 100 / 125 % (test dựng màn + ảnh).

@@ -106,8 +106,8 @@ internal static class HarvestRunnerLoop
         config.EndRow = endRow;
 
         log(useHubData
-            ? $"Đang tải dữ liệu (kho Hub): {sheet} dòng {startRow}–{endRow}… (nghỉ giữa link {restWindow})"
-            : $"Đang tải dữ liệu: {sheet} dòng {startRow}–{endRow}… (nghỉ giữa link {restWindow})");
+            ? $"Đang tải dữ liệu (kho Hub): {sheet} dòng {options.Row(startRow)}–{options.Row(endRow.Value)}… (nghỉ giữa link {restWindow})"
+            : $"Đang tải dữ liệu: {sheet} dòng {options.Row(startRow)}–{options.Row(endRow.Value)}… (nghỉ giữa link {restWindow})");
         var fetch = useHubData
             ? await ScrapeLinkSource.FetchSheetLinksAsync(
                 workbookPath, sheet, startRow, endRow.Value, cancellationToken, useHubData, hubAccountId)
@@ -130,7 +130,7 @@ internal static class HarvestRunnerLoop
             config.NextRunRow = endRow.Value + 1;
             config.RunnerRunning = false;
             config.RunnerPhase = "finished";
-            config.LastRunnerMessage = $"Khối dòng {startRow}–{endRow.Value}: 0 link hợp lệ " +
+            config.LastRunnerMessage = $"Khối dòng {options.Row(startRow)}–{options.Row(endRow.Value)}: 0 link hợp lệ " +
                 $"(thiếu tên SP: {fetch.SkippedMissingProductName}, thiếu link: {fetch.SkippedMissingLink}) — coi như đã phủ, sang khối kế.";
             log(config.LastRunnerMessage);
             config.ProgressSyncedAt = DateTimeOffset.Now;
@@ -189,7 +189,7 @@ internal static class HarvestRunnerLoop
             // KHÔNG ẩn overlay: để bảng tổng kết nằm lại trên trang (link / khối kế tiếp tự thay overlay như thường).
             var hubLine = await TryHubStatusAsync(options.HubStatusText, cancellationToken).ConfigureAwait(false);
             var doneText = HarvestOverlayText.BlockDone(
-                BlockStartRow(config, startRow), endRow.Value, config.DisplayName,
+                options.Row(BlockStartRow(config, startRow)), options.Row(endRow.Value), config.DisplayName,
                 config.HarvestSavedRows, config.HarvestFailedRows, hubLine);
             log(doneText.Replace("\n", " · "));   // log job: vẫn thấy tổng kết dù Brave đã đóng
             if (tabId is not null)
@@ -277,11 +277,11 @@ internal static class HarvestRunnerLoop
 
             config.CurrentRow = rowNumber;
             config.RunnerPhase = "opening";
-            config.LastRunnerMessage = $"Đang mở link {index + 1}/{totalLinks} — dòng {rowNumber} (SKU: {sku}).";
+            config.LastRunnerMessage = $"Đang mở link {index + 1}/{totalLinks} — dòng {processor.Row(rowNumber)} (SKU: {sku}).";
 
             await host.ReportAsync(tab.Value, cancellationToken).ConfigureAwait(false);
 
-            var statusText = $"{accountHeader}\nĐang lấy dữ liệu link {index + 1}/{totalLinks} — dòng {rowNumber}.";
+            var statusText = $"{accountHeader}\nĐang lấy dữ liệu link {index + 1}/{totalLinks} — dòng {processor.Row(rowNumber)}.";
 
             var step = await io.ExecuteStepAsync(link, rowNumber, statusText, tab.Value, cancellationToken).ConfigureAwait(false);
 
@@ -308,8 +308,8 @@ internal static class HarvestRunnerLoop
             // "Đã xong" = đã lưu vào kho trên máy; Hub nhận sau (số Hub ở bảng tổng kết cuối khối). Harvest không tải
             // video — chỉ báo có/không và đã lưu link.
             var rowOutcomeOverlay = outcome.Saved
-                ? HarvestOverlayText.RowSaved(rowNumber, HarvestOverlayText.TrySummarize(step.Json))
-                : $"Dòng {rowNumber}: không lấy được dữ liệu";
+                ? HarvestOverlayText.RowSaved(processor.Row(rowNumber), HarvestOverlayText.TrySummarize(step.Json))
+                : $"Dòng {processor.Row(rowNumber)}: không lấy được dữ liệu";
             // Đếm cho bảng tổng kết (chỉ dòng đã có kết quả cuối; dòng làm lại không tính hai lần). Trên config để qua
             // được lần watchdog mở lại giữa khối.
             if (outcome.Saved) config.HarvestSavedRows++;
@@ -326,7 +326,7 @@ internal static class HarvestRunnerLoop
                 var restMs = restWindow.NextRestMs(RestRandom);
                 var nextRow = rowNumber + 1;
                 var nextAt = io.Now.AddMilliseconds(restMs);
-                var nextMsg = $"Link tiếp theo (dòng {nextRow}) lúc {nextAt.LocalDateTime:HH:mm:ss}";
+                var nextMsg = $"Link tiếp theo (dòng {processor.Row(nextRow)}) lúc {nextAt.LocalDateTime:HH:mm:ss}";
                 var waitMsg = $"{accountHeader}\n{nextMsg}\n{rowOutcomeOverlay}";
                 var pageUrl = step.PageUrl ?? link;
 
@@ -342,7 +342,7 @@ internal static class HarvestRunnerLoop
                 // Chỉ kiểm trước link kế khi dòng vừa rồi LƯU ĐƯỢC (tab chắc đang ở trang SP) — xem chú thích hàm.
                 if (tab.Value is not null && outcome.Saved)
                 {
-                    config.LastRunnerMessage = $"Kiểm tra captcha trước link tiếp theo — dòng {nextRow}.";
+                    config.LastRunnerMessage = $"Kiểm tra captcha trước link tiếp theo — dòng {processor.Row(nextRow)}.";
                     await io.PushDisplayStateAsync(index + 1, tab.Value, cancellationToken).ConfigureAwait(false);
                     onProgress();
 
@@ -372,8 +372,8 @@ internal static class HarvestRunnerLoop
                         if (check.Captcha) config.CaptchaUrl = pageUrl;
                         config.LastRunnerMessage =
                             check.Message ?? (check.Captcha
-                                ? $"Dừng vì captcha trước link tiếp theo - {config.DisplayName}, dòng {rowNumber} (SKU: {sku})."
-                                : $"URL hiện tại không hợp lệ trước link tiếp theo - dòng {rowNumber}.");
+                                ? $"Dừng vì captcha trước link tiếp theo - {config.DisplayName}, dòng {processor.Row(rowNumber)} (SKU: {sku})."
+                                : $"URL hiện tại không hợp lệ trước link tiếp theo - dòng {processor.Row(rowNumber)}.");
                         await io.PushDisplayStateAsync(index + 1, check.TabId ?? tab.Value, cancellationToken).ConfigureAwait(false);
                         onProgress();
                         log(config.LastRunnerMessage);
@@ -382,8 +382,8 @@ internal static class HarvestRunnerLoop
 
                     if (check.Waited)
                     {
-                        log($"Đã giải captcha trước link tiếp theo - dòng {rowNumber}.");
-                        await io.ShowOverlayAsync(tab.Value, $"Đã giải captcha - chuẩn bị mở link tiếp theo (dòng {nextRow})",
+                        log($"Đã giải captcha trước link tiếp theo - dòng {processor.Row(rowNumber)}.");
+                        await io.ShowOverlayAsync(tab.Value, $"Đã giải captcha - chuẩn bị mở link tiếp theo (dòng {processor.Row(nextRow)})",
                             cancellationToken).ConfigureAwait(false);
                     }
                 }
@@ -448,10 +448,10 @@ internal static class HarvestRunnerLoop
                     cdpPort, profileRoot, link, rowNumber, statusText, config.DisplayName, tabId, blockErrorCodes, cancellationToken);
             if (push.HubAccess() is not { } hub)
                 return Task.FromResult(HarvestStepResult.Failure(
-                    $"{HarvestSinkFailure.Prefix}app chưa nối Hub — extension không có URL / token để tự đẩy dữ liệu (dòng {rowNumber} chưa tính xong).",
+                    $"{HarvestSinkFailure.Prefix}app chưa nối Hub — extension không có URL / token để tự đẩy dữ liệu (dòng {options.Row(rowNumber)} chưa tính xong).",
                     tabId, link));
             var request = new HarvestClickRequest(link, rowNumber, statusText, config.DisplayName, tabId, blockErrorCodes,
-                config.HubAccountId, sheet, CurrentSourceLink, options.RunId, hub);
+                config.HubAccountId, sheet, CurrentSourceLink, options.RunId, hub, DisplayRow: options.Row(rowNumber));
             return HarvestClickStep.RunAsync(new CdpHarvestClickIo(cdpPort, profileRoot), request, ClickRandom, cancellationToken);
         }
 

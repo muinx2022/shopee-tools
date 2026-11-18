@@ -746,14 +746,22 @@ public sealed class HarvestModeEngineTests
         public int CurrentLinkIndex { get; set; }
         public DateTimeOffset Now => Received;
         public List<int> Checks { get; } = [];
+        /// <summary>Chữ overlay app đẩy lên trang + chữ trạng thái của từng bước (để kiểm số dòng hiển thị).</summary>
+        public List<string> Overlays { get; } = [];
+        public List<string> StatusTexts { get; } = [];
         private HarvestStepResult? _last;
         public Task<HarvestStepResult> ExecuteStepAsync(string link, int rowNumber, string statusText, int? tabId, CancellationToken cancellationToken)
         {
+            StatusTexts.Add(statusText);
             _last = stepOf(rowNumber);
             return Task.FromResult(_last);
         }
         public Task PushDisplayStateAsync(int linkIndex, int? tabId, CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task ShowOverlayAsync(int? tabId, string text, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ShowOverlayAsync(int? tabId, string text, CancellationToken cancellationToken)
+        {
+            Overlays.Add(text);
+            return Task.CompletedTask;
+        }
         public Task SimulateRestAsync(string pageUrl, int delayMs, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task DelayAsync(int ms, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task<RunnerExtensionRpc.BeforeNextLinkCheckResult> CheckBeforeNextLinkAsync(int tabId, int rowNumber, string sku, CancellationToken cancellationToken)
@@ -780,6 +788,79 @@ public sealed class HarvestModeEngineTests
             Shopee.Core.Scrape.ScrapeRestWindow.Resolve(1, 1), "hdr", to, "Data",
             new System.Runtime.CompilerServices.StrongBox<int?>(5), x.Log.Add, () => { }, CancellationToken.None);
         return (done, x.Cfg, f, io, x.Host);
+    }
+
+    // ── Số dòng HIỂN THỊ = số dòng Excel thật (dải Từ dòng / Đến dòng nhập theo Excel); engine vẫn chạy dòng nén ──
+
+    /// <summary>Sheet một cột link ở các dòng Excel cho sẵn (<paramref name="header"/> → dòng 1 là "Link"), đọc bằng bộ đọc Harvest.</summary>
+    private static async Task<HarvestWorkbookRange> SheetAt(bool header, params int[] excelRows)
+    {
+        var path = Path.Combine(Path.GetTempPath(), "harvest-rows-" + Guid.NewGuid().ToString("N") + ".xlsx");
+        try
+        {
+            using (var wb = new ClosedXML.Excel.XLWorkbook())
+            {
+                var ws = wb.Worksheets.Add("Data");
+                if (header) ws.Cell(1, 1).Value = "Link";
+                foreach (var r in excelRows) ws.Cell(r, 1).Value = $"https://shopee.vn/sp-i.1.{r}";
+                wb.SaveAs(path);
+            }
+            return await HarvestWorkbookReader.ReadSheetAsync(path, "Data", CancellationToken.None);
+        }
+        finally { try { File.Delete(path); } catch { } }
+    }
+
+    /// <summary>Dòng trống giữa sheet (có tiêu đề) và file không tiêu đề: overlay "✓ Đã xong dòng N", chữ trạng thái, log lỗi dòng
+    /// hiện số dòng Excel; sổ bỏ qua / LastCompletedRow vẫn là dòng nén.</summary>
+    [Theory]
+    [InlineData(true, new[] { 2, 3, 4, 5, 7, 8 }, 7)]     // dòng 6 trống → từ dòng nén 5 lệch 1
+    [InlineData(false, new[] { 1, 2, 4, 5 }, 4)]          // không tiêu đề, dòng 3 trống
+    public async Task SoDongHienThi_LaSoDongExcel_DongTrongGiua_VaKhongTieuDe(bool header, int[] excelRows, int deadExcel)
+    {
+        var full = await SheetAt(header, excelRows);
+        var show = HarvestRowRange.ExcelRowMap(full);
+        var deadDense = Array.IndexOf(excelRows, deadExcel) + 1;
+        var f = new FakeFailureSink();
+        var cfg = Cfg();
+        cfg.HubAccountId = "bs1";
+        var log = new List<string>();
+        var p = new HarvestRowProcessor(cfg, new HarvestRunOptions(new FakeSink(null), "shop1", 3, RecordDone: true, FailureSink: f,
+            SampleLink: () => null, DisplayRow: show), new HarvestPdpBreaker(3), log.Add);
+        var io = new FakeIo(row => row == deadDense ? Step(notProduct: true) : Step(ok: true));
+        var items = full.Links!.Items
+            .Select(it => new Shopee.Core.Scrape.SheetLinkItem(it.RowNumber, new Dictionary<string, object?>(), it.Link)).ToList();
+
+        var done = await HarvestRunnerLoop.RunRowsAsync(items, cfg, p, new FakeHost(), io,
+            Shopee.Core.Scrape.ScrapeRestWindow.Resolve(1, 1), "hdr", full.DenseEnd, "Data",
+            new System.Runtime.CompilerServices.StrongBox<int?>(5), log.Add, () => { }, CancellationToken.None);
+
+        Assert.True(done);
+        var last = excelRows[^1];
+        Assert.Contains(io.Overlays, o => o.Contains($"✓ Đã xong dòng {last}", StringComparison.Ordinal));
+        Assert.Contains(io.Overlays, o => o.Contains($"Dòng {deadExcel}: không lấy được dữ liệu", StringComparison.Ordinal));
+        Assert.Contains(io.StatusTexts, s => s.EndsWith($"— dòng {deadExcel}.", StringComparison.Ordinal));
+        Assert.Contains(log, l => l.StartsWith($"Dòng {deadExcel}:", StringComparison.Ordinal));
+        // Không chỗ hiển thị nào còn số dòng nén của các dòng lệch.
+        Assert.DoesNotContain(io.Overlays, o => o.Contains($"✓ Đã xong dòng {full.DenseEnd}", StringComparison.Ordinal) && full.DenseEnd != last);
+        Assert.DoesNotContain(log, l => l.StartsWith($"Dòng {deadDense}:", StringComparison.Ordinal));
+        // Bên trong vẫn dòng nén.
+        Assert.Contains(cfg.SnapshotFailedRows(), x => x.Row == deadDense);
+        Assert.Equal(full.DenseEnd, cfg.LastCompletedRow);
+    }
+
+    /// <summary>Cột "Trạng thái" của bảng Tiến trình: Harvest đổi dòng nén → dòng Excel; app Scrape (không có tuỳ chọn Harvest) giữ số.</summary>
+    [Fact]
+    public void TrangThaiDong_HarvestHienSoDongExcel_ScrapeGiuNguyen()
+    {
+        var cfg = Cfg();
+        cfg.CurrentRow = 5;
+        cfg.RunnerPhase = "opening";
+        var opts = new HarvestRunOptions(new FakeSink(null), "s", DisplayRow: d => d + 2);
+        Assert.Equal("Đang mở dòng 7…", ScrapeRunner.RowStatus(cfg, opts));
+        Assert.Equal("Đang mở dòng 5…", ScrapeRunner.RowStatus(cfg));
+        cfg.RunnerPhase = "waiting";
+        cfg.LastCompletedRow = 4;
+        Assert.Equal("Xong dòng 6 · chờ link kế…", ScrapeRunner.RowStatus(cfg, opts));
     }
 
     private static ScrapeFailureAction AccountAction(InstanceConfig cfg)

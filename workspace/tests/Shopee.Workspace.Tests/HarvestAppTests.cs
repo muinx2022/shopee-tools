@@ -367,6 +367,121 @@ public sealed class HarvestAppTests
         }
     }
 
+    // ── GĐ7.1: dải Từ dòng / Đến dòng từng sheet ──
+
+    /// <summary>Mặc định theo dòng dữ liệu đầu (2 có tiêu đề / 1 không), đếm theo dải, kẹp khi nhập, Đến &lt; Từ thì báo và giữ dải cũ,
+    /// nhớ theo (file, sheet), job mang dải, áp dải cho sheet đã tick, Reset chỉ gỡ SP trong dải.</summary>
+    [Fact]
+    public async Task DaiDong_MacDinh_DemTheoDai_Kep_Nho_Job_ApNhieuSheet_ResetTrongDai()
+    {
+        var dir = NewTempDir();
+        var oldDialogs = Dialogs.Service;
+        var dialogs = new YesDialogs();
+        try
+        {
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
+            var links = Enumerable.Range(1, 6).Select(i => $"https://shopee.vn/a-i.77.{i}").ToArray();   // Excel dòng 2..7
+            var file = Workbook(dir, "links.xlsx", ("Shop A", links), ("Shop B", links));
+            using (var wb = new ClosedXML.Excel.XLWorkbook(file))
+            {
+                var ws = wb.Worksheets.Add("Khong tieu de");                       // dòng 1 đã là link
+                for (var i = 1; i <= 3; i++) ws.Cell(i, 1).Value = $"https://shopee.vn/b-i.88.{i}";
+                wb.Save();
+            }
+            var rt = new HarvestRuntime(Path.Combine(dir, "outbox.db"), () => null);
+            HarvestRuntime.SetCurrentForTest(rt);
+            Dialogs.Service = dialogs;
+            await rt.Sink.SaveAsync(ItemFor(links[0], 1, 2, "Shop A"), CancellationToken.None);   // SP Excel dòng 2 đã lấy
+
+            var settings = new HarvestSettingsStore(Path.Combine(dir, "harvest-settings.json"));
+            settings.Current.WorkbookPath = file;
+            var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), settings, hub: new FakeHubPort(),
+                suiteHubConfigPath: Path.Combine(dir, "khong-co.json"));
+            await vm.RefreshCommand.ExecuteAsync(null);
+            var (a, b, c) = (vm.Sheets[0], vm.Sheets[1], vm.Sheets[2]);
+            Assert.Equal((2, 0, 6, 1, 5), (a.FromRow, a.ToRow, a.TotalLinks, a.HaveCount, a.TodoCount));   // mặc định: dòng dữ liệu đầu → hết
+            Assert.Equal((1, 0, 3), (c.FromRow, c.ToRow, c.TotalLinks));             // không tiêu đề → từ dòng 1
+
+            // Đếm theo dải (Excel 4..6 = SP 3..5; SP 1 ở dòng 2 nằm ngoài dải).
+            a.FromRow = 4;
+            a.ToRow = 6;
+            Assert.Equal((3, 0, 3, 0), (a.TotalLinks, a.HaveCount, a.TodoCount, a.SkippedCount));
+            c.ToRow = 2;
+            Assert.Equal(2, c.TotalLinks);
+
+            // Kẹp ngay khi nhập: Từ < dòng dữ liệu đầu → dòng dữ liệu đầu; Đến âm → 0.
+            b.FromRow = 1;
+            Assert.Equal(2, b.FromRow);
+            b.ToRow = -7;
+            Assert.Equal(0, b.ToRow);
+            // Đến < Từ (≠ 0) → báo lỗi, giữ dải cũ (không tự thành "tới hết").
+            a.ToRow = 3;
+            Assert.Equal((4, 6), (a.FromRow, a.ToRow));
+            Assert.Contains("nhỏ hơn Từ dòng", vm.Status);
+            a.FromRow = 9;
+            Assert.Equal((4, 6), (a.FromRow, a.ToRow));
+            Assert.Equal(3, a.TotalLinks);
+
+            // Nhớ theo (file, sheet): lần mở sau (kho + VM mới) hiện lại đúng dải; dải mặc định không ghi.
+            var reopened = new HarvestSettingsStore(settings.FilePath);
+            Assert.Equal((4, 6), (reopened.Current.SheetRanges[a.Key].FromRow, reopened.Current.SheetRanges[a.Key].ToRow));
+            Assert.False(reopened.Current.SheetRanges.ContainsKey(b.Key));
+            var vm2 = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), reopened, hub: new FakeHubPort(),
+                suiteHubConfigPath: Path.Combine(dir, "khong-co.json"));
+            await vm2.RefreshCommand.ExecuteAsync(null);
+            Assert.Equal((4, 6, 3), (vm2.Sheets[0].FromRow, vm2.Sheets[0].ToRow, vm2.Sheets[0].TotalLinks));
+            Assert.Equal((1, 2), (vm2.Sheets[2].FromRow, vm2.Sheets[2].ToRow));
+
+            // Lượt chạy nhận đúng dải từng sheet.
+            Assert.Equal(new List<(string, int, int)> { ("Shop A", 4, 6), ("Shop B", 2, 0), ("Khong tieu de", 1, 2) },
+                vm.CheckedJobs().Select(j => (j.Sheet, j.FromRow, j.ToRow)).ToList());
+
+            // Áp dải của sheet đang chọn cho các sheet đã tick (mỗi sheet tự kẹp theo dòng dữ liệu đầu).
+            c.IsChecked = false;
+            vm.SelectedSheet = a;
+            Assert.True(vm.ApplyRangeToCheckedCommand.CanExecute(null));
+            vm.ApplyRangeToCheckedCommand.Execute(null);
+            Assert.Equal((4, 6, 3), (b.FromRow, b.ToRow, b.TotalLinks));
+            Assert.Equal((1, 2), (c.FromRow, c.ToRow));                              // sheet không tick không đổi
+            Assert.Equal(6, new HarvestSettingsStore(settings.FilePath).Current.SheetRanges[b.Key].ToRow);
+
+            // Reset chỉ gỡ SP TRONG DẢI: SP 1 (Excel dòng 2, ngoài dải 4..6) vẫn là đã lấy.
+            await vm.ResetCommand.ExecuteAsync(null);
+            Assert.Contains("TRONG DẢI", Assert.Single(dialogs.Asked));
+            Assert.Contains("id:77.1", rt.Outbox.DoneKeys());
+        }
+        finally
+        {
+            Dialogs.Service = oldDialogs;
+            HarvestRuntime.SetCurrentForTest(null);
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Full);
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void NoiDay_JobHarvest_ChiChayTrongDai_CungHamThuDaiVoiManDem()
+    {
+        var job = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Scrape", "ScrapeViewModel.Harvest.cs"));
+        var body = Between(job, "private async Task<HarvestSheetEnd> HarvestSheetBodyAsync", "catch (OperationCanceledException)");
+        var restrict = body.IndexOf("range = HarvestRowRange.Restrict(range, job.FromRow, job.ToRow);", StringComparison.Ordinal);
+        Assert.True(restrict >= 0, "job phải thu dải trước khi dựng tiến độ");
+        Assert.True(restrict < body.IndexOf("startRow = range.DenseStart;", StringComparison.Ordinal));
+        Assert.True(restrict < body.IndexOf("HarvestPlanning.Build(range,", StringComparison.Ordinal));
+        // Số dòng hiển thị = số dòng Excel: bảng ánh xạ chụp từ đúng lần đọc đầu job, truyền vào engine; log bỏ qua / tổng kết dùng nó.
+        Assert.Contains("var showRow = HarvestRowRange.ExcelRowMap(range);", body);
+        Assert.Contains("DisplayRow: showRow", body);
+        Assert.Contains("⚠ Dòng {showRow(row)} chưa lấy được", body);
+        Assert.Contains("skipped.Take(20).Select(showRow)", body);
+        var loop = Src(Path.Combine("src", "Shopee.Module.MultiBrave", "Engine", "HarvestRunnerLoop.cs"));
+        Assert.Contains("options.Row(BlockStartRow(config, startRow)), options.Row(endRow.Value)", loop);   // "✓ Xong dòng a–b"
+        var runner = Src(Path.Combine("src", "Shopee.Module.MultiBrave", "ScrapeRunner.cs"));
+        Assert.Contains("SlotAssigned?.Invoke(key, spec.Label, $\"{R(from)}–{R(to)}\");", runner);          // cột "Dòng" bảng Tiến trình
+        var vm = Src(Path.Combine("src", "Shopee.Workspace", "Modules", "Harvest", "HarvestViewModel.cs"));
+        Assert.Contains("HarvestRowRange.Restrict(full, row.FromRow, row.ToRow)", vm);
+        Assert.Contains("await Scrape.RunHarvestAsync(CheckedJobs(path, rows),", vm);
+    }
+
     // ── Vòng sheet của một lượt Harvest (phản biện GĐ6) ──
 
     private static readonly IReadOnlyList<Modules.Scrape.HarvestSheetJob> BaSheet =

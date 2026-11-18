@@ -77,6 +77,10 @@ internal sealed class HarvestRowProcessor
         _runId = string.IsNullOrWhiteSpace(options.RunId) ? Guid.NewGuid().ToString("N") : options.RunId;
     }
 
+    /// <summary>Số dòng HIỂN THỊ (log / thông điệp) của dòng nén <paramref name="row"/> — số dòng Excel thật khi app truyền
+    /// <see cref="HarvestRunOptions.DisplayRow"/>; sổ dòng / tiến độ vẫn theo dòng nén.</summary>
+    public int Row(int row) => _options.Row(row);
+
     /// <summary>Các dòng notProduct đang chờ kết luận (cho test).</summary>
     public IReadOnlyList<int> PendingNotProductRows => _pendingNotProduct.Select(x => x.Row).ToList();
 
@@ -131,12 +135,12 @@ internal sealed class HarvestRowProcessor
                 if (rowNumber != _supersededRetriedRow)
                 {
                     _supersededRetriedRow = rowNumber;
-                    _log($"Dòng {rowNumber}: bước bị thay thế ({step.Message}) — làm lại dòng này.");
+                    _log($"Dòng {Row(rowNumber)}: bước bị thay thế ({step.Message}) — làm lại dòng này.");
                     return new(HarvestRowNext.RetryRow, decision.Action, false, row.TabId);
                 }
                 _config.RunnerPhase = "error";
                 _config.LastRunnerMessage =
-                    $"Dòng {rowNumber}: bước harvest bị thay thế 2 lần liên tiếp — dừng khối, dòng sẽ được làm lại.";
+                    $"Dòng {Row(rowNumber)}: bước harvest bị thay thế 2 lần liên tiếp — dừng khối, dòng sẽ được làm lại.";
                 return new(HarvestRowNext.Stop, decision.Action, false, step.TabId ?? row.TabId);
 
             case HarvestStepAction.Abort:
@@ -149,9 +153,9 @@ internal sealed class HarvestRowProcessor
                 _config.RunnerPhase = "error";
                 // Tên tài khoản ghi ở log riêng — KHÔNG ghép vào thông điệp đi qua Classify (tên có chữ verify/captcha/proxy
                 // làm phân loại sai).
-                _log($"Tài khoản Shopee {_config.DisplayName} mất đăng nhập ở dòng {rowNumber}.");
+                _log($"Tài khoản Shopee {_config.DisplayName} mất đăng nhập ở dòng {Row(rowNumber)}.");
                 _config.LastRunnerMessage =
-                    $"Tài khoản Shopee mất đăng nhập (bị chuyển tới trang đăng nhập) ở dòng {rowNumber} — " +
+                    $"Tài khoản Shopee mất đăng nhập (bị chuyển tới trang đăng nhập) ở dòng {Row(rowNumber)} — " +
                     "dòng này không tính lỗi, cho tài khoản nghỉ và làm lại bằng tài khoản khác.";
                 return new(HarvestRowNext.Stop, decision.Action, false, step.TabId ?? row.TabId);
 
@@ -163,7 +167,7 @@ internal sealed class HarvestRowProcessor
                 LauncherRunnerLoop.MarkTrafficBlock(_config, rowNumber);
                 if (decision.Action == HarvestStepAction.PdpBreakerTrip)
                     _config.LastRunnerMessage =
-                        $"{_breaker.Threshold} dòng liên tiếp get_pc trả cùng lỗi error={step.PdpError} (tới dòng {rowNumber}) " +
+                        $"{_breaker.Threshold} dòng liên tiếp get_pc trả cùng lỗi error={step.PdpError} (tới dòng {Row(rowNumber)}) " +
                         $"— coi như bị chặn. {_config.LastRunnerMessage}";
                 else if (step.Blocked)
                     _config.LastRunnerMessage = $"{step.Message} {_config.LastRunnerMessage}";
@@ -172,7 +176,7 @@ internal sealed class HarvestRowProcessor
             case HarvestStepAction.ProxyError:
                 Book.DiscardPendingPdpRows();
                 _config.RunnerPhase = "paused";
-                _config.LastRunnerMessage = step.Message ?? $"Lỗi proxy dòng {rowNumber}.";
+                _config.LastRunnerMessage = step.Message ?? $"Lỗi proxy dòng {Row(rowNumber)}.";
                 return new(HarvestRowNext.Stop, decision.Action, false, step.TabId);
 
             case HarvestStepAction.Captcha:
@@ -181,7 +185,7 @@ internal sealed class HarvestRowProcessor
                 _config.RunnerPhase = "paused";
                 _config.CaptchaError = true;
                 _config.CaptchaUrl = row.Link;
-                _config.LastRunnerMessage = $"🚫 Captcha dòng {rowNumber} ({_config.DisplayName}) — GIẢI TAY trong cửa sổ Brave (đang giữ mở)…";
+                _config.LastRunnerMessage = $"🚫 Captcha dòng {Row(rowNumber)} ({_config.DisplayName}) — GIẢI TAY trong cửa sổ Brave (đang giữ mở)…";
                 await host.ReportAsync(step.TabId, cancellationToken).ConfigureAwait(false);
                 _log(_config.LastRunnerMessage);
 
@@ -196,14 +200,14 @@ internal sealed class HarvestRowProcessor
                         _config.CaptchaError = false;
                         _config.RunnerPhase = "opening";
                         host.Progress();
-                        _log($"Đã giải captcha dòng {rowNumber} → lấy lại dữ liệu dòng này.");
+                        _log($"Đã giải captcha dòng {Row(rowNumber)} → lấy lại dữ liệu dòng này.");
                         return new(HarvestRowNext.RetryRow, decision.Action, false, chk.TabId ?? row.TabId);
                     }
                 }
 
                 Book.DiscardPendingPdpRows();
                 _config.LastRunnerMessage =
-                    $"🚫 Dừng vì captcha - {_config.DisplayName}, dòng {rowNumber} (SKU: {row.Sku}). Giải tay rồi bấm Tiếp tục.";
+                    $"🚫 Dừng vì captcha - {_config.DisplayName}, dòng {Row(rowNumber)} (SKU: {row.Sku}). Giải tay rồi bấm Tiếp tục.";
                 return new(HarvestRowNext.Stop, decision.Action, false, step.TabId);
             }
         }
@@ -226,7 +230,7 @@ internal sealed class HarvestRowProcessor
              (step.Message?.Contains("actively refused", StringComparison.OrdinalIgnoreCase) ?? false) ||
              !await host.IsCdpReachableAsync(cancellationToken).ConfigureAwait(false)))
             throw new InvalidOperationException(
-                $"Extension {RunnerExtensionPaths.ExtensionDisplayName} mất kết nối CDP (No SW) tại dòng {rowNumber} — mở lại profile để dựng lại service worker.");
+                $"Extension {RunnerExtensionPaths.ExtensionDisplayName} mất kết nối CDP (No SW) tại dòng {Row(rowNumber)} — mở lại profile để dựng lại service worker.");
 
         var tabId = step.TabId ?? row.TabId;
         var saved = false;
@@ -245,7 +249,7 @@ internal sealed class HarvestRowProcessor
                     // Nội dung JSON của RIÊNG SP này hỏng (như HarvestItemRejectedException ở outbox) → lỗi VĨNH VIỄN (luật 2 lượt).
                     var reason = "Dữ liệu SP không xử lý được: " + why;
                     Book.RowFailed(rowNumber, reason);
-                    _log($"Dòng {rowNumber}: {reason}");
+                    _log($"Dòng {Row(rowNumber)}: {reason}");
                     await RecordPermanentAsync(rowNumber,
                         HarvestItemKey.ForSaved(row.SourceLink, step.ItemId!.Value, step.ShopId), reason, cancellationToken).ConfigureAwait(false);
                     break;
@@ -255,7 +259,7 @@ internal sealed class HarvestRowProcessor
                     // Hub từ chối dữ liệu: SP Hub từ chối KHÔNG tính là đã có (GĐ6) → lỗi tạm, lượt sau lấy lại.
                     var reason = $"Hub từ chối SP {step.ItemId}: {why} — lượt sau lấy lại.";
                     Book.RowFailed(rowNumber, reason);
-                    _log($"Dòng {rowNumber}: {reason}");
+                    _log($"Dòng {Row(rowNumber)}: {reason}");
                     break;
                 }
                 case HarvestHubPush.Queued:
@@ -264,7 +268,7 @@ internal sealed class HarvestRowProcessor
                     // nhận; lượt sau hỏi Hub (known) thấy đã có thì bỏ qua, chưa có thì lấy lại (không mất SP).
                     var reason = $"Hub chưa nhận SP {step.ItemId} ({why}) — đã vào hàng đợi của extension, tự gửi lại; lượt sau kiểm lại.";
                     Book.RowFailed(rowNumber, reason);
-                    _log($"Dòng {rowNumber}: {reason}");
+                    _log($"Dòng {Row(rowNumber)}: {reason}");
                     break;
                 }
                 default:
@@ -283,7 +287,7 @@ internal sealed class HarvestRowProcessor
         {
             _config.CaptchaError = false;
             _config.RunnerPhase = "saving";
-            _config.LastRunnerMessage = $"Đang lưu dữ liệu dòng {rowNumber}…";
+            _config.LastRunnerMessage = $"Đang lưu dữ liệu dòng {Row(rowNumber)}…";
             host.Progress();
 
             var harvested = new HarvestedItem(
@@ -306,7 +310,7 @@ internal sealed class HarvestRowProcessor
                 // thì "Tiếp tục" kẹt đúng dòng này mãi).
                 var reason = "Dữ liệu SP không xử lý được: " + rejected.Message;
                 Book.RowFailed(rowNumber, reason);
-                _log($"Dòng {rowNumber}: {reason}");
+                _log($"Dòng {Row(rowNumber)}: {reason}");
                 // Lỗi VĨNH VIỄN (nội dung JSON): lượt sau không lấy lại SP này.
                 await RecordPermanentAsync(rowNumber,
                     HarvestItemKey.ForSaved(row.SourceLink, step.ItemId!.Value, step.ShopId), reason, cancellationToken).ConfigureAwait(false);
@@ -325,8 +329,8 @@ internal sealed class HarvestRowProcessor
                 saved = true;
                 _lastSavedLink = row.Link;
                 _log(step.Captcha
-                    ? $"Đã giải captcha và lấy dữ liệu SP {step.ItemId} - dòng {rowNumber} ({step.Source})."
-                    : $"Đã lấy dữ liệu SP {step.ItemId} - dòng {rowNumber} ({step.Source}).");
+                    ? $"Đã giải captcha và lấy dữ liệu SP {step.ItemId} - dòng {Row(rowNumber)} ({step.Source})."
+                    : $"Đã lấy dữ liệu SP {step.ItemId} - dòng {Row(rowNumber)} ({step.Source}).");
             }
             if (_sourceMonitor.Record(step.Source) is { } reloadRatio)
                 _log($"⚠ Tỉ lệ phải tải lại trang mới bắt được get_pc cao: {reloadRatio:P0} trong 20 dòng gần nhất " +
@@ -336,14 +340,14 @@ internal sealed class HarvestRowProcessor
         {
             var reason = step.Message ?? $"get_pc trả lỗi (error={step.PdpError})";
             Book.AddPdpError(rowNumber, step.PdpError!.Trim(), reason);
-            _log($"Dòng {rowNumber}: {reason} [cầu dao error={decision.PdpCode} {decision.PdpStreak}/{_breaker.Threshold}]");
+            _log($"Dòng {Row(rowNumber)}: {reason} [cầu dao error={decision.PdpCode} {decision.PdpStreak}/{_breaker.Threshold}]");
         }
         else if (IsNotProduct(decision.Action, step))
         {
             // notProduct: CHƯA ghi — chờ xem có phải chuỗi (lỗi phiên / tài khoản) không.
             var reason = step.Message ?? "không phải trang sản phẩm";
             _pendingNotProduct.Add((rowNumber, HarvestItemKey.FromLink(row.SourceLink), reason));
-            _log($"Dòng {rowNumber}: {reason}");
+            _log($"Dòng {Row(rowNumber)}: {reason}");
             if (_noSampleChain)
             {
                 // Chuỗi đã biết không có link mẫu (đã log): dòng này cũng bỏ qua ở lượt này, đóng chuỗi tới đây.
@@ -363,7 +367,7 @@ internal sealed class HarvestRowProcessor
                     // dòng này. Chuỗi tính là đã duyệt (KHÔNG ghi lỗi, không có trong done → lượt sau thử lại), khối chạy tiếp, tài
                     // khoản không bị đụng. Lưu được một dòng thì link đó thành mẫu cho các chuỗi sau. Mất đăng nhập rõ ràng vẫn bắt
                     // qua loginRequired.
-                    _log($"Chưa có link mẫu để kiểm phiên — {_pendingNotProduct.Count} dòng (dòng {first}–{rowNumber}) không phải " +
+                    _log($"Chưa có link mẫu để kiểm phiên — {_pendingNotProduct.Count} dòng (dòng {Row(first)}–{Row(rowNumber)}) không phải " +
                          "trang SP sẽ thử lại lượt sau.");
                     SkipPendingNotProductUnresolved();
                     _noSampleChain = true;
@@ -376,7 +380,7 @@ internal sealed class HarvestRowProcessor
                     .ConfigureAwait(false);
                 if (sessionOk == true)
                 {
-                    _log($"Link mẫu lấy được dữ liệu — tài khoản ổn: {_pendingNotProduct.Count} dòng (dòng {first}–{rowNumber}) là SP " +
+                    _log($"Link mẫu lấy được dữ liệu — tài khoản ổn: {_pendingNotProduct.Count} dòng (dòng {Row(first)}–{Row(rowNumber)}) là SP " +
                          "không còn / không phải trang SP thật, ghi lỗi và chạy tiếp" +
                          (_sessionProven ? $" (kiểm lại sau mỗi {HarvestStepPolicy.ProvenChainRecheckEvery} dòng)." : "."));
                     await FlushPendingNotProductAsync(cancellationToken).ConfigureAwait(false);
@@ -394,9 +398,9 @@ internal sealed class HarvestRowProcessor
                     if (sessionOk is null)   // mẫu gặp captcha: config đã đặt như dòng thường gặp captcha
                         return new(HarvestRowNext.Stop, decision.Action, false, step.TabId ?? row.TabId);
                     _config.RunnerPhase = "error";
-                    _log($"Nghi phiên / tài khoản {_config.DisplayName} có vấn đề (dòng {first}–{rowNumber}).");
+                    _log($"Nghi phiên / tài khoản {_config.DisplayName} có vấn đề (dòng {Row(first)}–{Row(rowNumber)}).");
                     _config.LastRunnerMessage =
-                        $"{unresolved} dòng liên tiếp (dòng {first}–{rowNumber}) không mở ra trang sản phẩm và {why} — nghi " +
+                        $"{unresolved} dòng liên tiếp (dòng {Row(first)}–{Row(rowNumber)}) không mở ra trang sản phẩm và {why} — nghi " +
                         "phiên / tài khoản có vấn đề: dừng khối; các dòng này KHÔNG tính lỗi, bỏ qua ở lượt này (lượt sau thử lại), " +
                         "phần sau làm bằng tài khoản khác.";
                     return new(HarvestRowNext.Stop, decision.Action, false, step.TabId ?? row.TabId);
@@ -408,7 +412,7 @@ internal sealed class HarvestRowProcessor
             // hết giờ / thiếu JSON / lỗi RPC / pdpError của mã đã bật cầu dao: ghi sổ bỏ qua rồi sang dòng kế.
             var reason = step.Message ?? "không lấy được dữ liệu";
             Book.RowFailed(rowNumber, reason);
-            _log($"Dòng {rowNumber}: {reason}");
+            _log($"Dòng {Row(rowNumber)}: {reason}");
             // Mã pdpError đã xác nhận SP chết → VĨNH VIỄN (cần thấy ở nhiều lượt mới bỏ qua); còn lại là tạm: không ghi.
             if (HarvestStepPolicy.IsPermanentRowFailure(decision.Action, step)
                 && HarvestItemKey.FromLink(row.SourceLink) is { } failedKey)
@@ -421,7 +425,7 @@ internal sealed class HarvestRowProcessor
             _config.RunLog.RemoveRange(0, _config.RunLog.Count - 200);
 
         _config.LastSku = row.Sku;
-        _config.LastRunnerMessage = saved ? $"Xong dòng {rowNumber} - đã lưu dữ liệu." : $"Xong dòng {rowNumber}.";
+        _config.LastRunnerMessage = saved ? $"Xong dòng {Row(rowNumber)} - đã lưu dữ liệu." : $"Xong dòng {Row(rowNumber)}.";
         return new(HarvestRowNext.Done, decision.Action, saved, tabId);
     }
 
@@ -437,7 +441,7 @@ internal sealed class HarvestRowProcessor
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
         catch (Exception ex)
         {
-            _log($"Dòng {rowNumber}: không ghi được vào danh sách lỗi vĩnh viễn ({ex.Message}) — lượt sau sẽ thử lại dòng này.");
+            _log($"Dòng {Row(rowNumber)}: không ghi được vào danh sách lỗi vĩnh viễn ({ex.Message}) — lượt sau sẽ thử lại dòng này.");
         }
     }
 
@@ -517,7 +521,7 @@ internal sealed class HarvestRowProcessor
                 _config.RunnerPhase = "paused";
                 _config.CaptchaError = true;
                 _config.CaptchaUrl = sample;
-                _config.LastRunnerMessage = $"🚫 Dừng vì captcha khi kiểm chứng phiên bằng link mẫu (dòng {rowNumber}) — giải tay rồi bấm Tiếp tục.";
+                _config.LastRunnerMessage = $"🚫 Dừng vì captcha khi kiểm chứng phiên bằng link mẫu (dòng {Row(rowNumber)}) — giải tay rồi bấm Tiếp tục.";
                 return (null, "");
             }
         }

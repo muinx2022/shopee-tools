@@ -151,8 +151,12 @@
                     </StackPanel>
                 </Button>
                 <Button Style="{StaticResource actionBtn}" Command="{Binding ResetCommand}"
-                        ToolTip="Xoá tiến độ của các sheet đã tick để lấy lại từ đầu (có hỏi trước).">
+                        ToolTip="Xoá tiến độ của các sheet đã tick để lấy lại (chỉ dòng trong dải Từ dòng – Đến dòng; có hỏi trước).">
                     <TextBlock Style="{StaticResource btnLabel}" Text="Reset…" />
+                </Button>
+                <Button Style="{StaticResource actionBtn}" Command="{Binding ApplyRangeToCheckedCommand}"
+                        ToolTip="Đặt cùng dải Từ dòng / Đến dòng của sheet đang chọn (dòng đang bôi trong bảng) cho mọi sheet đã tick.">
+                    <TextBlock Style="{StaticResource btnLabel}" Text="Áp dải cho sheet đã tick" />
                 </Button>
                 <Button Style="{StaticResource actionBtn}" Command="{Binding RetrySkippedCommand}"
                         ToolTip="SP bị bỏ qua vì lỗi (không phải trang SP / SP không tồn tại…) ở các sheet đã tick sẽ được thử lại ở lượt Chạy sau.">
@@ -190,7 +194,8 @@
         <!-- Danh sách sheet -->
         <Border Grid.Row="4" Style="{StaticResource card}" ClipToBounds="True">
             <DataGrid ItemsSource="{Binding Sheets}" BorderThickness="0" AutoGenerateColumns="False" CanUserSortColumns="False"
-                      CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single" RowStyle="{StaticResource sheetRow}">
+                      CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single" RowStyle="{StaticResource sheetRow}"
+                      SelectedItem="{Binding SelectedSheet}" IsReadOnly="{Binding IsBusy}">
                 <DataGrid.Columns>
                     <DataGridTemplateColumn Width="70">
                         <!-- Ô tiêu đề: tick hết / bỏ hết / một phần (null) — nhớ như tick tay. -->
@@ -208,7 +213,18 @@
                             </DataTemplate>
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
-                    <DataGridTextColumn Header="Sheet" Binding="{Binding Name}" Width="2*" IsReadOnly="True" />
+                    <DataGridTextColumn Header="Sheet" Binding="{Binding Name}" Width="2*" MinWidth="110" IsReadOnly="True" />
+                    <!-- Dải dòng Excel THẬT (như trong Excel) — sửa trực tiếp; số đếm + lượt Chạy chỉ tính trong dải. -->
+                    <DataGridTextColumn Binding="{Binding FromRow}" Width="76">
+                        <DataGridTextColumn.Header>
+                            <TextBlock Text="Từ dòng" ToolTip="Số dòng Excel bắt đầu lấy (như trong Excel). Nhỏ hơn dòng dữ liệu đầu thì tự về dòng dữ liệu đầu (2 nếu dòng 1 là tiêu đề)." />
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
+                    <DataGridTextColumn Binding="{Binding ToRow}" Width="80">
+                        <DataGridTextColumn.Header>
+                            <TextBlock Text="Đến dòng" ToolTip="Số dòng Excel cuối cùng lấy; 0 = tới hết sheet. Nhỏ hơn Từ dòng thì không nhận, giữ dải cũ." />
+                        </DataGridTextColumn.Header>
+                    </DataGridTextColumn>
                     <DataGridTextColumn Header="Tổng link" Binding="{Binding TotalLinks}" Width="80" IsReadOnly="True" />
                     <DataGridTextColumn Header="Đã có" Binding="{Binding HaveCount}" Width="80" IsReadOnly="True" />
                     <DataGridTextColumn Header="Còn phải lấy" Binding="{Binding TodoCount}" Width="100" IsReadOnly="True" />

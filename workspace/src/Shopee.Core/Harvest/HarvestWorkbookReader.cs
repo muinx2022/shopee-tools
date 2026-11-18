@@ -22,8 +22,11 @@ public sealed class HarvestWorkbookLockedException(string path) : IOException(Me
 
 /// <summary>Dải dòng của một sheet Harvest đọc từ MỘT bản workbook: chỉ số dòng nén (1 = dòng dữ liệu đầu, theo
 /// <see cref="HarvestWorkbookReader"/>) + các dòng có link trong dải + thông tin cột link (<see cref="Info"/>, null nếu caller
-/// không đọc cả sheet).</summary>
-public sealed record HarvestWorkbookRange(int DenseStart, int DenseEnd, ScrapeLinkResult? Links, HarvestSheetInfo? Info = null);
+/// không đọc cả sheet). <see cref="FirstDataRow"/> = dòng Excel dữ liệu đầu (1 = không tiêu đề, 2 = có);
+/// <see cref="ExcelRows"/>[i] = số dòng Excel THẬT của dòng nén i + 1 (null = không biết → coi như liền nhau từ
+/// <see cref="FirstDataRow"/>) — để đổi "Từ dòng / Đến dòng" user nhập (số dòng Excel) sang dòng nén (<see cref="HarvestRowRange"/>).</summary>
+public sealed record HarvestWorkbookRange(int DenseStart, int DenseEnd, ScrapeLinkResult? Links, HarvestSheetInfo? Info = null,
+    int FirstDataRow = 1, IReadOnlyList<int>? ExcelRows = null);
 
 /// <summary>Cột link Harvest đã chọn cho một sheet và các số đếm trên cột đó: <see cref="DataRows"/> dòng dữ liệu,
 /// <see cref="LinkRows"/> dòng có link, <see cref="ProductRows"/> dòng có link SP (tách được id), <see cref="NotLinkRows"/> dòng có
@@ -189,7 +192,8 @@ public static class HarvestWorkbookReader
         var ws = GetSheet(wb, sheet);
         var layout = Layout(ws);
         var total = layout.Rows.Count;
-        return new HarvestWorkbookRange(1, total, total >= 1 ? FetchLinks(wb, sheet, 1, total) : null, Inspect(layout));
+        return new HarvestWorkbookRange(1, total, total >= 1 ? FetchLinks(wb, sheet, 1, total) : null, Inspect(layout),
+            layout.FirstDataRow, layout.Rows.Select(r => r.RowNumber()).ToList());
     }
 
     /// <summary>Đếm trên cột link đã chọn: dòng có link tách được id SP / dòng có link / dòng có chữ mà không phải link.</summary>

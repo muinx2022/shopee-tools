@@ -109,6 +109,7 @@ public sealed partial class HarvestViewModel : ObservableObject
             RetrySkippedCommand.NotifyCanExecuteChanged();
             PickFileCommand.NotifyCanExecuteChanged();
             RefreshCommand.NotifyCanExecuteChanged();
+            ApplyRangeToCheckedCommand.NotifyCanExecuteChanged();
         });
     }
 
@@ -147,7 +148,7 @@ public sealed partial class HarvestViewModel : ObservableObject
             if (cts.IsCancellationRequested) return;
             ApplyScan(scan);
             RefreshHubState();
-            Status = $"{scan.Sheets.Count} sheet · {scan.Sheets.Sum(x => x.Range.Links?.Items.Count ?? 0)} link.";
+            Status = $"{scan.Sheets.Count} sheet · {Sheets.Sum(x => x.TotalLinks)} link trong dải đã chọn.";
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
         catch (Exception ex) { Status = "Không đọc được file: " + ex.Message; }
@@ -158,22 +159,82 @@ public sealed partial class HarvestViewModel : ObservableObject
         }
     }
 
+    // Tập đã xong / lỗi / Hub của lần quét gần nhất — đổi dải một sheet thì đếm lại từ đây, không đọc lại file / hỏi lại Hub.
+    private HarvestScanResult? _lastScan;
+
     private void ApplyScan(HarvestScanResult scan)
     {
+        _lastScan = scan;
         var old = Sheets.ToDictionary(r => r.Key, StringComparer.OrdinalIgnoreCase);
         var unchecked_ = new HashSet<string>(_settings.Current.UncheckedSheetKeys, StringComparer.OrdinalIgnoreCase);
         Sheets.Clear();
         foreach (var sh in scan.Sheets)
         {
             var key = HarvestSource.SheetKey(scan.Path, sh.Sheet);
-            var row = old.TryGetValue(key, out var r) ? r : new HarvestSheetRowViewModel(sh.Sheet, key, !unchecked_.Contains(key), OnSheetChecked);
-            row.ApplyScan(sh.Range.Links?.Items ?? [], sh.Plan, sh.Range.Info?.Warning(sh.Sheet));
+            var row = old.TryGetValue(key, out var r)
+                ? r
+                : new HarvestSheetRowViewModel(sh.Sheet, key, !unchecked_.Contains(key), OnSheetChecked, OnSheetRangeChanged);
+            // Dải: lần đầu lấy từ cấu hình (theo file + sheet); quét lại giữ dải đang hiện, chỉ kẹp lại theo dòng dữ liệu đầu mới.
+            var (from, to) = old.ContainsKey(key)
+                ? (row.FromRow, row.ToRow)
+                : _settings.Current.SheetRanges.TryGetValue(key, out var saved) ? (saved.FromRow, saved.ToRow) : (0, 0);
+            row.LoadRange(from, to, sh.Range.FirstDataRow);
+            Recount(row, sh.Range);
             Sheets.Add(row);
         }
         HubNote = scan.Hub.Known is null
             ? $"⚠ Không hỏi được Hub ({scan.Hub.Error}) — \"đã có\" chỉ tính SP đã lấy trên máy này."
             : "";
         OnCheckedSetChanged();
+    }
+
+    /// <summary>Đếm lại một sheet theo dải đang đặt (từ lần quét gần nhất).</summary>
+    private void Recount(HarvestSheetRowViewModel row, HarvestWorkbookRange? full = null)
+    {
+        full ??= row.FullRange;
+        if (full is null || _lastScan is null) return;
+        var inRange = HarvestRowRange.Restrict(full, row.FromRow, row.ToRow);
+        row.ApplyScan(inRange.Links?.Items ?? [], HarvestPlanning.Build(inRange, _lastScan.Done, _lastScan.Failed, _lastScan.Hub.Known),
+            full.Info?.Warning(row.Name), full);
+    }
+
+    /// <summary>User sửa Từ dòng / Đến dòng của một sheet: nhập sai → báo (ô đã trả dải cũ); hợp lệ → lưu theo (file, sheet) + đếm lại.</summary>
+    private void OnSheetRangeChanged(HarvestSheetRowViewModel row, string? error)
+    {
+        if (error is not null) { Status = error; return; }
+        SaveRange(row);
+        if (!_bulkRange) _settings.Save();
+        Recount(row);
+    }
+
+    private void SaveRange(HarvestSheetRowViewModel row)
+    {
+        // Dải mặc định → bỏ khỏi cấu hình (file sau này thêm / bớt dòng tiêu đề thì mặc định tự theo).
+        if (row.IsDefaultRange) _settings.Current.SheetRanges.Remove(row.Key);
+        else _settings.Current.SheetRanges[row.Key] = new HarvestSheetRowRange { FromRow = row.FromRow, ToRow = row.ToRow };
+    }
+
+    // Đang áp dải cho nhiều sheet → lưu MỘT lần ở cuối.
+    private bool _bulkRange;
+
+    /// <summary>Sheet đang chọn (dòng được bôi) trong bảng — nguồn dải của nút "Áp dải cho các sheet đã tick".</summary>
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(ApplyRangeToCheckedCommand))]
+    private HarvestSheetRowViewModel? _selectedSheet;
+
+    private bool CanApplyRange() => SelectedSheet is not null && !Scrape.IsBusy && Sheets.Any(s => s.IsChecked && !ReferenceEquals(s, SelectedSheet));
+
+    /// <summary>Đặt dải Từ dòng / Đến dòng của sheet đang chọn cho mọi sheet đã tick (mỗi sheet tự kẹp theo dòng dữ liệu đầu của nó).</summary>
+    [RelayCommand(CanExecute = nameof(CanApplyRange))]
+    private void ApplyRangeToChecked()
+    {
+        if (SelectedSheet is not { } src) return;
+        var targets = Sheets.Where(s => s.IsChecked && !ReferenceEquals(s, src)).ToList();
+        _bulkRange = true;
+        try { foreach (var t in targets) t.SetRangeFromUser(src.FromRow, src.ToRow); }
+        finally { _bulkRange = false; }
+        _settings.Save();
+        Status = $"Đã đặt dải {HarvestRowRange.Describe(src.FromRow, src.ToRow)} cho {targets.Count} sheet đã tick.";
     }
 
     // Đang tick / bỏ tick hàng loạt (ô "chọn tất cả") → lưu MỘT lần ở cuối.
@@ -195,6 +256,7 @@ public sealed partial class HarvestViewModel : ObservableObject
         RunCommand.NotifyCanExecuteChanged();
         ResetCommand.NotifyCanExecuteChanged();
         RetrySkippedCommand.NotifyCanExecuteChanged();
+        ApplyRangeToCheckedCommand.NotifyCanExecuteChanged();
     }
 
     /// <summary>Ô ở tiêu đề cột "Chạy": true = tick hết, false = không sheet nào, null = một phần. Gán true / false → tick / bỏ hết
@@ -359,10 +421,14 @@ public sealed partial class HarvestViewModel : ObservableObject
             }),
         };
         Status = $"Đang lấy dữ liệu {rows.Count} sheet…";
-        await Scrape.RunHarvestAsync(rows.Select(r => new HarvestSheetJob(path, r.Name)).ToList(), CurrentRunSettings(), callbacks);
+        await Scrape.RunHarvestAsync(CheckedJobs(path, rows), CurrentRunSettings(), callbacks);
         Status = Scrape.Status;
         await RefreshAsync();
     }
+
+    /// <summary>Job của các sheet đã tick, mang theo dải Từ dòng / Đến dòng của từng sheet (lượt chạy chỉ lên lịch dòng trong dải).</summary>
+    internal IReadOnlyList<HarvestSheetJob> CheckedJobs(string? path = null, IEnumerable<HarvestSheetRowViewModel>? rows = null) =>
+        (rows ?? Sheets.Where(s => s.IsChecked)).Select(r => new HarvestSheetJob(path ?? WorkbookPath, r.Name, r.FromRow, r.ToRow)).ToList();
 
     private bool CanStop() => Scrape.IsBusy;
 
@@ -375,7 +441,9 @@ public sealed partial class HarvestViewModel : ObservableObject
     private bool CanEditChecked() => HasFile && !Scrape.IsBusy && Sheets.Any(s => s.IsChecked);
 
     /// <summary>Reset (có hỏi): bỏ các SP của sheet đã tick khỏi danh sách "đã lấy" + "lỗi" trên máy này và xoá tiến độ sheet →
-    /// lượt sau lấy lại. SP Hub đã có còn hạn vẫn bỏ qua (đổi N ngày nếu muốn lấy lại cả những SP đó).</summary>
+    /// lượt sau lấy lại. SP Hub đã có còn hạn vẫn bỏ qua (đổi N ngày nếu muốn lấy lại cả những SP đó). CHỈ các SP nằm TRONG DẢI
+    /// Từ dòng / Đến dòng của từng sheet (<see cref="HarvestSheetRowViewModel.Items"/>) — dòng ngoài dải không bị đụng (an toàn hơn:
+    /// không gỡ nhầm SP của phần sheet user không định chạy lại). Tiến độ sheet dựng lại mỗi lượt nên xoá cả sheet không mất gì.</summary>
     [RelayCommand(CanExecute = nameof(CanEditChecked))]
     private async Task ResetAsync()
     {
@@ -384,6 +452,7 @@ public sealed partial class HarvestViewModel : ObservableObject
         var keys = HarvestPlanning.KeysOf(rows.SelectMany(r => r.Items));
         if (!await Dialogs.ConfirmAsync(
                 $"Reset {rows.Count} sheet đã chọn ({keys.Count} SP)?\n\n"
+                + "Chỉ các SP nằm TRONG DẢI \"Từ dòng – Đến dòng\" của từng sheet; dòng ngoài dải không bị đụng.\n\n"
                 + "Các SP này bị gỡ khỏi danh sách \"đã lấy\" và \"lỗi\" trên máy này (kể cả khi chúng nằm ở sheet / file khác) và tiến độ "
                 + $"của sheet bị xoá — lượt Chạy sau lấy lại. SP mà Hub đã có dữ liệu chưa quá {MaxAgeDays} ngày vẫn được bỏ qua.",
                 "Reset tiến độ"))
@@ -401,7 +470,8 @@ public sealed partial class HarvestViewModel : ObservableObject
         await RefreshAsync();
     }
 
-    /// <summary>"Cào lại dòng đã bỏ": gỡ SP của sheet đã tick khỏi danh sách lỗi vĩnh viễn + mở lại sổ bỏ qua → lượt sau thử lại.</summary>
+    /// <summary>"Cào lại dòng đã bỏ": gỡ SP của sheet đã tick khỏi danh sách lỗi vĩnh viễn + mở lại sổ bỏ qua → lượt sau thử lại. Như
+    /// Reset: chỉ SP trong dải Từ dòng / Đến dòng của từng sheet.</summary>
     [RelayCommand(CanExecute = nameof(CanEditChecked))]
     private async Task RetrySkippedAsync()
     {
@@ -414,7 +484,9 @@ public sealed partial class HarvestViewModel : ObservableObject
             foreach (var r in rows) RoleStores.ScrapeProgress.ReopenSkipped(HarvestSource.AccountId, r.Key);
             return cleared;
         });
-        Status = n > 0 ? $"Đã mở lại {n} SP bị bỏ qua — bấm Chạy để thử lại." : "Không có SP nào bị bỏ qua ở các sheet đã chọn.";
+        Status = n > 0
+            ? $"Đã mở lại {n} SP bị bỏ qua (trong dải dòng của các sheet đã chọn) — bấm Chạy để thử lại."
+            : "Không có SP nào bị bỏ qua trong dải dòng của các sheet đã chọn.";
         await RefreshAsync();
     }
 
@@ -446,12 +518,13 @@ public sealed partial class HarvestViewModel : ObservableObject
     }
 }
 
-/// <summary>Kết quả quét một file cho màn Harvest.</summary>
-public sealed record HarvestScanResult(string Path, IReadOnlyList<(string Sheet, HarvestWorkbookRange Range, HarvestDoneRebuildResult Plan)> Sheets,
-    HarvestHubLookup Hub);
+/// <summary>Kết quả quét một file cho màn Harvest: từng sheet CẢ SHEET (màn tự thu theo dải Từ dòng / Đến dòng rồi đếm) + tập đã
+/// xong / lỗi cục bộ + Hub.</summary>
+public sealed record HarvestScanResult(string Path, IReadOnlyList<(string Sheet, HarvestWorkbookRange Range)> Sheets,
+    IReadOnlySet<string> Done, IReadOnlySet<string> Failed, HarvestHubLookup Hub);
 
-/// <summary>Quét file Excel (mọi sheet, MỘT lần đọc) + tập đã xong / lỗi cục bộ + hỏi Hub một lần cho cả file → số đếm từng sheet.
-/// Không mở Brave, không ghi gì.</summary>
+/// <summary>Quét file Excel (mọi sheet, MỘT lần đọc) + tập đã xong / lỗi cục bộ + hỏi Hub một lần cho cả file (mọi link, không chỉ
+/// trong dải — đổi dải đếm lại được ngay không phải hỏi lại). Không mở Brave, không ghi gì.</summary>
 public static class HarvestScan
 {
     public static async Task<HarvestScanResult> ScanAsync(string path, int maxAgeDays, HarvestRuntime? rt, CancellationToken ct)
@@ -463,7 +536,6 @@ public static class HarvestScan
             .ConfigureAwait(false);
         var ids = HarvestPlanning.ItemIdsToAsk(sheets.SelectMany(s => s.Range.Links?.Items ?? []), done);
         var hub = await HarvestPlanning.AskHubAsync(rt?.KnownQuery, ids, maxAgeDays, ct).ConfigureAwait(false);
-        return new HarvestScanResult(path,
-            sheets.Select(s => (s.Sheet, s.Range, HarvestPlanning.Build(s.Range, done, failed, hub.Known))).ToList(), hub);
+        return new HarvestScanResult(path, sheets, done, failed, hub);
     }
 }

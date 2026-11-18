@@ -31,6 +31,9 @@ public enum RunnerMode
 /// <param name="ExtensionPush">GĐ7: khác null → mỗi dòng đi luồng "bấm nút Lấy dữ liệu" của hộp nổi extension (app mở trang,
 /// bấm chuột thật qua CDP), extension TỰ đẩy Hub kèm nguồn; <paramref name="Sink"/> chỉ ghi <c>done</c> khi extension báo Hub đã
 /// nhận (<see cref="ExtensionPushedHarvestSink"/>). null = luồng cũ (JSON về app, sink = outbox).</param>
+/// <param name="DisplayRow">Dòng nén (engine chạy, tiến độ, sổ bỏ qua — giữ nguyên) → số dòng HIỂN THỊ cho người dùng (số dòng Excel
+/// thật, vd <see cref="HarvestRowRange.ExcelRowMap"/>): log, overlay trên Brave, cột "Dòng" / "Trạng thái" của bảng Tiến trình.
+/// null = hiện đúng dòng nén.</param>
 public sealed record HarvestRunOptions(
     IHarvestSink Sink,
     string ShopId,
@@ -41,7 +44,20 @@ public sealed record HarvestRunOptions(
     IHarvestFailureSink? FailureSink = null,
     string? RunId = null,
     Func<string?>? SampleLink = null,
-    HarvestExtensionPush? ExtensionPush = null);
+    HarvestExtensionPush? ExtensionPush = null,
+    Func<int, int>? DisplayRow = null)
+{
+    /// <summary>Số dòng hiện cho người dùng của dòng nén <paramref name="row"/> (xem <see cref="DisplayRow"/>).</summary>
+    public int Row(int row) => DisplayRow?.Invoke(row) ?? row;
+}
+
+/// <summary>Đổi dòng nén → dòng hiển thị khi có thể không có tuỳ chọn Harvest (app Scrape: null → giữ nguyên số).</summary>
+public static class HarvestRowDisplay
+{
+    public static int ShowRow(this HarvestRunOptions? options, int row) => options?.Row(row) ?? row;
+
+    public static int? ShowRow(this HarvestRunOptions? options, int? row) => row is { } r ? options.ShowRow(r) : null;
+}
 
 /// <summary>GĐ7: tham số luồng "extension tự đẩy Hub". <paramref name="HubAccess"/> đọc tươi mỗi dòng (null = chưa nối Hub →
 /// dừng job như lỗi chỗ lưu).</summary>

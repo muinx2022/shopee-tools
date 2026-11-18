@@ -1,3 +1,5 @@
+using Shopee.Modules.MultiBrave;
+
 namespace OpenMultiBraveLauncherV3;
 
 /// <summary>
@@ -100,16 +102,16 @@ internal sealed partial class BraveInstanceSession
                     var sku = string.IsNullOrWhiteSpace(_config.LastSku) ? "" : $", SKU {_config.LastSku}";
                     var phase = string.IsNullOrWhiteSpace(_config.RunnerPhase) ? "" : $" ({_config.RunnerPhase})";
                     Log(
-                        $"Bị dừng giữa chừng tại dòng {at} — sheet \"{sheet}\"{sku}{phase}. " +
-                        $"Chạy tiếp từ dòng {resume} (bấm nút Chạy tiếp bên phải).");
+                        $"Bị dừng giữa chừng tại dòng {HarvestOptions.ShowRow(at)} — sheet \"{sheet}\"{sku}{phase}. " +
+                        $"Chạy tiếp từ dòng {HarvestOptions.ShowRow(resume)} (bấm nút Chạy tiếp bên phải).");
                 }
             }
             else if (!silent)
             {
                 var resume = _config.SuggestedResumeRow;
                 Log(
-                    $"Tiến độ: sheet=\"{_config.DataSheet}\", xong dòng {_config.LastCompletedRow}, " +
-                    $"chạy tiếp từ {resume} (từ dòng form: {_config.StartRow}).");
+                    $"Tiến độ: sheet=\"{_config.DataSheet}\", xong dòng {HarvestOptions.ShowRow(_config.LastCompletedRow)}, " +
+                    $"chạy tiếp từ {HarvestOptions.ShowRow(resume)} (từ dòng form: {HarvestOptions.ShowRow(_config.StartRow)}).");
             }
 
             ExtensionProgressSynced?.Invoke();

@@ -9,8 +9,9 @@ using Shopee.Workspace.Infrastructure;
 namespace Shopee.Workspace.Modules.Scrape;
 
 /// <summary>Một đơn vị chạy của app Harvest: một sheet trong file Excel do app tự chọn. Tiến độ khoá theo
-/// <see cref="ProgressKey"/> (đường dẫn file đã chuẩn hoá + tên sheet) trong <c>harvest-progress.json</c>.</summary>
-public sealed record HarvestSheetJob(string FilePath, string Sheet)
+/// <see cref="ProgressKey"/> (đường dẫn file đã chuẩn hoá + tên sheet) trong <c>harvest-progress.json</c>. <see cref="FromRow"/> /
+/// <see cref="ToRow"/> = dải dòng EXCEL chỉ chạy trong đó (0 = dòng dữ liệu đầu / tới hết — <see cref="HarvestRowRange"/>).</summary>
+public sealed record HarvestSheetJob(string FilePath, string Sheet, int FromRow = 0, int ToRow = 0)
 {
     public string ProgressKey => HarvestSource.SheetKey(FilePath, Sheet);
 }
@@ -178,9 +179,17 @@ public sealed partial class ScrapeViewModel
                 return readEnd;
             }
             if (range.Info?.Warning(job.Sheet) is { } warning) LogH("⚠ " + warning);
+            if (range.DenseEnd < range.DenseStart) { LogH("Sheet không có dòng dữ liệu nào — bỏ qua."); return HarvestSheetEnd.Next; }
+            // Chỉ chạy trong dải Từ dòng / Đến dòng (số dòng Excel) — cùng một hàm thu dải với màn đếm.
+            var rangeText = HarvestRowRange.Describe(HarvestRowRange.ClampFrom(job.FromRow, range.FirstDataRow), HarvestRowRange.ClampTo(job.ToRow));
+            range = HarvestRowRange.Restrict(range, job.FromRow, job.ToRow);
             startRow = range.DenseStart;
             var totalRows = range.DenseEnd;
-            if (totalRows < startRow) { LogH("Sheet không có dòng dữ liệu nào — bỏ qua."); return HarvestSheetEnd.Next; }
+            if (totalRows < startRow) { LogH($"Dải {rangeText} không có dòng dữ liệu nào — bỏ qua."); return HarvestSheetEnd.Next; }
+            LogH($"Dải: {rangeText}.");
+            // Engine / tiến độ chạy theo dòng nén; mọi chỗ HIỂN THỊ số dòng (log, overlay, bảng Tiến trình) đổi sang số dòng Excel
+            // thật qua bảng ánh xạ chụp từ đúng lần đọc này (không đọc lại file).
+            var showRow = HarvestRowRange.ExcelRowMap(range);
 
             // Dựng lại tiến độ từ tập SP đã lấy (toàn cục, còn hạn) + SP Hub đã có còn hạn + lỗi vĩnh viễn — không tin số dòng lượt trước.
             var items = range.Links?.Items ?? [];
@@ -217,7 +226,7 @@ public sealed partial class ScrapeViewModel
                     Instances.Add(new ScrapeInstanceViewModel($"{seq}:P{i}", $"[{label}] P{i}", brush));
             });
             BraveFleet.Notice = Log;
-            LogH($"── ▶ {plan.TodoRows} dòng cần lấy (tổng sheet {totalRows}) · {procs} cửa sổ · khung {frame.Count} tk Shopee · nghỉ giữa link {settings.Rest} ──");
+            LogH($"── ▶ {plan.TodoRows} dòng cần lấy (trong dải có {totalRows - startRow + 1} dòng) · {procs} cửa sổ · khung {frame.Count} tk Shopee · nghỉ giữa link {settings.Rest} ──");
             store.BeginResume(acct, key, label, totalRows);
             callbacks?.Changed?.Invoke(job);
 
@@ -232,7 +241,8 @@ public sealed partial class ScrapeViewModel
                     FailureSink: rt.Outbox,
                     RunId: runId,   // lỗi vĩnh viễn cần thấy ở ≥ 2 lượt bấm Chạy khác nhau
                     SampleLink: () => HarvestRuntime.Current?.Outbox.LastSavedLink(),
-                    ExtensionPush: new HarvestExtensionPush(rt.HubAccess)),
+                    ExtensionPush: new HarvestExtensionPush(rt.HubAccess),
+                    DisplayRow: showRow),
             };
             s.Jobs.TryUpdate(key, j => j.Runner = runner);
             RunnerCreated?.Invoke(runner);
@@ -240,7 +250,7 @@ public sealed partial class ScrapeViewModel
             runner.RowSkipped += (row, reason) =>
             {
                 store.MarkSkipped(acct, key, row);
-                LogH($"⚠ Dòng {row} chưa lấy được: {reason} — lượt Chạy sau tự thử lại; SP đã bị bỏ qua thì bấm \"Cào lại dòng đã bỏ\".");
+                LogH($"⚠ Dòng {showRow(row)} chưa lấy được: {reason} — lượt Chạy sau tự thử lại; SP đã bị bỏ qua thì bấm \"Cào lại dòng đã bỏ\".");
                 callbacks?.Changed?.Invoke(job);
             };
             WireRunner(runner, seq, acct, label);
@@ -251,10 +261,10 @@ public sealed partial class ScrapeViewModel
             store.FinishRun(acct, key, startRow, totalRows);
             var after = store.Find(acct, key);
             var skipped = after?.SkippedRows ?? [];
-            var skipNote = skipped.Count == 0 ? "" : $" ⚠ BỎ QUA {skipped.Count} dòng (chưa lấy được): {string.Join(", ", skipped.Take(20))}{(skipped.Count > 20 ? "…" : "")} — lượt sau tự thử lại.";
+            var skipNote = skipped.Count == 0 ? "" : $" ⚠ BỎ QUA {skipped.Count} dòng (chưa lấy được): {string.Join(", ", skipped.Take(20).Select(showRow))}{(skipped.Count > 20 ? "…" : "")} — lượt sau tự thử lại.";
             LogH(string.Equals(after?.Status, Shopee.Core.Coordination.LedgerStatus.Completed, StringComparison.OrdinalIgnoreCase)
                 ? $"✔ Xong sheet.{skipNote}"
-                : $"■ Chưa xong (xong tới dòng {after?.LastRowReached ?? 0}) — bấm Chạy để chạy nốt.{skipNote}");
+                : $"■ Chưa xong (xong tới dòng {(after?.LastRowReached is > 0 and var reached ? showRow(reached) : 0)}) — bấm Chạy để chạy nốt.{skipNote}");
             // Lỗi hạ tầng toàn cục (key proxy chết / chỗ lưu hỏng) → mọi sheet sau cũng hỏng như vậy: dừng cả lượt.
             return EndAfterRun(_jobFatal.TryRemove(acct, out _), ct.IsCancellationRequested);
         }

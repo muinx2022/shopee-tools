@@ -23,6 +23,16 @@ public sealed class HarvestSettings
     public int RowsPerAccount { get; set; } = 60;
     public int RestMinSeconds { get; set; } = ScrapeRestWindow.DefaultMinSeconds;
     public int RestMaxSeconds { get; set; } = ScrapeRestWindow.DefaultMaxSeconds;
+    /// <summary>"Từ dòng / Đến dòng" (số dòng Excel) từng sheet, khoá <see cref="HarvestSource.SheetKey"/> (file + sheet). Không có
+    /// = mặc định (dòng dữ liệu đầu → hết sheet).</summary>
+    public Dictionary<string, HarvestSheetRowRange> SheetRanges { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+/// <summary>Dải dòng Excel đã lưu của một sheet: <see cref="ToRow"/> = 0 → tới hết.</summary>
+public sealed class HarvestSheetRowRange
+{
+    public int FromRow { get; set; }
+    public int ToRow { get; set; }
 }
 
 public sealed class HarvestSettingsStore
@@ -44,6 +54,11 @@ public sealed class HarvestSettingsStore
         Current = JsonAtomicFile.TryLoad<HarvestSettings>(FilePath, JsonOpts) ?? new HarvestSettings();
         Current.UncheckedSheetKeys ??= [];
         Current.WorkbookPath ??= "";
+        // JSON nạp ra Dictionary so khoá phân biệt hoa thường — khoá sheet so KHÔNG phân biệt (như UncheckedSheetKeys).
+        var ranges = new Dictionary<string, HarvestSheetRowRange>(StringComparer.OrdinalIgnoreCase);
+        if (Current.SheetRanges is { } loaded)
+            foreach (var (k, v) in loaded) if (v is not null) ranges[k] = v;
+        Current.SheetRanges = ranges;
     }
 
     public void Save() => JsonAtomicFile.Save(FilePath, Current, JsonOpts);

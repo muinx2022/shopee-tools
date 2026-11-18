@@ -380,7 +380,7 @@ internal sealed partial class BraveInstanceSession
             var sheet = string.IsNullOrWhiteSpace(_config.DataSheet) ? "?" : _config.DataSheet;
             Log(
                 last is > 0
-                    ? $"Trạng thái cuối: sheet \"{sheet}\", xong dòng {last}, chạy tiếp từ {resume}."
+                    ? $"Trạng thái cuối: sheet \"{sheet}\", xong dòng {HarvestOptions.ShowRow(last)}, chạy tiếp từ {HarvestOptions.ShowRow(resume)}."
                     : "Đã dừng chạy.");
         }
 

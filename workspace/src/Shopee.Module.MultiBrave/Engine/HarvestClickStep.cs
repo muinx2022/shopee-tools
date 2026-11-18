@@ -60,7 +60,12 @@ internal interface IHarvestClickIo
 /// hình Hub của app.</summary>
 internal sealed record HarvestClickRequest(
     string Link, int RowNumber, string StatusText, string InstanceName, int? TabId, IReadOnlyList<long>? BlockErrorCodes,
-    string AccountId, string Sheet, string? SourceLink, string? RunId, HarvestHubAccess Hub);
+    string AccountId, string Sheet, string? SourceLink, string? RunId, HarvestHubAccess Hub, int? DisplayRow = null)
+{
+    /// <summary>Số dòng hiện trong thông điệp (số dòng Excel khi app truyền <see cref="DisplayRow"/>); <see cref="RowNumber"/> (dòng nén)
+    /// vẫn là số gửi extension.</summary>
+    public int ShownRow => DisplayRow ?? RowNumber;
+}
 
 /// <summary>
 /// GĐ7 — app điều khiển extension kiểu BigSeller: (1) <c>prepareHarvestClick</c>: extension mở link, nhận ngữ cảnh, chờ hộp nổi
@@ -171,14 +176,14 @@ internal static class HarvestClickStep
                     target = await io.ButtonRectAsync(tabId ?? 0, token, cancellationToken).ConfigureAwait(false);
                     if (!target.Ready)
                         return Missed(
-                            $"Đã bấm \"Lấy dữ liệu\" mà extension không nhận, hộp nổi cũng không còn sẵn sàng ({target.Reason}) — lượt sau lấy lại dòng {request.RowNumber}.",
+                            $"Đã bấm \"Lấy dữ liệu\" mà extension không nhận, hộp nổi cũng không còn sẵn sàng ({target.Reason}) — lượt sau lấy lại dòng {request.ShownRow}.",
                             tabId, request.Link);
                 }
                 if (ZoomProblem(target) is { } zoom)
-                    return Missed($"Không bấm nút \"Lấy dữ liệu\": {zoom} — dòng {request.RowNumber}.", tabId, request.Link);
+                    return Missed($"Không bấm nút \"Lấy dữ liệu\": {zoom} — dòng {request.ShownRow}.", tabId, request.Link);
                 if (ClickPoint(target, rng) is not { } point)
                     return Missed(
-                        $"Nút \"Lấy dữ liệu\" nằm ngoài khung nhìn ({target.X:0},{target.Y:0} {target.Width:0}×{target.Height:0} / {target.ViewportWidth:0}×{target.ViewportHeight:0}) — dòng {request.RowNumber}.",
+                        $"Nút \"Lấy dữ liệu\" nằm ngoài khung nhìn ({target.X:0},{target.Y:0} {target.Width:0}×{target.Height:0} / {target.ViewportWidth:0}×{target.ViewportHeight:0}) — dòng {request.ShownRow}.",
                         tabId, request.Link);
                 try
                 {
@@ -189,7 +194,7 @@ internal static class HarvestClickStep
                 {
                     // CDP tới tab trang hỏng: lỗi dòng tạm (bộ xử lý dòng tự hỏi CDP còn sống không → mở lại profile nếu đứt).
                     return Missed(
-                        $"Không bấm được nút \"Lấy dữ liệu\" ({HarvestStepPolicy.SafeForClassify(ex.Message)}) — dòng {request.RowNumber}, lượt sau lấy lại.",
+                        $"Không bấm được nút \"Lấy dữ liệu\" ({HarvestStepPolicy.SafeForClassify(ex.Message)}) — dòng {request.ShownRow}, lượt sau lấy lại.",
                         tabId, request.Link);
                 }
                 clicks++;
@@ -218,16 +223,16 @@ internal static class HarvestClickStep
                     return HarvestStepResult.Parse(result, tabId, request.Link);
                 case "unknown":
                     return HarvestStepResult.Failure(
-                        $"Extension không còn giữ lượt bấm (service worker khởi động lại giữa chừng?) — lượt sau lấy lại dòng {request.RowNumber}.",
+                        $"Extension không còn giữ lượt bấm (service worker khởi động lại giữa chừng?) — lượt sau lấy lại dòng {request.ShownRow}.",
                         tabId, request.Link);
                 case "pending" when clicks >= MaxClicks && io.Now - clickedAt >= ClickAckTimeout:
                     return Missed(
-                        $"Bấm nút \"Lấy dữ liệu\" {clicks} lần mà extension không nhận — dòng {request.RowNumber}, lượt sau lấy lại.",
+                        $"Bấm nút \"Lấy dữ liệu\" {clicks} lần mà extension không nhận — dòng {request.ShownRow}, lượt sau lấy lại.",
                         tabId, request.Link);
             }
             if (io.Now - clickedAt >= ResultTimeout)
                 return HarvestStepResult.Failure(
-                    $"Quá {(int)ResultTimeout.TotalSeconds}s chưa có kết quả lượt bấm (dòng {request.RowNumber}) — lượt sau lấy lại.",
+                    $"Quá {(int)ResultTimeout.TotalSeconds}s chưa có kết quả lượt bấm (dòng {request.ShownRow}) — lượt sau lấy lại.",
                     tabId, request.Link);
             await io.DelayAsync(PollIntervalMs, cancellationToken).ConfigureAwait(false);
         }

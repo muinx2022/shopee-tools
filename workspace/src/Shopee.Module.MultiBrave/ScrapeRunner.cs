@@ -174,11 +174,15 @@ public sealed class ScrapeRunner
             var remaining = work.Remaining();
             if (remaining.Count > 0)
             {
-                var ranges = string.Join(", ", remaining.OrderBy(r => r.from).Select(r => $"{r.from}–{r.to}"));
+                var ranges = string.Join(", ", remaining.OrderBy(r => r.from).Select(r => $"{R(r.from)}–{R(r.to)}"));
                 InstanceLog?.Invoke("Auto", $"⚠ CÒN DÒNG CHƯA CHẠY (hết tk khả dụng / captcha): {ranges}. Xử lý captcha/tk rồi chạy lại từ các dòng này.");
             }
         }
     }
+
+    /// <summary>Số dòng HIỂN THỊ (log / cột Dòng, Trạng thái) của dòng nén: Harvest đổi sang số dòng Excel thật
+    /// (<see cref="HarvestRunOptions.DisplayRow"/>); app Scrape (không có <see cref="Harvest"/>) giữ nguyên số.</summary>
+    private int R(int row) => Harvest.ShowRow(row);
 
     // 3 lần liên tiếp KHÔNG tiến được dòng nào tại cùng 1 dòng bắt đầu → coi dòng đó hỏng, BỎ QUA
     // (cứu phần còn lại của khối). 1-2 lần có thể do captcha/proxy nhất thời nên vẫn retry.
@@ -239,12 +243,12 @@ public sealed class ScrapeRunner
                         // Kho cạn hẳn (mọi tk captcha/lỗi/disabled) → trả việc lại, dừng worker.
                         work.AddPatch(from, to, stall);
                         InstanceStatus?.Invoke(key, "Hết tài khoản");
-                        InstanceLog?.Invoke(key, $"⚠ Hết tk khả dụng (captcha/lỗi) — còn dòng {from}–{to} CHƯA chạy (xử lý rồi chạy lại).");
+                        InstanceLog?.Invoke(key, $"⚠ Hết tk khả dụng (captcha/lỗi) — còn dòng {R(from)}–{R(to)} CHƯA chạy (xử lý rồi chạy lại).");
                         break;
                     }
 
-                    SlotAssigned?.Invoke(key, spec.Label, $"{from}–{to}");
-                    InstanceLog?.Invoke(key, $"→ tk {spec.Label}, dòng {from}–{to}{(isPatch ? " [vá]" : "")}");
+                    SlotAssigned?.Invoke(key, spec.Label, $"{R(from)}–{R(to)}");
+                    InstanceLog?.Invoke(key, $"→ tk {spec.Label}, dòng {R(from)}–{R(to)}{(isPatch ? " [vá]" : "")}");
                     var res = await RunChunkAsync(spec, key, from, to, cookieFile, ct, needLoginStreak).ConfigureAwait(false);
 
                     if (ct.IsCancellationRequested) { pool.Release(spec); break; }
@@ -324,7 +328,7 @@ public sealed class ScrapeRunner
                     var lastDone = res.LastCompletedRow;
                     // Báo phần đã cào xong của chunk này để lưu tiến độ (resume).
                     if (lastDone >= from) RowsCompleted?.Invoke(from, Math.Min(lastDone, to));
-                    if (lastDone >= to) { InstanceLog?.Invoke(key, $"✓ Xong dòng {from}–{to} (tk {spec.Label})."); continue; }
+                    if (lastDone >= to) { InstanceLog?.Invoke(key, $"✓ Xong dòng {R(from)}–{R(to)} (tk {spec.Label})."); continue; }
 
                     var nextFrom = Math.Max(from, lastDone + 1);
                     var progressed = lastDone >= from;
@@ -333,8 +337,8 @@ public sealed class ScrapeRunner
                     {
                         var stallReason = string.IsNullOrWhiteSpace(res.Reason) ? "không tiến" : res.Reason;
                         InstanceLog?.Invoke(key,
-                            $"⛔ Dòng {nextFrom} kẹt {MaxStallRetries} lần liên tiếp " +
-                            $"({stallReason}) → BỎ QUA dòng {nextFrom}.");
+                            $"⛔ Dòng {R(nextFrom)} kẹt {MaxStallRetries} lần liên tiếp " +
+                            $"({stallReason}) → BỎ QUA dòng {R(nextFrom)}.");
                         // GHI NHẬN dòng bỏ qua: không báo ra thì shop kẹt vĩnh viễn ở "chưa xong" (dòng này
                         // không bao giờ cào được), mỗi lượt Tiếp tục lại đốt 3 lượt mở Brave cho đúng nó.
                         RowSkipped?.Invoke(nextFrom, $"kẹt {MaxStallRetries} lần liên tiếp ({stallReason})");
@@ -345,10 +349,10 @@ public sealed class ScrapeRunner
                     {
                         work.AddPatch(nextFrom, to, nextStall);
                         InstanceLog?.Invoke(key,
-                            $"↻ Còn dòng {nextFrom}–{to} (đã xong tới {lastDone}) → VÁ bằng tk khác " +
+                            $"↻ Còn dòng {R(nextFrom)}–{R(to)} (đã xong tới {R(lastDone)}) → VÁ bằng tk khác " +
                             (res.Errored ? $"[{res.Reason}]." : "[dừng giữa chừng]."));
                     }
-                    else InstanceLog?.Invoke(key, $"✓ Xong dòng {from}–{to} (sau khi bỏ dòng kẹt).");
+                    else InstanceLog?.Invoke(key, $"✓ Xong dòng {R(from)}–{R(to)} (sau khi bỏ dòng kẹt).");
                 }
                 finally { work.Done(); } // khớp với inFlight++ trong TryTake
             }
@@ -360,9 +364,9 @@ public sealed class ScrapeRunner
 
     /// <summary>Chuỗi hiển thị cột "Trạng thái" (cột 3) theo TỪNG DÒNG: "Đang mở dòng X…" / "Đang tải video
     /// dòng X…" thay cho "Đang chạy — proxy". Đọc pha + dòng hiện tại do engine ghi vào cfg mỗi nhịp.</summary>
-    private static string RowStatus(InstanceConfig cfg)
+    internal static string RowStatus(InstanceConfig cfg, HarvestRunOptions? harvest = null)
     {
-        var row = cfg.CurrentRow;
+        var row = harvest.ShowRow(cfg.CurrentRow);
         // CAPTCHA ưu tiên CAO NHẤT — hiện NGAY ở cột Trạng thái, không để các nhịp "Đang mở dòng…" đè mất.
         if (cfg.CaptchaError)
             return row is > 0 ? $"🚫 Captcha dòng {row} — giải tay" : "🚫 Captcha — giải tay";
@@ -371,7 +375,7 @@ public sealed class ScrapeRunner
         {
             "opening" or "starting" => $"Đang mở dòng {row}…",
             "video" => $"Đang tải video dòng {row}…",
-            "waiting" => $"Xong dòng {cfg.LastCompletedRow} · chờ link kế…",
+            "waiting" => $"Xong dòng {harvest.ShowRow(cfg.LastCompletedRow)} · chờ link kế…",
             "paused" => cfg.LastRunnerMessage ?? $"Tạm dừng (dòng {row})",
             "needlogin" => $"⚠ BigSeller mất phiên (dòng {row})",
             "stopped" => "Đã dừng",
@@ -452,7 +456,7 @@ public sealed class ScrapeRunner
             var openedRow = 0;
             session.ExtensionProgressSynced += () =>
             {
-                InstanceStatus?.Invoke(key, RowStatus(cfg));
+                InstanceStatus?.Invoke(key, RowStatus(cfg, Harvest));
                 var cur = cfg.CurrentRow ?? 0;
                 if (cur > 0 && cur != openedRow)
                 {
@@ -482,7 +486,7 @@ public sealed class ScrapeRunner
             InstanceStatus?.Invoke(key, "Mở Brave…");
             await session.StartAsync(_braveExe, _sourceUserData).ConfigureAwait(false);
 
-            InstanceStatus?.Invoke(key, $"Scrape dòng {from}–{(to <= 0 ? "hết" : to.ToString())}…");
+            InstanceStatus?.Invoke(key, $"Scrape dòng {R(from)}–{(to <= 0 ? "hết" : R(to).ToString())}…");
             var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             // Bỏ qua RunnerLoopEnded phát ra GIỮA lúc watchdog/proxy đang relaunch+resume cùng profile
             // (IsRunnerResuming); chỉ kết thúc khi runner thật sự xong — giống ShopeeWorkspaceControl v31.
