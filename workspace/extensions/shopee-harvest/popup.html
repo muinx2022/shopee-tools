@@ -170,7 +170,8 @@
 <body>
   <div class="wrap">
     <h1>Shopee Harvest Runner <span class="badge">View</span></h1>
-    <p class="sub">Chỉ hiển thị trạng thái. Điều khiển chạy / dừng / sheet / dòng trên app <strong>Shopee Harvest</strong>.</p>
+    <p class="sub">Bấm tay: mở trang SP Shopee, bấm <strong>Lấy dữ liệu</strong> trên hộp nổi góc dưới phải. Chạy hàng loạt:
+      điều khiển trên app <strong>Shopee Harvest</strong>.</p>
 
     <div class="card">
       <label>Sheet</label>
@@ -193,6 +194,18 @@
 
       <div id="status" class="status">Đang chờ launcher…</div>
       <div id="statsLine" class="hint"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Gửi Hub</div>
+      <div id="hubConfig" class="hint" style="margin-top:0">Đang đọc…</div>
+      <div id="hubQueueLine" class="hint" style="margin-top:4px"></div>
+      <div id="hubErrors" class="pdp-list"></div>
+      <div class="actions">
+        <button id="hubRetryBtn">Gửi lại</button>
+        <button id="hubOptionsBtn">Cài đặt Hub</button>
+      </div>
+      <div id="hubStatus" class="hint"></div>
     </div>
 
     <div class="card">

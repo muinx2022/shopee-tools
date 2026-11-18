@@ -72,7 +72,7 @@ public sealed partial class ScrapeViewModel
             OnUi(() =>
             {
                 // Harvest: lỗi chỗ lưu (outbox) cũng dừng job như key proxy chết — lời khuyên khác hẳn.
-                var text = Shopee.Core.Harvest.HarvestSinkFailure.Is(reason)
+                var text = Shopee.Core.Harvest.HarvestSinkFailure.Is(reason) || Shopee.Core.Harvest.HarvestPanelClickFailure.Is(reason)
                     ? $"⛔ [{bigSellerName}] DỪNG job: {reason}"
                     : $"⛔ [{bigSellerName}] DỪNG job: {reason} — mọi tk Shopee dùng CHUNG key proxy này nên đổi tk vô ích. Gia hạn key rồi Tiếp tục.";
                 LogAcc(account.Id, bigSellerName, text);

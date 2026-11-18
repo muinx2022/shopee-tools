@@ -198,6 +198,54 @@ document.addEventListener("DOMContentLoaded", async () => {
   exportBtn.addEventListener("click", () => { exportEntries(); });
   refreshBtn.addEventListener("click", () => { renderPdp(); });
 
+  // ── Gửi Hub (GĐ7): cấu hình, hàng đợi chờ gửi / lỗi, nút Gửi lại ───────────────────────────────────────────────
+  const hubConfigEl = document.getElementById("hubConfig");
+  const hubQueueLine = document.getElementById("hubQueueLine");
+  const hubErrors = document.getElementById("hubErrors");
+  const hubRetryBtn = document.getElementById("hubRetryBtn");
+  const hubStatus = document.getElementById("hubStatus");
+
+  const askBackground = (msg) => timed(chrome.runtime.sendMessage(msg), "Hỏi background", 10_000);
+
+  const renderHub = async () => {
+    try {
+      const cfg = await readLocal("hubSettings");
+      hubConfigEl.textContent = cfg?.url && cfg?.token
+        ? `Hub: ${cfg.url} · mã máy ${cfg.machineId || "?"}`
+        : "Chưa cấu hình Hub cho bấm tay — bấm \"Cài đặt Hub\".";
+      const items = (await askBackground({ type: "HUB_QUEUE", op: "list" })) || [];
+      const waiting = items.filter((m) => m.status === "pending");
+      const failed = items.filter((m) => m.status !== "pending");
+      const lastErr = waiting.find((m) => m.lastError)?.lastError;
+      hubQueueLine.textContent = `Hàng đợi: ${waiting.length} chờ gửi · ${failed.length} lỗi` + (lastErr ? `\nLần gửi gần nhất: ${lastErr}` : "");
+      hubErrors.textContent = "";
+      for (const m of failed.slice(0, 30)) {
+        const div = document.createElement("div");
+        div.className = "pdp-item";
+        div.textContent = `SP ${m.itemId} · ${m.lastError || "lỗi"}`;
+        hubErrors.appendChild(div);
+      }
+      hubRetryBtn.disabled = items.length === 0;
+    } catch (err) {
+      hubQueueLine.textContent = `Không đọc được hàng đợi — ${err?.message || err}`;
+    }
+  };
+
+  hubRetryBtn.addEventListener("click", async () => {
+    hubRetryBtn.disabled = true;
+    hubStatus.textContent = "Đang gửi lại…";
+    try {
+      const r = await askBackground({ type: "HUB_QUEUE", op: "retry" });
+      hubStatus.textContent = r?.deferred
+        ? "Đang lùi dần sau lỗi — thử lại sau."
+        : `Đã gửi ${r?.sent || 0} mục: Hub nhận ${r?.saved || 0}, từ chối ${r?.rejected || 0}` + (r?.lastError ? ` · ${r.lastError}` : "");
+    } catch (err) {
+      hubStatus.textContent = `Lỗi — ${err?.message || err}`;
+    }
+    await renderHub();
+  });
+  document.getElementById("hubOptionsBtn").addEventListener("click", () => { chrome.runtime.openOptionsPage(); });
+
   chrome.runtime.onMessage.addListener((message) => {
     if (!message || message.type !== "RUNNER_STATE") return;
     readLocal("lastRunConfig").then((cfg) => applyDisplay(message.state || {}, cfg || {})).catch(() => {});
@@ -207,9 +255,10 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (changes.runnerState || changes.lastRunConfig || changes.harvestStats) {
       renderState();
     }
+    if (changes.hubQueue || changes.hubSettings) renderHub();
   });
 
   if (coreError) exportStatus.textContent = coreError;
-  // Hai phần độc lập: phần trạng thái lỗi không được chặn phần đọc kho (và ngược lại).
-  await Promise.all([renderState(), renderPdp()]);
+  // Các phần độc lập: phần nào lỗi cũng không được chặn phần khác.
+  await Promise.all([renderState(), renderPdp(), renderHub()]);
 });

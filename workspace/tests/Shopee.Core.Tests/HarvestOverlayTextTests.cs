@@ -61,9 +61,9 @@ public sealed class HarvestOverlayTextTests
     public void BlockDone_CoVaKhongCoDongHub()
     {
         var hub = HarvestOverlayText.HubLine(120, 3, 1);
-        Assert.Equal("Hub: đã nhận 120 · chờ đẩy 3 · lỗi 1", hub);
+        Assert.Equal("Hub: đã nhận 120 · app chờ đẩy 3 · lỗi 1", hub);
 
-        Assert.Equal("✓ Xong dòng 2–61 (shop A)\nĐã lấy: 58 · Bỏ qua/lỗi: 2\nHub: đã nhận 120 · chờ đẩy 3 · lỗi 1",
+        Assert.Equal("✓ Xong dòng 2–61 (shop A)\nĐã lấy: 58 · Bỏ qua/lỗi: 2\nHub: đã nhận 120 · app chờ đẩy 3 · lỗi 1",
             HarvestOverlayText.BlockDone(2, 61, "shop A", 58, 2, hub));
         Assert.Equal("✓ Xong dòng 2–61 (shop A)\nĐã lấy: 58 · Bỏ qua/lỗi: 2",
             HarvestOverlayText.BlockDone(2, 61, "shop A", 58, 2, null));

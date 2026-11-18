@@ -25,6 +25,13 @@ public sealed class HarvestRuntime
     /// <summary>Sink đưa cho engine (<c>HarvestRunOptions.Sink</c>): outbox + Nudge sau mỗi lần lưu xong.</summary>
     public IHarvestSink Sink { get; }
 
+    /// <summary>GĐ7 — sink của luồng "extension tự đẩy Hub": chỉ ghi <c>done</c> khi extension báo Hub đã nhận; outbox không nhận
+    /// mục mới (worker vẫn đẩy nốt mục cũ).</summary>
+    public IHarvestSink ExtensionSink { get; }
+
+    /// <summary>GĐ7 — URL / token / mã máy Hub app đang dùng, truyền cho extension (null = chưa nối Hub).</summary>
+    public Func<HarvestHubAccess?> HubAccess { get; }
+
     /// <summary>Số liệu có thể đã đổi (lưu mới / đẩy xong / lỗi / requeue) — UI gọi lại <see cref="GetStatsAsync"/>. Bắn từ
     /// luồng nền.</summary>
     public event Action? StatsChanged;
@@ -36,8 +43,9 @@ public sealed class HarvestRuntime
     /// coi là "không hỏi được", chỉ dựa vào tập đã xong cục bộ). Test thay được.</summary>
     public HarvestKnownQuery KnownQuery { get; internal set; }
 
-    internal HarvestRuntime(string dbPath, Func<HubClient?> client)
+    internal HarvestRuntime(string dbPath, Func<HubClient?> client, Func<HarvestHubAccess?>? hubAccess = null)
     {
+        HubAccess = hubAccess ?? CoordinationRuntime.HarvestHubAccess;
         KnownQuery = async (ids, maxAgeDays, ct) =>
             await (client() ?? throw new InvalidOperationException("chưa nối Hub")).GetHarvestedKnownAsync(ids, maxAgeDays, ct)
                 .ConfigureAwait(false);
@@ -49,6 +57,7 @@ public sealed class HarvestRuntime
             Worker.Nudge();
             RaiseStatsChanged();
         });
+        ExtensionSink = new ExtensionPushedHarvestSink(Outbox, HubAccess, RaiseStatsChanged);
     }
 
     /// <summary>Dựng outbox tại đường dẫn mặc định + chạy worker nền. Gọi MỘT lần lúc khởi động app Harvest, sau khi
@@ -69,7 +78,7 @@ public sealed class HarvestRuntime
     public async Task<string?> HubStatusLineAsync(CancellationToken cancellationToken)
     {
         var st = await GetStatsAsync().ConfigureAwait(false);
-        return HarvestOverlayText.HubLine(st.PushedTotal, st.Pending, st.Failed);
+        return HarvestOverlayText.HubLine(st.HubReceivedTotal, st.Pending, st.Failed);   // GĐ7: gồm cả SP extension tự đẩy
     }
 
     /// <summary>Đóng app: dừng vòng nền rồi đẩy nốt trong <paramref name="flushTimeout"/>. Trả true nếu hàng chờ đã rỗng.</summary>

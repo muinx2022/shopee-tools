@@ -1,0 +1,817 @@
+[
+  {
+    "name": "fixture:pdp-1tang-4model-1anh.json",
+    "rejected": false,
+    "hash": "ef66dab4f048f067fd93fcd97279892d13fe352a8e61fdb21e707c18f087e4cb",
+    "summary": {
+      "itemId": "26765720617",
+      "shopId": "1308236305",
+      "name": "hot n\u00E1 cao su nh\u1EF1a k\u1EB9p k\u00E8m 1 d\u00E2y thun",
+      "catId": "101287",
+      "categoryIds": [
+        "100637",
+        "100725",
+        "101287"
+      ],
+      "brandId": "0",
+      "priceMin": "19500",
+      "priceMax": "27000",
+      "priceBeforeDiscount": "19500",
+      "tierCount": 1,
+      "modelCount": 4,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/vn-11134207-7ras8-m1vzny7g6fun06"
+      ],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "fixture:pdp-1tang-70model-4capdm.json",
+    "rejected": false,
+    "hash": "55be01fabc01c79ea1080db9639a8208cf71d45014ad1b1d40cf805c0711e72a",
+    "summary": {
+      "itemId": "29609621870",
+      "shopId": "864686879",
+      "name": "Qu\u1EA3 b\u00F3ng \u0111\u00E1 ti\u00EAu chu\u1EA9n Lo\u1EA1i 3 l\u1EDBp Banh da s\u1ED1 5 B\u00D3NG \u0110\u00C1 S\u1ED0 5 DA CAO C\u1EA4P SI\u00CAU PH\u1EA8M M\u1EDAI",
+      "catId": "101847",
+      "categoryIds": [
+        "100637",
+        "100725",
+        "101277",
+        "101847"
+      ],
+      "brandId": "0",
+      "priceMin": "49000",
+      "priceMax": "89000",
+      "priceBeforeDiscount": "110000",
+      "tierCount": 1,
+      "modelCount": 70,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdyn-lzk0wi9b09wsd5",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdw6-lzk0wifyqjjo44",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdxu-lzk0wita5mo7db",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdwj-lzk0wj2zrfhk0f",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdvl-lzk0wjb1h29681",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdwl-lzk0wjglac6k36",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdxp-lzk0wjrorane9a",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdw2-lzk0wjx8j5s67b",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdyf-lzk0wk8w3ifb22"
+      ],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "fixture:pdp-2tang-8model.json",
+    "rejected": false,
+    "hash": "1c081a1a36785e73e17327afb109103130ab85a450457df64e6654c1282d14b6",
+    "summary": {
+      "itemId": "26393229156",
+      "shopId": "1490438686",
+      "name": "V\u00F2ng tay DW Tennis Classic Bracelet - v\u00F2ng tay kh\u00F4ng g\u1EC9 Daniel Wellington",
+      "catId": "100026",
+      "categoryIds": [
+        "100009",
+        "100026"
+      ],
+      "brandId": "0",
+      "priceMin": "219000",
+      "priceMax": "274000",
+      "priceBeforeDiscount": "360000",
+      "tierCount": 2,
+      "modelCount": 8,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mg363v2it3bg0d",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mh1siu88u5n390",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mh2ss28jf7rh1e",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mh1sjvp2wd1lab",
+        "https://down-vn.img.susercontent.com/file/vn-11134201-81ztc-mrjhhsmiq3updc"
+      ],
+      "videoUrls": [
+        "https://mms.vod.susercontent.com/api/v4/11110105/mms/vn-11110105-6v8h1-mhh2y0micrgn8c.default.mp4",
+        "https://down-zl-vn.vod.susercontent.com/api/v4/11110105/mms/vn-11110105-6v8h1-mhh2y0micrgn8c.16000081764039404.mp4"
+      ],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "fixture:pdp-danurl-1tang-6model-anhsg.json",
+    "rejected": false,
+    "hash": "b97126942cb66a8018b5777f6d9d852093aec90c70d16f32015e6981e3514a7e",
+    "summary": {
+      "itemId": "41557430104",
+      "shopId": "1551966364",
+      "name": "C\u00E1p d\u1EEF li\u1EC7u s\u1EA1c nhanh trong su\u1ED1t 100W cho thi\u1EBFt b\u1ECB Apple Android Type-C M\u00E0n h\u00ECnh k\u1EF9 thu\u1EADt s\u1ED1",
+      "catId": "100481",
+      "categoryIds": [
+        "100013",
+        "100075",
+        "100284",
+        "100481"
+      ],
+      "brandId": "0",
+      "priceMin": "20000",
+      "priceMax": "79000",
+      "priceBeforeDiscount": "26000",
+      "tierCount": 1,
+      "modelCount": 6,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdyt-mbt9kr3b9571b5",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdwx-mbt9krb3elauaa",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdx6-mbt9krhgmzpy97",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdwd-mbt9krlwghue1a",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdwn-mbt9krrgcmkufc",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdxp-mbt9krw62v5l0d",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdyf-mbt9ks0vuk6f34",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7rdyk-mbt9ks79mmhx8d"
+      ],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "fixture:pdp-khong-bien-the.json",
+    "rejected": false,
+    "hash": "331d37553517bdedb30a60671be587592759ea0ac30f241a01994657e3891373",
+    "summary": {
+      "itemId": "47908509202",
+      "shopId": "28599224",
+      "name": "Test 11K - \u0110\u1EEBng mua nh\u00E9 !!",
+      "catId": "100242",
+      "categoryIds": [
+        "100011",
+        "100054",
+        "100242"
+      ],
+      "brandId": "0",
+      "priceMin": "2500000",
+      "priceMax": "2500000",
+      "priceBeforeDiscount": "2500000",
+      "tierCount": 0,
+      "modelCount": 1,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/vn-11134207-81ztc-mmu8v3cozk01bc",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-81ztc-mqw4k4ju2ej06e",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-81ztc-mqw4k4kbe2o639",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-81ztc-mqw4k4keqvib67",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-81ztc-mqw4k4ke2zv078"
+      ],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "fixture:pdp-motaanh-brand-voucher.json",
+    "rejected": false,
+    "hash": "6ea69e9ce88d132685301a96ed9ea7e0dad65a6f72b2dbbce031b24396673923",
+    "summary": {
+      "itemId": "41355991937",
+      "shopId": "180772792",
+      "name": "Ahellogirl B\u01B0\u1EDBm L\u00E1 Tre D\u00E2y \u0110\u1ECF V\u00F2ng Tay C\u00E1 Nh\u1ECF V\u00F2ng Tay V\u00F2ng Tay",
+      "catId": "100026",
+      "categoryIds": [
+        "100009",
+        "100026"
+      ],
+      "brandId": "3653052",
+      "priceMin": "18300",
+      "priceMax": "18300",
+      "priceBeforeDiscount": "18300",
+      "tierCount": 1,
+      "modelCount": 2,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7ra33-mbeyy5p8o4nk67",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7ra3x-mbeyy6avv9n46c",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7ra3z-mbeyy6w8ucjnaa",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7ra2y-mbeyy7otok7la0",
+        "https://down-vn.img.susercontent.com/file/sg-11134201-7ra38-mbeyy8ceq0a1aa"
+      ],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "fixture:pdp-video-1tang-11model-2capdm.json",
+    "rejected": false,
+    "hash": "3f160c4565d3d4a5e20c1c404b90063f54788a186e35281fabe9608b8c0a0cce",
+    "summary": {
+      "itemId": "24395796182",
+      "shopId": "1490438686",
+      "name": "(T\u1EB7ng V\u00F2ng Tay) \u0110\u1ED3ng h\u1ED3 Daniel Wellington ch\u1EEF nh\u1EADt - \u0110\u1ED3ng H\u1ED3 DW Quardo Mini N\u1EEF M\u1EB7t Nh\u1ECF15,4x18,2mm Fullbox",
+      "catId": "100573",
+      "categoryIds": [
+        "100534",
+        "100573"
+      ],
+      "brandId": "0",
+      "priceMin": "1499000",
+      "priceMax": "1599000",
+      "priceBeforeDiscount": "2200000",
+      "tierCount": 1,
+      "modelCount": 11,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/vn-11134207-7ras8-mbno6bhhy31wd5",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyiiqrsqn7y3e",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyiiujygydm6c",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyiizcgdfkb38",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyij4h26tce42",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyij8od4hsc3b",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyijeoz709839",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyijjerjtou88",
+        "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mgyil7fkmnex12"
+      ],
+      "videoUrls": [
+        "https://mms.vod.susercontent.com/api/v4/11110105/mms/vn-11110105-6v8h4-mhh2ryt237r838.default.mp4",
+        "https://down-zl-vn.vod.susercontent.com/api/v4/11110105/mms/vn-11110105-6v8h4-mhh2ryt237r838.16000081764039127.mp4"
+      ],
+      "sizeChartUrl": "https://down-vn.img.susercontent.com/file/vn-11134207-820l4-mk0i1kts0fsw2f"
+    }
+  },
+  {
+    "name": "chu-dac-biet-va-escape",
+    "rejected": false,
+    "clean": "{\u0022error\u0022:null,\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:11,\u0022shop_id\u0022:22,\u0022title\u0022:\u0022\u00C1o thun \\uD83D\\uDE00 \u00E9 / \\\u0022 \\\\ \\n\\t\\b\\f\\r \\u001F\\u007F\\u0085\\u00A0\u00AD\u200B\u200D\\u2028\\u2029\\u202F\u2060\\uFEFF\uFFFD\\uFFFE\\uFFFF\\uE000\\u0378 \u4E2D\u6587 \u003C\u003E\u0026\u0027\u002B\u0060 \\uD83D\\uDE00\\uD83D\\uDE00\u0022}}}",
+    "hash": "bec68b7c99e74e89f83cac1a28a916aca38287ff7381781cff5b6408d8d21d0c",
+    "summary": {
+      "itemId": "11",
+      "shopId": "22",
+      "name": "\u00C1o thun \uD83D\uDE00 \u00E9 / \u0022 \\ \n\t\b\f\r \u001F\u007F\u0085\u00A0\u00AD\u200B\u200D\u2028\u2029\u202F\u2060\uFEFF\uFFFD\uFFFE\uFFFF\uE000\u0378 \u4E2D\u6587 \u003C\u003E\u0026\u0027\u002B\u0060 \uD83D\uDE00\uD83D\uDE00",
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "nul-va-surrogate-le-escape",
+    "rejected": false,
+    "clean": "{\u0022error\u0022:null,\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:12,\u0022shop_id\u0022:22,\u0022title\u0022:\u0022abxyAz\\\\u0000w\u0022,\u0022description\u0022:\u0022\\uDBFF\\uDFFF ok \u0022}}}",
+    "hash": "f28d64b5dbcf183c1c020eb321b6542e35adce4c14aeac2c5143fd67224f4dbc",
+    "summary": {
+      "itemId": "12",
+      "shopId": "22",
+      "name": "abxyAz\\u0000w",
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "nul-va-surrogate-le-tho",
+    "rejected": false,
+    "clean": "{\u0022error\u0022:null,\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:13,\u0022shop_id\u0022:22,\u0022title\u0022:\u0022abcd\\uD83D\\uDE00ef\u0022}}}",
+    "hash": "c13b8eecacac7f01b451b9e2920349582ac22ac91e6f8e8830316293e58966a7",
+    "summary": {
+      "itemId": "13",
+      "shopId": "22",
+      "name": "abcd\uD83D\uDE00ef",
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "so-giu-nguyen-van",
+    "rejected": false,
+    "clean": "{\u0022error\u0022:null,\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:14,\u0022shop_id\u0022:22,\u0022a\u0022:1.0,\u0022b\u0022:1E5,\u0022c\u0022:-0,\u0022d\u0022:1e-7,\u0022e\u0022:123456789012345678901234567890,\u0022f\u0022:0.10,\u0022g\u0022:[1,2,3],\u0022h\u0022:true,\u0022i\u0022:false,\u0022j\u0022:null,\u0022k\u0022:-12.5e\u002B3}}}",
+    "hash": "2de37acc17a970fa50c2a91a1778480f60a8a2efcfc7b396f5d13c16aba6f6e0",
+    "summary": {
+      "itemId": "14",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "giu-thu-tu-khoa-bo-khoang-trang",
+    "rejected": false,
+    "clean": "{\u0022z\u0022:1,\u0022error\u0022:null,\u0022data\u0022:{\u0022item\u0022:{\u0022title\u0022:\u0022T\u0022,\u0022item_id\u0022:15,\u0022shop_id\u0022:22},\u0022account\u0022:{},\u0022product_review\u0022:{\u0022rating_star\u0022:4.9,\u0022count\u0022:10},\u0022product_price\u0022:{\u0022price\u0022:{\u0022single_value\u0022:100000}},\u0022product_shipping\u0022:{\u0022shipping_fee_info\u0022:{\u0022ship_from_location\u0022:\u0022TP. H\u1ED3 Ch\u00ED Minh\u0022}},\u0022tail\u0022:[]},\u0022after\u0022:{}}",
+    "hash": "6e5144a6a00b3f08830edf2819ea2c4926bd3a68647eadc998acbe1297e77f69",
+    "summary": {
+      "itemId": "15",
+      "shopId": "22",
+      "name": "T",
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "account-null-thanh-rong",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022account\u0022:{},\u0022item\u0022:{\u0022item_id\u0022:16,\u0022shop_id\u0022:22}}}",
+    "hash": "d92bc06053c821afdc5fdef4d69e2cf80dfeebe7c8cc1e8e6e646d1649e1d2ef",
+    "summary": {
+      "itemId": "16",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "khong-co-account-khong-them",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:17,\u0022shop_id\u0022:22}}}",
+    "hash": "7014de489f94749b5afd5090bde11201832bfbdc5f94967fa938a980d57d43f6",
+    "summary": {
+      "itemId": "17",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "khoa-escape-account",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022account\u0022:{},\u0022item\u0022:{\u0022item_id\u0022:18,\u0022shop_id\u0022:22},\u0022k\\\u0022ey\u00E9\\u0001\u0022:1}}",
+    "hash": "24f1a557e3403ef7c082acd7820fcd9e572ee82836a84c081dd9bc7824bf774b",
+    "summary": {
+      "itemId": "18",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "shipping-null-from",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:19,\u0022shop_id\u0022:22},\u0022product_shipping\u0022:{\u0022shipping_fee_info\u0022:{\u0022ship_from_location\u0022:null}}}}",
+    "hash": "873fd2eef3349cf2140d0900e219a0b8a13fceedcf38996b141c6a8ea823be7b",
+    "summary": {
+      "itemId": "19",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "shipping-fee-khong-phai-object",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:20,\u0022shop_id\u0022:22},\u0022product_shipping\u0022:{}}}",
+    "hash": "63e64620a67c75c2276b43f95ad0fb432a2be6e50f45d42c8f819475f89ec746",
+    "summary": {
+      "itemId": "20",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "shipping-null",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:21,\u0022shop_id\u0022:22},\u0022product_shipping\u0022:null}}",
+    "hash": "f12bde6f2391f6664e983ab9e08434e57a7642d3e6b86cd2b715479e08c98d4f",
+    "summary": {
+      "itemId": "21",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "shipping-mang",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:22,\u0022shop_id\u0022:22},\u0022product_shipping\u0022:null}}",
+    "hash": "fe843e95f49ca548e5e1f69c952f555b8035c6e45943d04e221c6865b77c93a3",
+    "summary": {
+      "itemId": "22",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "shipping-thieu-from",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:23,\u0022shop_id\u0022:22},\u0022product_shipping\u0022:{}}}",
+    "hash": "c276a1ce61ba49f75ae2e4babf345c49f159319c1453bda3b7b2dac4dd1a2990",
+    "summary": {
+      "itemId": "23",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "price-review-khong-phai-object",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:24,\u0022shop_id\u0022:22},\u0022product_price\u0022:[1],\u0022product_review\u0022:\u0022x\u0022}}",
+    "hash": "c66646a1cf5afa12468422a6bcf0cf8f95ccafde68b4035915d7e61f6ecab209",
+    "summary": {
+      "itemId": "24",
+      "shopId": "22",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "nul-ngoai-chuoi-va-khoang-trang-dau-cuoi",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:25}}}",
+    "hash": "21e83b75a4e2b7de5c0bbb8777f04d64a6d9b7e1fc792855172b29ce8ffc8afb",
+    "summary": {
+      "itemId": "25",
+      "shopId": "0",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "do-sau-64-duoc",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:26,\u0022x\u0022:[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]}}}",
+    "hash": "ee0ecc49eaabf0112c69dc9ee4e4f9c158d491f9cc54222010bea85aa1050271",
+    "summary": {
+      "itemId": "26",
+      "shopId": "0",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "do-sau-65-tu-choi",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-khoa-trung-sau",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-khoa-trung-goc",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-khoa-trung-sau-escape",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-dau-phay-thua",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-comment",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-nhay-don",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-so-0-dau",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-nan",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-so-thieu-phan-le",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-so-cham-dau",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-dau-tru-don",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-mu-thieu-so",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-cong-dau",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-escape-sai",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-escape-U-hoa",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-escape-u-thieu-hex",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-tab-tho-trong-chuoi",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-thieu-data",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-data-null",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-item-mang",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-goc-mang",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-bom",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-nbsp-cuoi",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-hai-gia-tri",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-cut-ngang",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-rong",
+    "rejected": true
+  },
+  {
+    "name": "tu-choi-literal-sai",
+    "rejected": true
+  },
+  {
+    "name": "tom-tat-id-chuoi-va-gia",
+    "rejected": false,
+    "clean": "{\u0022error\u0022:0,\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:\u00220045\u0022,\u0022shop_id\u0022:\u00229\u0022,\u0022title\u0022:\u0022T\u00EAn\u0022,\u0022cat_id\u0022:777,\u0022categories\u0022:[{\u0022catid\u0022:\u0022100\u0022},{\u0022catid\u0022:0},{\u0022catid\u0022:-5},\u0022x\u0022,{\u0022catid\u0022:1.5},{\u0022catid\u0022:200}],\u0022brand_id\u0022:0,\u0022price_min\u0022:-150000,\u0022price_max\u0022:9999999999,\u0022price_before_discount\u0022:0,\u0022models\u0022:[{\u0022model_id\u0022:1,\u0022price\u0022:200000,\u0022price_before_discount\u0022:50000},{\u0022model_id\u0022:2,\u0022price\u0022:300000,\u0022price_before_discount\u0022:0},\u0022x\u0022,{\u0022price\u0022:\u0022bad\u0022}],\u0022tier_variations\u0022:[{\u0022name\u0022:\u0022\u0022,\u0022options\u0022:[\u0022\u0022]},{\u0022name\u0022:\u0022 \\u0085 \u0022,\u0022options\u0022:[\u0022 \u0022,null,1]},{\u0022name\u0022:\u0022\\uFEFF\u0022,\u0022options\u0022:[]},{\u0022name\u0022:\u0022M\u00E0u\u0022,\u0022options\u0022:[]},{\u0022options\u0022:[\u0022\u0022,\u0022\u0110\u1ECF\u0022]},5],\u0022size_chart\u0022:\u0022 \\uFEFFabc \u0022},\u0022product_images\u0022:{\u0022images\u0022:[\u0022 vn-a \u0022,\u0022vn-a\u0022,\u0022HTTPS://x/y\u0022,\u0022http://x/y\u0022,\u0022\u0022,\u0022\\u00A0\u0022,\u0022\\u0085\u0022,\u0022\\uFEFF\u0022,1,null,\u0022\\u2003b\\u3000\u0022],\u0022video\u0022:{\u0022default_format\u0022:{\u0022url\u0022:\u0022https://v/1.mp4\u0022},\u0022formats\u0022:[{\u0022url\u0022:\u0022https://v/1.mp4\u0022},{\u0022url\u0022:\u0022\u0022},{\u0022url\u0022:\u0022 \u0022},\u0022x\u0022,{\u0022url\u0022:\u0022https://v/2.mp4\u0022}]}}}}",
+    "hash": "de31da157b036f6fcbbdd0b771943524bcea53885ab512b1266d890627fb1f20",
+    "summary": {
+      "itemId": "45",
+      "shopId": "9",
+      "name": "T\u00EAn",
+      "catId": "200",
+      "categoryIds": [
+        "100",
+        "200"
+      ],
+      "brandId": "0",
+      "priceMin": "-1",
+      "priceMax": "99999",
+      "priceBeforeDiscount": "3",
+      "tierCount": 3,
+      "modelCount": 3,
+      "imageUrls": [
+        "https://down-vn.img.susercontent.com/file/vn-a",
+        "HTTPS://x/y",
+        "http://x/y",
+        "https://down-vn.img.susercontent.com/file/\uFEFF",
+        "https://down-vn.img.susercontent.com/file/b"
+      ],
+      "videoUrls": [
+        "https://v/1.mp4",
+        " ",
+        "https://v/2.mp4"
+      ],
+      "sizeChartUrl": "https://down-vn.img.susercontent.com/file/\uFEFFabc"
+    }
+  },
+  {
+    "name": "tom-tat-gia-truoc-tu-model-va-price-max",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:46,\u0022shop_id\u0022:1,\u0022price_max\u0022:500000,\u0022price_before_discount\u0022:null,\u0022models\u0022:[{\u0022price\u0022:90000,\u0022price_before_discount\u0022:0}],\u0022tier_variations\u0022:null,\u0022categories\u0022:null,\u0022cat_id\u0022:0,\u0022brand_id\u0022:null,\u0022size_chart\u0022:null},\u0022product_images\u0022:{\u0022images\u0022:null,\u0022video\u0022:null}}}",
+    "hash": "84429eb098f53379681af0acb08d32b9462a9f5bab867587924d54519d9c0e46",
+    "summary": {
+      "itemId": "46",
+      "shopId": "1",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": "5",
+      "priceBeforeDiscount": "5",
+      "tierCount": 0,
+      "modelCount": 1,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "tom-tat-khong-co-gi",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:47}}}",
+    "hash": "187b455bba3c21a10323d86c3c516137e5b8b8e46b9bd57c3c8357a873aeca84",
+    "summary": {
+      "itemId": "47",
+      "shopId": "0",
+      "name": null,
+      "catId": null,
+      "categoryIds": [],
+      "brandId": null,
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "tom-tat-so-vuot-int64",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:48,\u0022shop_id\u0022:9223372036854775808,\u0022brand_id\u0022:-9223372036854775808,\u0022cat_id\u0022:9223372036854775807,\u0022price_min\u0022:1.0,\u0022price_max\u0022:1e5,\u0022price_before_discount\u0022:\u002299999999999999999999\u0022}}}",
+    "hash": "e6ce73ba1b259bc5bc48ed9b3bf87ae5859f544edbe52f01b4beda5b9f3ad65a",
+    "summary": {
+      "itemId": "48",
+      "shopId": "0",
+      "name": null,
+      "catId": "9223372036854775807",
+      "categoryIds": [],
+      "brandId": "-9223372036854775808",
+      "priceMin": null,
+      "priceMax": null,
+      "priceBeforeDiscount": null,
+      "tierCount": 0,
+      "modelCount": 0,
+      "imageUrls": [],
+      "videoUrls": [],
+      "sizeChartUrl": null
+    }
+  },
+  {
+    "name": "tom-tat-item-id-thap-phan-tu-choi",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:49.0,\u0022shop_id\u0022:1}}}",
+    "hash": "f2d71c146ae1dcbce826f62b675d12ec8cb0a515cca491bcd3bf50cd82b85950",
+    "summaryRejected": true
+  },
+  {
+    "name": "tom-tat-item-id-am-tu-choi",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:-50,\u0022shop_id\u0022:1}}}",
+    "hash": "670ab0d6e43b45c955db8dd07ede115b940dd06be79ad0a58eab50deb35dd0ba",
+    "summaryRejected": true
+  },
+  {
+    "name": "tom-tat-item-id-chuoi-co-dau-tu-choi",
+    "rejected": false,
+    "clean": "{\u0022data\u0022:{\u0022item\u0022:{\u0022item_id\u0022:\u0022 51\u0022,\u0022shop_id\u0022:1}}}",
+    "hash": "741a5e16461c05d8f9f671ce87d1d0fc80e28be7c5857b77a062faae07e200ed",
+    "summaryRejected": true
+  }
+]

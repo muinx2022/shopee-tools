@@ -117,6 +117,17 @@ public static class CoordinationRuntime
         return r is null ? null : new HubReloginState(r.Accepted, r.Status ?? "", r.Message ?? "");
     }
 
+    /// <summary>GĐ7: URL / token / mã máy Hub mà app đang dùng — app Harvest truyền cho extension <c>shopee-harvest</c> để
+    /// extension TỰ đẩy SP lên Hub (cùng token chung). null = chưa nối Hub. Đọc tươi mỗi lần (Reconnect đổi cấu hình giữa
+    /// chừng vẫn đúng). KHÔNG ghi giá trị này ra log.</summary>
+    public static Harvest.HarvestHubAccess? HarvestHubAccess()
+    {
+        if (Client is null) return null;
+        var cfg = ResolveClientConfig();
+        if (!cfg.IsConfigured || string.IsNullOrWhiteSpace(cfg.ApiToken)) return null;
+        return new Harvest.HarvestHubAccess(cfg.BaseUrl.TrimEnd('/'), cfg.ApiToken, MachineIdentity.Shared.MachineId);
+    }
+
     /// <summary>Cấu hình client→Hub đang dùng: máy này là Hub → trỏ thẳng localhost (nhanh, khỏi vòng qua
     /// tunnel); ngược lại dùng cấu hình client đã lưu.</summary>
     private static HubClientConfig ResolveClientConfig()

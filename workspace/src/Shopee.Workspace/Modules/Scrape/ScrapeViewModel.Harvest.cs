@@ -224,12 +224,15 @@ public sealed partial class ScrapeViewModel
             var runner = new ScrapeRunner(job.FilePath, "", braveExe: null, s.SourceUserData, bigSellerAccountName: label,
                 bigSellerAccountId: acct, useHubData: false, restWindow: settings.Rest, mode: RunnerMode.Harvest)
             {
-                Harvest = new HarvestRunOptions(rt.Sink, "",
+                // GĐ7: extension tự đẩy Hub (app mở trang + bấm nút hộp nổi bằng chuột thật) → sink chỉ ghi done khi Hub đã nhận;
+                // outbox không nhận mục mới (worker vẫn đẩy nốt mục cũ còn trong hàng).
+                Harvest = new HarvestRunOptions(rt.ExtensionSink, "",
                     HubStatusText: rt.HubStatusLineAsync,
                     RecordDone: true,
                     FailureSink: rt.Outbox,
                     RunId: runId,   // lỗi vĩnh viễn cần thấy ở ≥ 2 lượt bấm Chạy khác nhau
-                    SampleLink: () => HarvestRuntime.Current?.Outbox.LastSavedLink()),
+                    SampleLink: () => HarvestRuntime.Current?.Outbox.LastSavedLink(),
+                    ExtensionPush: new HarvestExtensionPush(rt.HubAccess)),
             };
             s.Jobs.TryUpdate(key, j => j.Runner = runner);
             RunnerCreated?.Invoke(runner);

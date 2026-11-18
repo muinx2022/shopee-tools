@@ -28,6 +28,9 @@ public enum RunnerMode
 /// mỗi lần dựng bộ xử lý dòng là một lượt.</param>
 /// <param name="SampleLink">Nguồn dự phòng của link mẫu kiểm chứng phiên (vd link SP lưu được gần nhất trong outbox) khi khối
 /// chưa lưu được dòng nào. null / trả null = không có mẫu.</param>
+/// <param name="ExtensionPush">GĐ7: khác null → mỗi dòng đi luồng "bấm nút Lấy dữ liệu" của hộp nổi extension (app mở trang,
+/// bấm chuột thật qua CDP), extension TỰ đẩy Hub kèm nguồn; <paramref name="Sink"/> chỉ ghi <c>done</c> khi extension báo Hub đã
+/// nhận (<see cref="ExtensionPushedHarvestSink"/>). null = luồng cũ (JSON về app, sink = outbox).</param>
 public sealed record HarvestRunOptions(
     IHarvestSink Sink,
     string ShopId,
@@ -37,4 +40,9 @@ public sealed record HarvestRunOptions(
     bool RecordDone = false,
     IHarvestFailureSink? FailureSink = null,
     string? RunId = null,
-    Func<string?>? SampleLink = null);
+    Func<string?>? SampleLink = null,
+    HarvestExtensionPush? ExtensionPush = null);
+
+/// <summary>GĐ7: tham số luồng "extension tự đẩy Hub". <paramref name="HubAccess"/> đọc tươi mỗi dòng (null = chưa nối Hub →
+/// dừng job như lỗi chỗ lưu).</summary>
+public sealed record HarvestExtensionPush(Func<HarvestHubAccess?> HubAccess);

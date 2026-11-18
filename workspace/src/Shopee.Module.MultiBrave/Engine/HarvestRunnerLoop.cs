@@ -170,7 +170,7 @@ internal static class HarvestRunnerLoop
 
         var processor = new HarvestRowProcessor(config, options, breaker, log);
         var host = new LoopHost(cdpPort, profileRoot, config, sheet, startRow, endRow.Value, totalLinks, onProgress,
-            options.BlockErrorCodes, accountHeader);
+            options.BlockErrorCodes, accountHeader, options);
         var tab = new System.Runtime.CompilerServices.StrongBox<int?>(tabId);
 
         try
@@ -273,6 +273,7 @@ internal static class HarvestRunnerLoop
             // Extension neo itemId cả đầu lẫn đuôi: link dính đuôi lạ ("…i.1.2%7DD") sẽ ra notProduct → làm sạch trước.
             var link = HarvestLinks.CleanProductUrl(item.Link);
             io.CurrentLinkIndex = index + 1;
+            io.CurrentSourceLink = item.Link;
 
             config.CurrentRow = rowNumber;
             config.RunnerPhase = "opening";
@@ -428,14 +429,31 @@ internal static class HarvestRunnerLoop
     /// <summary>Host thật của <see cref="HarvestRowProcessor"/>: đẩy setDisplayState + onProgress, hỏi CDP, chờ captcha.</summary>
     private sealed class LoopHost(
         int cdpPort, DirectoryInfo profileRoot, InstanceConfig config, string sheet, int startRow, int endRow,
-        int totalLinks, Action onProgress, IReadOnlyList<long>? blockErrorCodes, string accountHeader) : IHarvestRowHost, IHarvestLoopIo
+        int totalLinks, Action onProgress, IReadOnlyList<long>? blockErrorCodes, string accountHeader,
+        HarvestRunOptions options) : IHarvestRowHost, IHarvestLoopIo
     {
+        private static readonly Random ClickRandom = new();
+
         public DateTimeOffset Now => DateTimeOffset.Now;
 
+        public string? CurrentSourceLink { get; set; }
+
+        // GĐ7: ExtensionPush → app mở trang, bấm nút "Lấy dữ liệu" của hộp nổi bằng chuột thật qua CDP, extension tự đẩy Hub kèm
+        // nguồn (HarvestClickStep). Không thì bước cũ (JSON về app).
         public Task<HarvestStepResult> ExecuteStepAsync(string link, int rowNumber, string statusText, int? tabId,
-            CancellationToken cancellationToken) =>
-            ExtensionRunnerAutomation.ExecuteHarvestStepAsync(
-                cdpPort, profileRoot, link, rowNumber, statusText, config.DisplayName, tabId, blockErrorCodes, cancellationToken);
+            CancellationToken cancellationToken)
+        {
+            if (options.ExtensionPush is not { } push)
+                return ExtensionRunnerAutomation.ExecuteHarvestStepAsync(
+                    cdpPort, profileRoot, link, rowNumber, statusText, config.DisplayName, tabId, blockErrorCodes, cancellationToken);
+            if (push.HubAccess() is not { } hub)
+                return Task.FromResult(HarvestStepResult.Failure(
+                    $"{HarvestSinkFailure.Prefix}app chưa nối Hub — extension không có URL / token để tự đẩy dữ liệu (dòng {rowNumber} chưa tính xong).",
+                    tabId, link));
+            var request = new HarvestClickRequest(link, rowNumber, statusText, config.DisplayName, tabId, blockErrorCodes,
+                config.HubAccountId, sheet, CurrentSourceLink, options.RunId, hub);
+            return HarvestClickStep.RunAsync(new CdpHarvestClickIo(cdpPort, profileRoot), request, ClickRandom, cancellationToken);
+        }
 
         public Task PushDisplayStateAsync(int linkIndex, int? tabId, CancellationToken cancellationToken) =>
             LauncherRunnerLoop.PushDisplayStateAsync(
@@ -489,6 +507,8 @@ internal static class HarvestRunnerLoop
 internal interface IHarvestLoopIo
 {
     int CurrentLinkIndex { set; }
+    /// <summary>Link GỐC của dòng đang chạy (GĐ7: extension gửi Hub làm <c>sourceUrl</c>). Mặc định bỏ qua.</summary>
+    string? CurrentSourceLink { set { } }
     DateTimeOffset Now { get; }
     Task<HarvestStepResult> ExecuteStepAsync(string link, int rowNumber, string statusText, int? tabId, CancellationToken cancellationToken);
     Task PushDisplayStateAsync(int linkIndex, int? tabId, CancellationToken cancellationToken);

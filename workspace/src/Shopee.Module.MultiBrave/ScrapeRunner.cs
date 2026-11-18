@@ -293,6 +293,8 @@ public sealed class ScrapeRunner
                                 ? $"⛔ DỪNG JOB: {res.Reason} — lỗi chỗ lưu của máy này, không phải lỗi tk. Sửa rồi Tiếp tục (không dòng nào bị bỏ)."
                                 : Shopee.Core.Harvest.HarvestWorkbookLockedException.Is(res.Reason)
                                 ? $"⛔ DỪNG JOB: {res.Reason} Không phải lỗi tk, không dòng nào bị bỏ — Tiếp tục khi app Update xong."
+                                : Shopee.Core.Harvest.HarvestPanelClickFailure.Is(res.Reason)
+                                ? $"⛔ DỪNG JOB: {res.Reason}"
                                 : "⛔ DỪNG JOB: key proxy hết hạn — mọi tk Shopee dùng chung key này. Gia hạn key rồi chạy lại. "
                                 + $"[{res.Reason}]");
                         try { jobCts.Cancel(); } catch { }   // các khối P1/P2… đang chạy cũng dừng theo
@@ -524,7 +526,8 @@ public sealed class ScrapeRunner
         var msg = cfg.LastRunnerMessage ?? "";
         // Harvest: lưu dữ liệu lỗi → giữ NGUYÊN thông điệp (có tiền tố) để ScrapeFailurePolicy ra StopJob; đứng trước
         // các luật đọc chữ "captcha"/"proxy" (thông điệp lỗi đĩa có thể chứa bất kỳ chữ nào). Scrape không có tiền tố này.
-        if (Shopee.Core.Harvest.HarvestSinkFailure.Is(msg) || Shopee.Core.Harvest.HarvestWorkbookLockedException.Is(msg))
+        if (Shopee.Core.Harvest.HarvestSinkFailure.Is(msg) || Shopee.Core.Harvest.HarvestWorkbookLockedException.Is(msg)
+            || Shopee.Core.Harvest.HarvestPanelClickFailure.Is(msg))
             return new ChunkResult(true, msg, 0, false);
         var captcha = cfg.CaptchaError
             || msg.Contains("captcha", StringComparison.OrdinalIgnoreCase)

@@ -785,3 +785,33 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/tests/Shopee.Workspace.Tests/HarvestAppTests.cs:374-390`
 - **Bằng chứng**: nghiệm thu GĐ6 — đột biến bỏ hạn N ngày chỉ bị bắt nhờ `Assert.Contains` chuỗi mã nguồn.
 - **Vì sao không sửa ngay**: cần test hành vi cho job Harvest.
+
+### P-20261118-8 · [MỞ] · VỪA — Kênh `pdp-hook` → `pdp-store` dùng tên event cố định trên `document`: script bất kỳ trên shopee.vn giả được "get_pc của SP X", và từ GĐ7 ext đẩy thẳng dữ liệu đó lên Hub khi bấm tay
+- **Thấy lúc**: GĐ7 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/extensions/shopee-harvest/pdp-store.js:19-20,56`
+- **Bằng chứng**: phản biện GĐ7 — listener nhận mọi `CustomEvent` đúng tên, không kiểm nguồn. Đã giảm nhẹ bằng kiểm `item_id` + `shop_id` khớp URL; không có kênh bí mật an toàn giữa world MAIN và ISOLATED.
+- **Vì sao không sửa ngay**: giới hạn của kiến trúc extension; rủi ro thấp (cần script độc trên chính shopee.vn).
+
+### P-20261118-9 · [MỞ] · NHẸ — Hộp nổi "Lấy dữ liệu" luôn nằm trên trang SP (div light DOM, z-index cực đại) — script Shopee dễ phát hiện ext, phần ẩn mình của `pdp-hook` (GĐ2) mất giá trị ở profile tự động
+- **Thấy lúc**: GĐ7 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/extensions/shopee-harvest/panel.js`
+- **Bằng chứng**: phản biện GĐ7 — hệ quả của lựa chọn "kiểu BigSeller" của user.
+- **Vì sao không sửa ngay**: user đã chọn; theo dõi khi chạy thật.
+
+### P-20261118-10 · [MỞ] · NHẸ — Test WPF chập chờn: hai test cùng tạo `System.Windows.Application` trong một AppDomain, đỏ khoảng 1/3 lần chạy
+- **Thấy lúc**: GĐ7 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/tests/Shopee.Workspace.Tests/ScrapeMultiViewTests.cs:22`; `HarvestAppTests.cs:531`
+- **Bằng chứng**: gặp thật ở nghiệm thu GĐ7 và lần chạy của dev — "Cannot create more than one System.Windows.Application instance".
+- **Vì sao không sửa ngay**: dọn hạ tầng test là việc riêng.
+
+### P-20261118-11 · [MỞ] · NHẸ — Lỗi chỗ lưu / lỗi bấm nút (dừng job) vẫn xả chuỗi notProduct đang chờ vào tập lỗi trước khi dừng
+- **Thấy lúc**: GĐ7 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/Engine/HarvestRowProcessor.cs` (`FlushPendingNotProductAsync`)
+- **Bằng chứng**: **nghi ngờ** — đọc code; luật 2 lượt vẫn chặn bỏ qua vĩnh viễn.
+- **Vì sao không sửa ngay**: chưa dựng ca thật.
+
+### P-20261118-12 · [MỞ] · NHẸ — Test `SinhLaiFileKyVong_ChiKhiDatBienMoiTruong` là công cụ ghi đè `expected.json` nhưng nằm trong bộ test và được đếm là test đạt
+- **Thấy lúc**: GĐ7 plan harvest (nghiệm thu / phản biện)
+- **Ở đâu**: `workspace/tests/Shopee.Core.Tests/PdpCleanGoldenTests.cs:113-125`
+- **Bằng chứng**: nghiệm thu GĐ7 — chỉ chạy khi đặt `HARVEST_PDP_GOLDEN_WRITE=1`.
+- **Vì sao không sửa ngay**: thấp.

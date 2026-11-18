@@ -116,15 +116,16 @@ internal static partial class RunnerExtensionRpc
         public static HarvestDeliveryOutcome Answered(JsonElement value) => new(HarvestDelivery.Answered, value, "");
     }
 
-    /// <summary>Gửi MỘT lần: SW-direct trước, chỉ khi lệnh chưa tới SW mới thử qua popup. Không vòng lặp gọi lại.</summary>
+    /// <summary>Gửi MỘT lần: SW-direct trước, chỉ khi lệnh chưa tới SW mới thử qua popup. Không vòng lặp gọi lại.
+    /// <paramref name="method"/>: lệnh DÀI của extension (bước harvest, hoặc <c>prepareHarvestClick</c> của GĐ7).</summary>
     private static async Task<HarvestDeliveryOutcome> DeliverHarvestStepAsync(
-        int cdpPort, string extensionId, string payloadJson, CancellationToken ct)
+        int cdpPort, string extensionId, string payloadJson, CancellationToken ct, string method = "executeHarvestStep")
     {
         var payloadExpr = PayloadExpression(payloadJson);
         var timeoutMs = (int)HarvestStepReceiveTimeout.TotalMilliseconds;
 
         var sw = await TryHarvestOnServiceWorkerAsync(
-            cdpPort, extensionId, BuildServiceWorkerMethodExpression("executeHarvestStep", payloadExpr), timeoutMs, ct)
+            cdpPort, extensionId, BuildServiceWorkerMethodExpression(method, payloadExpr), timeoutMs, ct)
             .ConfigureAwait(false);
         if (sw.Kind != HarvestDelivery.NotDelivered)
             return sw;
@@ -155,7 +156,7 @@ internal static partial class RunnerExtensionRpc
         {
             popupResult = await CdpClient.SendAsync(socket, 2, "Runtime.evaluate", new
             {
-                expression = BuildPopupLongInvokeExpression("executeHarvestStep", payloadExpr),
+                expression = BuildPopupLongInvokeExpression(method, payloadExpr),
                 awaitPromise = true,
                 returnByValue = true,
             }, ct, receiveTimeoutMs: timeoutMs).ConfigureAwait(false);

@@ -1,10 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Shopee Harvest Runner",
-  "version": "1.0.0",
-  "description": "Mở link sản phẩm Shopee và lấy JSON chi tiết sản phẩm (get_pc) — điều khiển từ Shopee Harvest",
+  "version": "1.1.0",
+  "description": "Lấy JSON chi tiết sản phẩm Shopee (get_pc) bằng nút trên hộp nổi và đẩy thẳng lên Hub — bấm tay hoặc do app Shopee Harvest điều khiển",
   "permissions": ["storage", "tabs", "scripting", "activeTab", "alarms", "downloads"],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "*://shopee.vn/*",
+    "*://*.shopee.vn/*",
+    "https://api.schedra.net/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*"
+  ],
+  "optional_host_permissions": ["https://*/*"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
@@ -23,8 +30,19 @@
       "run_at": "document_start",
       "all_frames": false,
       "world": "MAIN"
+    },
+    {
+      "matches": ["*://shopee.vn/*", "*://*.shopee.vn/*"],
+      "js": ["panel-core.js", "panel.js"],
+      "run_at": "document_idle",
+      "all_frames": false,
+      "world": "ISOLATED"
     }
   ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "action": {
     "default_popup": "popup.html"
   }

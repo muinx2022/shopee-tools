@@ -30,6 +30,8 @@ public static class ScrapeFailurePolicy
         if (HarvestSinkFailure.Is(reason)) return ScrapeFailureAction.StopJob;
         // Harvest: app Update giữ khoá workbook quá hạn chờ → việc của máy, không phải tk (không cooldown / kẹt / bỏ dòng).
         if (HarvestWorkbookLockedException.Is(reason)) return ScrapeFailureAction.StopJob;
+        // Harvest GĐ7: bấm nút hộp nổi trượt liên tiếp (zoom / bị che) → việc của máy, không phải tk.
+        if (HarvestPanelClickFailure.Is(reason)) return ScrapeFailureAction.StopJob;
         if (isCaptcha) return ScrapeFailureAction.Quarantine;
         if (ProxyFailure.IsFleetWideProxyFailure(reason)) return ScrapeFailureAction.StopJob;
         return ScrapeFailureAction.Cooldown;
@@ -39,7 +41,8 @@ public static class ScrapeFailurePolicy
     public static string FleetWideReason(string? reason)
     {
         // Lý do sink có thể là thông điệp lỗi dài nhiều dòng (exception SQLite…) → một dòng, ≤120 ký tự cho ô Hub.
-        if (HarvestSinkFailure.Is(reason) || HarvestWorkbookLockedException.Is(reason)) return HarvestSinkFailure.ShortReason(reason!);
+        if (HarvestSinkFailure.Is(reason) || HarvestWorkbookLockedException.Is(reason) || HarvestPanelClickFailure.Is(reason))
+            return HarvestSinkFailure.ShortReason(reason!);
         if (reason is not null && reason.Contains("KEY_NOT_FOUND", StringComparison.OrdinalIgnoreCase))
             return "key proxy không tồn tại (KEY_NOT_FOUND) — sửa key rồi chạy lại";
         if (reason is not null && reason.Contains("KEY_EXPIRED", StringComparison.OrdinalIgnoreCase))

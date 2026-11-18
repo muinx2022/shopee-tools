@@ -51,7 +51,7 @@ public sealed partial class HarvestViewModel : ObservableObject
                 var err = rt.Worker.LastError ?? "";
                 UiThread.Post(() =>
                 {
-                    HubSaved = st.PushedTotal;
+                    HubSaved = st.HubReceivedTotal;   // GĐ7: outbox app đẩy + extension tự đẩy
                     HubPending = st.Pending;
                     HubFailed = st.Failed;
                     HubError = err;

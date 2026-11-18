@@ -26,7 +26,9 @@ public sealed record HarvestStepResult(
     string? PdpError,
     string? CapturedUrl = null,
     long? CapturedAtMs = null,
-    bool LoginRequired = false)
+    bool LoginRequired = false,
+    HarvestHubPush? HubPush = null,
+    bool ClickMissed = false)
 {
     /// <summary>Kết quả lỗi dựng phía C# (RPC không tới được / không có phản hồi) — mọi cờ false.</summary>
     public static HarvestStepResult Failure(string message, int? tabId, string? pageUrl) =>
@@ -74,7 +76,8 @@ public sealed record HarvestStepResult(
             GetScalarText(value, "pdpError"),
             GetString(value, "capturedUrl"),
             GetLong(value, "capturedAt"),
-            IsTrue(value, "loginRequired"));
+            IsTrue(value, "loginRequired"),
+            HarvestHubPush.Parse(value));
     }
 
     private static bool IsTrue(JsonElement root, string name) =>

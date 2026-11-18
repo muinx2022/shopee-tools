@@ -41,9 +41,10 @@ public static class HarvestOverlayText
         return $"{head}: {string.Join(" · ", parts)}";
     }
 
-    /// <summary><c>Hub: đã nhận P · chờ đẩy Q · lỗi R</c> — app cung cấp qua <c>HarvestRunOptions.HubStatusText</c>.</summary>
+    /// <summary><c>Hub: đã nhận P · app chờ đẩy Q · lỗi R</c> — app cung cấp qua <c>HarvestRunOptions.HubStatusText</c>. P gồm cả SP
+    /// extension tự đẩy (GĐ7); Q / R là hàng đợi phía app.</summary>
     public static string HubLine(long received, int pending, int failed) =>
-        $"Hub: đã nhận {received} · chờ đẩy {pending} · lỗi {failed}";
+        $"Hub: đã nhận {received} · app chờ đẩy {pending} · lỗi {failed}";
 
     /// <summary>Bảng tổng kết cuối khối (để nguyên trên trang, không ẩn). <paramref name="hubLine"/> null/rỗng → bỏ dòng Hub.</summary>
     public static string BlockDone(int fromRow, int toRow, string? account, int saved, int skippedOrFailed, string? hubLine)

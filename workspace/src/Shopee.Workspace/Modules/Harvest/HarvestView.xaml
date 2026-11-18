@@ -55,7 +55,7 @@
                 <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}"
-                                   ToolTip="Đã lưu Hub = số SP Hub đã nhận (cộng dồn) · Chờ đẩy = đã lưu trên máy, chưa lên Hub · Lỗi đẩy = Hub từ chối, bấm Đẩy lại mục lỗi"><Run Text="Hub: đã nhận " /><Run Text="{Binding HubSaved, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · chờ đẩy " /><Run Text="{Binding HubPending, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · lỗi " /><Run Text="{Binding HubFailed, Mode=OneWay}" FontWeight="SemiBold" /></TextBlock>
+                                   ToolTip="Đã nhận = số SP Hub đã nhận (cộng dồn, gồm cả SP extension tự đẩy) · App chờ đẩy = dữ liệu cũ còn trong hàng đợi của app, chưa lên Hub (hàng đợi của extension xem ở popup extension) · Lỗi = Hub từ chối mục của app, bấm Đẩy lại mục lỗi"><Run Text="Hub: đã nhận " /><Run Text="{Binding HubSaved, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · app chờ đẩy " /><Run Text="{Binding HubPending, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · lỗi " /><Run Text="{Binding HubFailed, Mode=OneWay}" FontWeight="SemiBold" /></TextBlock>
                         <TextBlock Text="{Binding HubError}" FontSize="10.5" MaxWidth="360"
                                    Foreground="{StaticResource TextMutedBrush}" TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding HubError}"

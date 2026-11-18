@@ -177,8 +177,9 @@ internal static class PageCdpHelper
         }
     }
 
-    /// <summary>Chọn TARGET ID của tab "làm việc" khớp hint nhất (ưu tiên đúng URL, rồi shopee), bỏ chrome/extension.</summary>
-    private static async Task<string?> FindWorkPageTargetIdAsync(
+    /// <summary>Chọn TARGET ID của tab "làm việc" khớp hint nhất (ưu tiên đúng URL, rồi shopee), bỏ chrome/extension.
+    /// GĐ7 dùng thêm để bấm nút hộp nổi (<see cref="CdpHarvestClickIo"/>).</summary>
+    internal static async Task<string?> FindWorkPageTargetIdAsync(
         int cdpPort, string pageUrlHint, CancellationToken cancellationToken)
     {
         var hint = (pageUrlHint ?? "").Trim();

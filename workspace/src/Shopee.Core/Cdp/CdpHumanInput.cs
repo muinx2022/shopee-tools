@@ -52,6 +52,16 @@ public sealed record HumanInputProfile(
         ClickHoldMinMs: 50, ClickHoldMaxMs: 140,
         AsciiKeyMinMs: 55, AsciiKeyMaxMs: 149,
         MouseEventsCarryWheelFields: false);
+
+    /// <summary>Harvest (GĐ7) — app bấm nút "Lấy dữ liệu" trên hộp nổi của extension shopee-harvest.</summary>
+    public static readonly HumanInputProfile HarvestPanel = new(
+        InitMouseXBase: 240, InitMouseXSpread: 420,
+        InitMouseYBase: 180, InitMouseYSpread: 280,
+        MoveStepMinMs: 8, MoveStepMaxMs: 22,
+        ClickBeforePressMinMs: 150, ClickBeforePressMaxMs: 420,
+        ClickHoldMinMs: 50, ClickHoldMaxMs: 130,
+        AsciiKeyMinMs: 50, AsciiKeyMaxMs: 130,
+        MouseEventsCarryWheelFields: false);
 }
 
 /// <summary>

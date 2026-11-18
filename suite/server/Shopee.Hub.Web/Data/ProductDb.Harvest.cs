@@ -148,6 +148,15 @@ WHERE item_id = $1 AND raw_hash = $2 AND harvested_at < $3;";
             var reason = ValidateHarvested(it, now, skew);
             if (reason is not null) { results.Add(new HarvestedProductResult(i, it?.ItemId ?? 0, false, false, reason)); continue; }
             var at = QuyMoc(it!.HarvestedAt!.Value, skew, now)!.Value;   // ValidateHarvested đã loại ca tràn số
+            // GĐ7: cắt khối riêng tư đã biết dù client nào gửi (extension dùng token chung). Raw sạch → giữ nguyên raw + hash
+            // của client; phải cắt → raw + hash tính lại. Cần cắt mà không cắt chắc được (khoá trùng) → từ chối mục.
+            HarvestRawGuard.Prepared raw;
+            try { raw = HarvestRawGuard.Prepare(it.RawJson!, it.RawHash!); }
+            catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
+            {
+                results.Add(new HarvestedProductResult(i, it.ItemId, false, false, "raw-private"));
+                continue;
+            }
 
             await using var tx = await conn.BeginTransactionAsync(ct);
             var applied = false;
@@ -170,8 +179,8 @@ WHERE item_id = $1 AND raw_hash = $2 AND harvested_at < $3;";
                     cmd.Parameters.Add(JsonbOf(it.ImageUrls));
                     cmd.Parameters.Add(JsonbOf(it.VideoUrls));
                     cmd.Parameters.Add(Param(it.SizeChartUrl));
-                    cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Jsonb, Value = it.RawJson! });
-                    cmd.Parameters.AddWithValue(it.RawHash!);
+                    cmd.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Jsonb, Value = raw.Raw });
+                    cmd.Parameters.AddWithValue(raw.Hash);
                     cmd.Parameters.Add(Param(machineId));
                     cmd.Parameters.Add(ParamTs(at));
                     applied = await cmd.ExecuteNonQueryAsync(ct) > 0;
@@ -180,7 +189,7 @@ WHERE item_id = $1 AND raw_hash = $2 AND harvested_at < $3;";
                 {
                     await using var cmd = new NpgsqlCommand(sqlBumpAt, conn, tx);
                     cmd.Parameters.AddWithValue(it.ItemId);
-                    cmd.Parameters.AddWithValue(it.RawHash!);
+                    cmd.Parameters.AddWithValue(raw.Hash);
                     cmd.Parameters.Add(ParamTs(at));
                     await cmd.ExecuteNonQueryAsync(ct);
                 }

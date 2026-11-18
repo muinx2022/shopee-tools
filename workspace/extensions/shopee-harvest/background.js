@@ -5,6 +5,8 @@
  * - chờ trang sản phẩm, lấy JSON get_pc mà trang tự tải (pdp-hook.js bắt, pdp-store.js giữ ở world ISOLATED);
  *   chưa có sau 30s thì tải lại trang MỘT lần rồi chờ thêm 30s. KHÔNG tự gọi get_pc.
  * - KHÔNG ghi tiến độ (lastCompletedRow): dữ liệu chỉ nằm trong kết quả trả về, launcher lưu outbox rồi mới ghi.
+ * - GĐ7: hộp nổi "Lấy dữ liệu" (panel.js) — bấm tay hoặc app bấm qua CDP; extension tự làm sạch + đẩy Hub, Hub chưa nhận
+ *   thì giữ trong hàng đợi riêng (xem mục "GĐ7" bên dưới).
  *
  * Phần chung (mở/reuse tab, chờ tải, settle URL, dò verify/captcha + chờ giải tay, dò lỗi mạng/proxy, overlay,
  * keepalive SW, runnerState, các hàm __launcher*) chép từ extensions/shopee-scrape/background.js (2026-11-15),
@@ -16,6 +18,9 @@ import { sleep } from "./shared/util.js";
 import { getTabSafe as getTabSafeRaw, waitForTabComplete } from "./shared/tab-wait.js";
 import { isTrafficErrorUrl, isVerifyUrl, isNetworkErrorPage } from "./shared/net-detect.js";
 import { extractProductIds, checkPdpBody, redactPrivate } from "./pdp-core.js";
+import { pushCaptured, outcomeOf } from "./click-flow.js";
+import { createHubQueue } from "./hub-queue.js";
+import { postBatch, postKnown, isHubConfigured, hubPermissionPattern, normalizeHubUrl } from "./hub-client.js";
 
 const OVERLAY_SCRIPT = "overlay.js";
 const TAB_LOAD_TIMEOUT_MS = 30_000;
@@ -117,6 +122,14 @@ try {
 
 // SW (re)spawn khi run vẫn đang chạy → bật lại keepalive ngay khi load.
 readState().then((s) => { if (s && s.running) startKeepAlive(); }).catch(() => {});
+
+// GĐ7: token Hub nằm trong chrome.storage.local → chỉ ngữ cảnh tin cậy của extension (SW, popup, trang Cài đặt) được đọc;
+// không content script nào của extension đọc storage (pdp-hook / pdp-store / panel / overlay chỉ nhắn tin). Trình duyệt
+// không hỗ trợ setAccessLevel cho storage.local thì bỏ qua (mặc định của trình duyệt giữ nguyên).
+try {
+  const r = chrome.storage.local.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" });
+  if (r && typeof r.catch === "function") r.catch(() => {});
+} catch (_) {}
 
 // KHÔNG có persistCompletedRow như shopee-scrape (Fix #3 bên đó ghi lastCompletedRow TRƯỚC khi trả kết quả):
 // với Harvest dữ liệu CHỈ nằm trong kết quả trả về — ghi sớm mà kết quả rớt (SW/CDP đứt) thì lần relaunch
@@ -598,7 +611,8 @@ globalThis.__launcherExecuteHarvestStep = async (payload) => {
 
   return finish(await (async () => {
   try {
-    abortRequested = false;
+    // keepAbort (luồng hộp nổi GĐ7): lệnh Dừng đến TRƯỚC khi bước bắt đầu vẫn phải có hiệu lực — không xoá cờ huỷ.
+    if (!payload?.keepAbort) abortRequested = false;
     startKeepAlive(); // đang chạy → chắc chắn giữ SW sống dù launcher chưa kịp set running.
     const link = normalizeLink(payload?.link);
     const rowNumber = Number(payload?.rowNumber) || 0;
@@ -621,11 +635,14 @@ globalThis.__launcherExecuteHarvestStep = async (payload) => {
       tabId = null;
     }
 
-    tabId = await openLinkInTab(tabId, link);
+    // GĐ7 — inPlace: bấm nút trên hộp nổi (tay, hoặc app bấm sau khi đã tự mở trang) → lấy ngay trên tab đang mở, KHÔNG
+    // điều hướng lại (điều hướng = tải lại trang, mất JSON đã bắt). Tab đã mất thì đi đường thường (mở link).
+    const inPlace = Boolean(payload?.inPlace) && tabId != null;
+    if (!inPlace) tabId = await openLinkInTab(tabId, link);
 
     // Khối thử tải lại: sau MỖI lần chờ đều kiểm stopped() — bước đã bị thay KHÔNG được điều hướng tab (tab dùng
     // chung, bước mới có thể đang dùng nó) về link cũ.
-    let loaded = await waitTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+    let loaded = inPlace || await waitTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
     if (!loaded && !stopped()) {
       const stillThere = await getTabSafe(tabId);
       if (stopped()) return stopResult({ tabId, pageUrl: link });
@@ -960,6 +977,371 @@ globalThis.__launcherExecuteHarvestStep = async (payload) => {
   })());
 };
 
+// ── GĐ7: hộp nổi "Lấy dữ liệu" (panel.js) + extension tự đẩy Hub ──────────────────────────────────────────────────
+// Hai cách dùng, CÙNG một nút:
+// - bấm tay (máy không có app Harvest): lấy JSON SP đang xem → làm sạch → đẩy Hub bằng cấu hình ở trang Cài đặt
+//   (chrome.storage.local "hubSettings"), KHÔNG gắn nguồn (không account / sheet / dòng).
+// - tự động (app Harvest): app gọi prepareHarvestClick (mở link + gửi ngữ cảnh: nguồn + cấu hình Hub của app) → chờ hộp sẵn
+//   sàng → app BẤM NÚT bằng chuột thật qua CDP (isTrusted) → hộp báo về đây → lấy + đẩy Hub kèm nguồn → app đọc kết quả bằng
+//   getHarvestClickResult(token).
+// Lấy JSON đi đúng __launcherExecuteHarvestStep (inPlace: không điều hướng lại) nên luật chờ / tải lại một lần / captcha /
+// notProduct / loginRequired / traffic giữ nguyên. Hub chưa nhận (mất mạng, 5xx) → hàng đợi BỀN (hub-queue.js) + alarm gửi lại.
+
+const HUB_SETTINGS_KEY = "hubSettings"; // { url, token, machineId } người dùng nhập ở options.html
+const HUB_AUTO_KEY = "hubAuto";         // cấu hình app Harvest truyền lần gần nhất — hàng đợi profile "auto" gửi lại bằng nó
+const QUEUE_ALARM = "hub-queue-retry";
+// Chờ hộp nổi báo sẵn sàng sau khi trang SP đã tải (content script document_idle + hỏi trạng thái).
+const PANEL_READY_WAIT_MS = 15_000;
+const PANEL_PING_TIMEOUT_MS = 3_000;
+const KNOWN_CACHE_MS = 60_000;
+// Kết quả lượt bấm giữ cho app đọc; quá hạn thì dọn.
+const CLICK_RUN_KEEP_MS = 15 * 60_000;
+
+const autoContexts = new Map(); // tabId → ngữ cảnh chế độ tự động (dùng MỘT lần, cho đúng SP app mở)
+const clickRuns = new Map();    // token → { state: "pending"|"running"|"done", tabId, at, result }
+const panelBusy = new Map();    // tabId → "capture" | "push"
+const lastByTab = new Map();    // tabId → kết quả gần nhất (hiện trên hộp, kể cả khi trang bị đẩy sang đăng nhập / xác minh)
+const knownCache = new Map();   // itemId → { at, value }
+
+const readLocalKey = async (key) => {
+  const got = await withTimeout(chrome.storage.local.get(key), CALL_TIMEOUT_MS, {});
+  return got?.[key] ?? null;
+};
+
+/** Extension có quyền host tới Hub chưa (manifest cấp sẵn Hub mặc định + localhost; URL khác xin ở trang Cài đặt). */
+const hasHubPermission = async (cfg) => {
+  const pattern = hubPermissionPattern(cfg?.url);
+  if (!pattern || !chrome.permissions?.contains) return false;
+  try { return Boolean(await timed(chrome.permissions.contains({ origins: [pattern] }))); } catch (_) { return false; }
+};
+
+const hubQueue = createHubQueue({
+  storage: {
+    get: (keys) => timed(chrome.storage.local.get(keys)),
+    set: (obj) => timed(chrome.storage.local.set(obj)),
+    remove: (keys) => timed(chrome.storage.local.remove(keys)),
+  },
+  send: async (profile, bodies) => {
+    const cfg = await readLocalKey(profile === "auto" ? HUB_AUTO_KEY : HUB_SETTINGS_KEY);
+    if (!isHubConfigured(cfg)) return { kind: "nocfg", reason: "Chưa cấu hình Hub." };
+    if (!(await hasHubPermission(cfg))) return { kind: "nocfg", reason: `Chưa cấp quyền truy cập ${normalizeHubUrl(cfg.url)}.` };
+    return postBatch(cfg, bodies);
+  },
+});
+
+/** Hẹn alarm gửi lại theo lùi dần của hàng đợi; hết mục chờ thì gỡ alarm. */
+const scheduleQueue = async () => {
+  try {
+    const at = await hubQueue.nextAlarmAt();
+    if (at > 0) chrome.alarms.create(QUEUE_ALARM, { when: Math.max(at, Date.now() + 1000) });
+    else chrome.alarms.clear(QUEUE_ALARM);
+  } catch (_) {}
+};
+
+const flushQueue = async (force = false) => {
+  let out = null;
+  try { out = await hubQueue.flush({ force }); } catch (_) {}
+  await scheduleQueue();
+  return out;
+};
+
+try {
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === QUEUE_ALARM) flushQueue(false);
+  });
+} catch (_) {}
+scheduleQueue();
+
+const queueStats = async () => {
+  try { return await hubQueue.stats(); } catch (_) { return { pending: 0, error: 0, bytes: 0 }; }
+};
+
+const pushDeps = {
+  manualConfig: () => readLocalKey(HUB_SETTINGS_KEY),
+  hasPermission: hasHubPermission,
+  queue: hubQueue,
+};
+
+const notifyPanel = async (tabId, patch) => {
+  try { await timed(chrome.tabs.sendMessage(tabId, { type: "HARVEST_PANEL_UPDATE", state: patch }), PANEL_PING_TIMEOUT_MS); } catch (_) {}
+};
+
+/** Hỏi Hub SP đã có chưa (cache 60 s); chỉ khi bấm tay — chế độ tự động app đã tự hỏi trước khi mở trang. */
+const knownFor = async (cfg, itemId) => {
+  const cached = knownCache.get(itemId);
+  if (cached && Date.now() - cached.at < KNOWN_CACHE_MS) return cached.value;
+  if (!(await hasHubPermission(cfg))) return { status: "error", reason: "chưa cấp quyền truy cập Hub" };
+  const r = await postKnown(cfg, [itemId]);
+  if (r.kind !== "ok") return { status: "error", reason: r.reason };
+  const hit = r.items.find((x) => String(x.itemId) === String(itemId));
+  const value = hit ? { status: "yes", at: hit.harvestedAt } : { status: "no" };
+  knownCache.set(itemId, { at: Date.now(), value });
+  return value;
+};
+
+const panelStatus = async (tabId, href) => {
+  const ctx = autoContexts.get(tabId) || null;
+  const cfg = ctx ? ctx.hub : await readLocalKey(HUB_SETTINGS_KEY);
+  const configured = isHubConfigured(cfg);
+  const ids = isShopeeProductUrl(href) ? extractProductIds(href) : null;
+  let known = { status: "off" };
+  if (configured && ids && !ctx) {
+    try { known = await knownFor(cfg, ids.itemId); } catch (e) { known = { status: "error", reason: e?.message || String(e) }; }
+  }
+  return {
+    hubConfigured: configured,
+    auto: ctx ? { sheet: ctx.sheet, rowNo: ctx.rowNo } : null,
+    known,
+    queue: await queueStats(),
+    busy: panelBusy.get(tabId) || null,
+    last: lastByTab.get(tabId) || null,
+  };
+};
+
+const gcClickRuns = () => {
+  const cutoff = Date.now() - CLICK_RUN_KEEP_MS;
+  for (const [token, run] of clickRuns) if (run.at < cutoff) clickRuns.delete(token);
+};
+
+/**
+ * Một lượt "Lấy dữ liệu" trên tab: lấy JSON (bước inPlace) → đẩy Hub (pushCaptured) → báo hộp + ghi kết quả cho app (token).
+ * KHÔNG ném.
+ */
+const runCapture = async ({ tabId, link, ctx, token }) => {
+  gcClickRuns();
+  panelBusy.set(tabId, "capture");
+  if (token) clickRuns.set(token, { state: "running", tabId, at: Date.now() });
+  notifyPanel(tabId, { busy: "capture", last: null });
+  let result;
+  try {
+    const step = await globalThis.__launcherExecuteHarvestStep({
+      link,
+      tabId,
+      inPlace: true,
+      keepAbort: true,
+      rowNumber: ctx?.rowNumber ?? 0,
+      statusText: ctx?.statusText,
+      instanceName: ctx?.instanceName,
+      blockErrorCodes: ctx?.blockErrorCodes,
+    });
+    if (step?.ok) {
+      panelBusy.set(tabId, "push");
+      notifyPanel(tabId, { busy: "push" });
+    }
+    result = await pushCaptured(step, ctx, pushDeps);
+  } catch (e) {
+    result = harvestResult({ message: e?.message || String(e), tabId, pageUrl: link });
+  } finally {
+    panelBusy.delete(tabId);
+  }
+  const outcome = outcomeOf(result);
+  if (outcome.status === "queued") scheduleQueue();
+  const itemId = result?.itemId != null ? String(result.itemId) : null;
+  if (outcome.status === "saved" && itemId) knownCache.set(itemId, { at: Date.now(), value: { status: "yes", at: new Date().toISOString() } });
+  const last = { ...outcome, at: Date.now(), itemId };
+  lastByTab.set(tabId, last);
+  if (token) clickRuns.set(token, { state: "done", tabId, at: Date.now(), result });
+  await notifyPanel(tabId, {
+    busy: null,
+    last,
+    queue: await queueStats(),
+    ...(outcome.status === "saved" ? { known: { status: "yes", at: new Date().toISOString() } } : {}),
+  });
+  // Bấm tay: bước đã bật keepalive — trả về đúng trạng thái launcher (không giữ SW sống mãi).
+  if (!ctx) readState().then(syncKeepAlive).catch(() => {});
+  return result;
+};
+
+/** Hộp báo người dùng / app vừa bấm "Lấy dữ liệu" (cú bấm isTrusted). */
+const onPanelClick = (tabId, href) => {
+  if (panelBusy.has(tabId)) return { accepted: false, reason: "Đang xử lý lần bấm trước." };
+  const ctx = autoContexts.get(tabId) || null;
+  if (ctx) autoContexts.delete(tabId); // ngữ cảnh tự động chỉ dùng MỘT lần
+  const ids = isShopeeProductUrl(href) ? extractProductIds(href) : null;
+  const useCtx = ctx && (!ctx.expectItemId || ids?.itemId === ctx.expectItemId) ? ctx : null;
+  // Bấm tay = ý định mới của người dùng: lệnh Dừng cũ của launcher không áp cho cú bấm này. Cú bấm của lượt app thì giữ cờ
+  // (Dừng giữa lúc chờ bấm phải dừng thật).
+  if (!useCtx) abortRequested = false;
+  if (ctx && !useCtx) {
+    // Trang đã sang SP khác trước khi bấm: lượt của app không có kết quả hợp lệ (lỗi tạm), cú bấm này thành bấm tay.
+    clickRuns.set(ctx.token, {
+      state: "done", tabId, at: Date.now(),
+      result: harvestResult({ message: `Trang đã chuyển sang SP khác (${ids?.itemId ?? "?"}) trước khi bấm.`, tabId, pageUrl: href }),
+    });
+  }
+  runCapture({ tabId, link: useCtx ? useCtx.link : href, ctx: useCtx, token: useCtx?.token ?? null });
+  return { accepted: true };
+};
+
+/** Hỏi hộp trên tab: sẵn sàng bấm chưa + toạ độ nút. null = không trả lời / chưa sẵn sàng. */
+const pingPanel = async (tabId, patch) => {
+  try {
+    return await timed(chrome.tabs.sendMessage(tabId, { type: "HARVEST_PANEL_PING", state: patch }), PANEL_PING_TIMEOUT_MS);
+  } catch (_) {
+    return null;
+  }
+};
+
+const autoPanelPatch = (ctx) => ({ hubConfigured: isHubConfigured(ctx.hub), auto: { sheet: ctx.sheet, rowNo: ctx.rowNo } });
+
+/** Mức phóng to của TAB (zoom trình duyệt, 1 = 100%) — app không quy đổi được toạ độ khi khác 1. null = không đọc được. */
+const tabZoom = async (tabId) => {
+  if (!chrome.tabs.getZoom) return null;
+  try {
+    const z = await timed(chrome.tabs.getZoom(tabId), PANEL_PING_TIMEOUT_MS);
+    return Number.isFinite(z) ? z : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+/** Lời đáp "hộp sẵn sàng" gửi app: toạ độ nút + các hệ số phóng to để app tự kiểm. */
+const readyAnswer = async (token, tabId, res, pageUrl) => ({
+  ready: true,
+  token,
+  tabId,
+  rect: res.rect,
+  viewport: res.viewport,
+  pageUrl: res.href || pageUrl,
+  itemId: res.itemId,
+  zoom: await tabZoom(tabId),
+  pageScale: res.pageScale ?? null,
+  devicePixelRatio: res.devicePixelRatio ?? null,
+});
+
+/** Lệnh Dừng tới giữa lúc chuẩn bị lượt bấm: không lấy, không gửi Hub; trả keepalive về đúng trạng thái launcher. */
+const abortedPrepare = (token, tabId, link) => {
+  autoContexts.delete(tabId);
+  const result = harvestResult({ aborted: true, message: "Đã hủy.", tabId, pageUrl: link });
+  clickRuns.set(token, { state: "done", tabId, at: Date.now(), result });
+  readState().then(syncKeepAlive).catch(() => {});
+  return { ready: false, token, tabId, result };
+};
+
+/** Chờ hộp sẵn sàng cho ĐÚNG SP app mở. Trang không còn là trang SP (đăng nhập / xác minh / lỗi) → thôi chờ ngay. */
+const waitPanelReady = async (tabId, ctx) => {
+  const deadline = Date.now() + PANEL_READY_WAIT_MS;
+  while (Date.now() < deadline) {
+    if (abortRequested) return null;
+    const url = await getCurrentTabUrl(tabId, "");
+    if (url && !isShopeeProductUrl(url)) return null;
+    const res = await pingPanel(tabId, autoPanelPatch(ctx));
+    if (res?.ready && (!ctx.expectItemId || res.itemId === ctx.expectItemId)) return res;
+    await sleep(500);
+  }
+  return null;
+};
+
+/**
+ * Chế độ tự động — bước 1: mở link, gắn ngữ cảnh cho tab, chờ hộp sẵn sàng. Trả { ready:true, token, tabId, rect, viewport,
+ * pageUrl, itemId } để app bấm chuột thật vào nút; hoặc { ready:false, token, tabId, result } khi KHÔNG có hộp để bấm (trang
+ * không phải SP, xác minh / captcha, đăng nhập, lỗi mạng, hộp không lên) — khi đó đã chạy bước lấy tại chỗ để ra đúng loại
+ * kết quả như bước cũ (lấy được thì vẫn tự đẩy Hub kèm nguồn).
+ */
+globalThis.__launcherPrepareHarvestClick = async (payload) => {
+  abortRequested = false;
+  startKeepAlive();
+  const link = normalizeLink(payload?.link);
+  const token = String(payload?.token || "");
+  if (!link || !token) return { ready: false, token, result: harvestResult({ message: "Thiếu link hoặc mã lượt bấm." }) };
+  const c = payload?.context || {};
+  const ctx = {
+    auto: true,
+    token,
+    link,
+    expectItemId: extractProductIds(link)?.itemId ?? null,
+    hub: c.hub || null,
+    accountId: c.accountId ?? null,
+    sheet: c.sheet ?? null,
+    rowNo: Number.isInteger(c.rowNo) ? c.rowNo : null,
+    url: c.url || link,
+    sourceUrl: c.sourceUrl ?? null,
+    runId: c.runId ?? null,
+    rowNumber: Number(payload?.rowNumber) || 0,
+    statusText: payload?.statusText,
+    instanceName: payload?.instanceName,
+    blockErrorCodes: payload?.blockErrorCodes,
+  };
+  // Hàng đợi profile "auto" gửi lại bằng cấu hình này (app không ở đó để truyền lại).
+  if (isHubConfigured(ctx.hub)) {
+    try { await timed(chrome.storage.local.set({ [HUB_AUTO_KEY]: ctx.hub })); } catch (_) {}
+  }
+
+  let tabId = payload?.tabId ? Number(payload.tabId) : null;
+  if (tabId && !(await getTabSafe(tabId))) tabId = null;
+  try {
+    tabId = await openLinkInTab(tabId, link);
+  } catch (e) {
+    return { ready: false, token, result: harvestResult({ message: `Không mở được link: ${e?.message || e}`, pageUrl: link }) };
+  }
+  for (const [t, old] of autoContexts) if (t === tabId || old.token === token) autoContexts.delete(t);
+  autoContexts.set(tabId, ctx); // gắn TRƯỚC khi chờ: hộp hỏi trạng thái ngay khi trang vừa tải
+  clickRuns.set(token, { state: "pending", tabId, at: Date.now() });
+
+  let loaded = await waitTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+  if (abortRequested) return abortedPrepare(token, tabId, link);
+  if (!loaded) loaded = await waitTabComplete(tabId, TAB_LOAD_TIMEOUT_MS);
+  if (abortRequested) return abortedPrepare(token, tabId, link);
+  let pageUrl = link;
+  if (loaded) pageUrl = await waitForUrlStable(tabId);
+  if (abortRequested) return abortedPrepare(token, tabId, link);
+  const ready = loaded ? await waitPanelReady(tabId, ctx) : null;
+  if (abortRequested) return abortedPrepare(token, tabId, link);
+  if (ready) return readyAnswer(token, tabId, ready, pageUrl);
+
+  autoContexts.delete(tabId);
+  const result = await runCapture({ tabId, link, ctx, token });
+  return { ready: false, token, tabId, result };
+};
+
+/** Chế độ tự động — bước 3: kết quả của lượt bấm. state: pending (chưa nhận cú bấm) | running | done | unknown (SW đã khởi
+ * động lại / token lạ). */
+globalThis.__launcherGetHarvestClickResult = async (payload) => {
+  gcClickRuns();
+  const run = clickRuns.get(String(payload?.token || ""));
+  if (!run) return { state: "unknown" };
+  return run.state === "done" ? { state: "done", result: run.result } : { state: run.state, tabId: run.tabId };
+};
+
+/** Toạ độ nút để app bấm lại (lần bấm trước không tới). */
+globalThis.__launcherPanelButtonRect = async (payload) => {
+  const tabId = Number(payload?.tabId);
+  const ctx = autoContexts.get(tabId);
+  if (!tabId || !ctx) return { ready: false, reason: "Không còn ngữ cảnh lượt bấm trên tab." };
+  const res = await pingPanel(tabId, autoPanelPatch(ctx));
+  return res?.ready ? readyAnswer(ctx.token, tabId, res, res.href) : { ready: false, reason: res?.reason || "Hộp không trả lời." };
+};
+
+// Tin từ hộp nổi / popup / trang Cài đặt (KHÔNG phải lệnh của launcher).
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message) return undefined;
+  const reply = (p) => { p.then((r) => sendResponse(r), (e) => sendResponse({ ok: false, error: String(e?.message || e) })); return true; };
+  if (message.type === "HARVEST_PANEL") {
+    const tabId = sender?.tab?.id;
+    if (!tabId) return undefined;
+    if (message.op === "status") return reply(panelStatus(tabId, String(message.href || sender.tab.url || "")));
+    if (message.op === "click") { sendResponse(onPanelClick(tabId, String(message.href || sender.tab.url || ""))); return undefined; }
+    if (message.op === "openOptions") { try { chrome.runtime.openOptionsPage(); } catch (_) {} sendResponse({ ok: true }); return undefined; }
+    return undefined;
+  }
+  if (message.type === "HUB_QUEUE") {
+    if (message.op === "stats") return reply(queueStats());
+    if (message.op === "list") return reply(hubQueue.list());
+    if (message.op === "retry") return reply((async () => { const n = await hubQueue.requeueErrors(); const out = await flushQueue(true); return { requeued: n, ...out }; })());
+    return undefined;
+  }
+  if (message.type === "HUB_TEST") {
+    return reply((async () => {
+      const cfg = await readLocalKey(HUB_SETTINGS_KEY);
+      if (!isHubConfigured(cfg)) return { kind: "nocfg", reason: "Chưa đủ URL / token / mã máy." };
+      if (!(await hasHubPermission(cfg))) return { kind: "nocfg", reason: `Chưa cấp quyền truy cập ${normalizeHubUrl(cfg.url)}.` };
+      knownCache.clear();
+      return postKnown(cfg, ["1"]);
+    })());
+  }
+  return undefined;
+});
+
 globalThis.__launcherCheckBeforeNextLink = async (payload) => {
   const tabId = payload?.tabId ? Number(payload.tabId) : null;
   if (!tabId || !(await getTabSafe(tabId))) {
@@ -998,6 +1380,7 @@ globalThis.__launcherHideOverlay = async ({ tabId }) => {
 
 globalThis.__launcherAbortStep = async () => {
   abortRequested = true;
+  autoContexts.clear(); // lượt bấm chưa tới thì thôi — cú bấm sau đó (nếu có) là bấm tay
   return { ok: true };
 };
 
@@ -1082,12 +1465,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           hasHarvestStep:
             typeof globalThis.__launcherExecuteHarvestStep === "function" &&
             typeof globalThis.__launcherApplyFormConfig === "function",
+          hasHarvestClick: typeof globalThis.__launcherPrepareHarvestClick === "function",
         },
       };
     }
 
     const handlers = {
       executeHarvestStep: globalThis.__launcherExecuteHarvestStep,
+      prepareHarvestClick: globalThis.__launcherPrepareHarvestClick,
+      getHarvestClickResult: globalThis.__launcherGetHarvestClickResult,
+      panelButtonRect: globalThis.__launcherPanelButtonRect,
       checkBeforeNextLink: globalThis.__launcherCheckBeforeNextLink,
       setDisplayState: globalThis.__launcherSetDisplayState,
       getRunnerState: globalThis.__launcherGetRunnerState,

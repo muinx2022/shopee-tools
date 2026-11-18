@@ -7,8 +7,14 @@ namespace Shopee.Core.Harvest;
 
 /// <summary>Số liệu outbox cho UI. <see cref="PushedTotal"/> = số mục Hub đã nhận (ok=true, đã xoá khỏi hàng đợi),
 /// <see cref="AppliedTotal"/> = phần trong đó Hub thật sự ghi (không tính trùng hash / bản cũ) — cả hai CỘNG DỒN bền trong
-/// DB outbox (qua các lần mở app).</summary>
-public sealed record HarvestOutboxStats(int Pending, int Failed, long PushedTotal, long AppliedTotal);
+/// DB outbox (qua các lần mở app). <see cref="ExtensionSavedTotal"/> (GĐ7) = số SP extension tự đẩy mà Hub đã nhận (cộng dồn
+/// bền, tăng ở <see cref="HarvestOutbox.RecordPushedByExtensionAsync"/>); <see cref="Pending"/> / <see cref="Failed"/> chỉ là hàng
+/// đợi PHÍA APP (hàng đợi của extension nằm trong trình duyệt).</summary>
+public sealed record HarvestOutboxStats(int Pending, int Failed, long PushedTotal, long AppliedTotal, long ExtensionSavedTotal = 0)
+{
+    /// <summary>Tổng SP Hub đã nhận: outbox app đẩy + extension tự đẩy.</summary>
+    public long HubReceivedTotal => PushedTotal + ExtensionSavedTotal;
+}
 
 /// <summary>Một mục đang chờ đẩy. <see cref="Version"/> tăng mỗi lần dòng (account, sheet, row) bị ghi đè bằng bản mới
 /// hơn: worker chỉ xoá / đánh lỗi đúng phiên bản nó đã gửi — bản mới lưu đè trong lúc lô đang bay không bị xoá oan.</summary>
@@ -189,6 +195,73 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
         }, cancellationToken);
     }, cancellationToken);
 
+    /// <summary>
+    /// GĐ7 — extension đã TỰ đẩy SP lên Hub và Hub đã nhận: ghi trong MỘT giao dịch (không có mục <c>pending</c> nào — JSON
+    /// không qua outbox): khoá SP (<see cref="HarvestItemKey.ForSaved"/>) vào <c>done</c> khi <see cref="HarvestedItem.RecordDone"/>,
+    /// gỡ các khoá đó khỏi tập lỗi vĩnh viễn, link mẫu = link SP; xoá mục outbox CŨ của chính SP này đang ở trạng thái lỗi đẩy
+    /// (Hub đã có bản mới hơn — để lại thì <see cref="DoneKeys"/> coi SP là "Hub từ chối" và lượt sau lấy lại mãi). Mục
+    /// <c>pending</c> chờ đẩy bình thường giữ nguyên (worker đẩy; bản cũ hơn Hub tự bỏ qua theo <c>harvested_at</c>).
+    /// </summary>
+    public Task RecordPushedByExtensionAsync(HarvestedItem item, CancellationToken cancellationToken) => Task.Run(() =>
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        IReadOnlyList<string> doneKeys = item.RecordDone
+            ? HarvestItemKey.ForSaved(item.SourceLink, item.ItemId, item.ShopeeShopId)
+            : [];
+        var sample = string.IsNullOrWhiteSpace(item.Url) ? null : HarvestPayloadCleaner.StripInvalidText(item.Url);
+        EnsureInitialized();
+        WithWriteRetry(con =>
+        {
+            using var tx = con.BeginTransaction();
+            if (sample is not null)
+            {
+                using var meta = con.CreateCommand();
+                meta.Transaction = tx;
+                meta.CommandText = "INSERT INTO meta (key, value) VALUES ('sample_link', $v) ON CONFLICT (key) DO UPDATE SET value = excluded.value;";
+                meta.Parameters.AddWithValue("$v", sample);
+                meta.ExecuteNonQuery();
+            }
+            foreach (var key in doneKeys)
+            {
+                using var done = con.CreateCommand();
+                done.Transaction = tx;
+                done.CommandText = """
+                    INSERT INTO done (item_key, saved_at, item_id) VALUES ($k, $now, $item)
+                    ON CONFLICT (item_key) DO UPDATE SET saved_at = excluded.saved_at, item_id = excluded.item_id;
+                    """;
+                done.Parameters.AddWithValue("$k", key);
+                done.Parameters.AddWithValue("$item", item.ItemId);
+                done.Parameters.AddWithValue("$now", NowMs());
+                done.ExecuteNonQuery();
+                using var unfail = con.CreateCommand();
+                unfail.Transaction = tx;
+                unfail.CommandText = "DELETE FROM failed WHERE item_key = $k;";
+                unfail.Parameters.AddWithValue("$k", key);
+                unfail.ExecuteNonQuery();
+            }
+            using (var count = con.CreateCommand())
+            {
+                // Bộ đếm "Hub đã nhận" phía extension (UI cộng với số outbox đẩy) — cùng giao dịch, bền qua các lần mở app.
+                count.Transaction = tx;
+                count.CommandText = """
+                    INSERT INTO counters (key, value) VALUES ('ext_saved', 1)
+                    ON CONFLICT (key) DO UPDATE SET value = counters.value + excluded.value;
+                    """;
+                count.ExecuteNonQuery();
+            }
+            if (doneKeys.Count > 0)
+            {
+                using var stale = con.CreateCommand();
+                stale.Transaction = tx;
+                stale.CommandText = "DELETE FROM pending WHERE item_id = $item AND status = 'failed';";
+                stale.Parameters.AddWithValue("$item", item.ItemId);
+                stale.ExecuteNonQuery();
+            }
+            tx.Commit();
+            return 0;
+        }, cancellationToken);
+    }, cancellationToken);
+
     // ── Tập SP đã lấy xong ─────────────────────────────────────────────────────────────────────────────────────────
 
     /// <summary>Tập khoá SP đã lưu xong (toàn cục). <paramref name="savedSince"/> khác null → chỉ khoá lưu (lần gần nhất) từ mốc
@@ -350,11 +423,12 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
             SELECT (SELECT count(*) FROM pending WHERE status = 'pending'),
                    (SELECT count(*) FROM pending WHERE status = 'failed'),
                    (SELECT coalesce(sum(CASE WHEN key = 'pushed' THEN value END), 0) FROM counters),
-                   (SELECT coalesce(sum(CASE WHEN key = 'applied' THEN value END), 0) FROM counters);
+                   (SELECT coalesce(sum(CASE WHEN key = 'applied' THEN value END), 0) FROM counters),
+                   (SELECT coalesce(sum(CASE WHEN key = 'ext_saved' THEN value END), 0) FROM counters);
             """;
         using var rd = cmd.ExecuteReader();
         rd.Read();
-        return new HarvestOutboxStats(rd.GetInt32(0), rd.GetInt32(1), rd.GetInt64(2), rd.GetInt64(3));
+        return new HarvestOutboxStats(rd.GetInt32(0), rd.GetInt32(1), rd.GetInt64(2), rd.GetInt64(3), rd.GetInt64(4));
     }
 
     /// <summary>Đưa mọi mục <c>failed</c> về <c>pending</c> (đến hạn ngay, xoá đếm thử). Trả số mục.</summary>

@@ -396,6 +396,10 @@ internal static partial class RunnerExtensionRpc
             "probe" => profile.ProbeExpression,
             "executeScrapeStep" => $"(async () => globalThis.__launcherExecuteScrapeStep({payloadExpression}))()",
             "executeHarvestStep" => $"(async () => globalThis.__launcherExecuteHarvestStep({payloadExpression}))()",
+            // GĐ7: luồng bấm nút hộp nổi (extension shopee-harvest).
+            "prepareHarvestClick" => $"(async () => globalThis.__launcherPrepareHarvestClick({payloadExpression}))()",
+            "getHarvestClickResult" => $"(async () => globalThis.__launcherGetHarvestClickResult({payloadExpression}))()",
+            "panelButtonRect" => $"(async () => globalThis.__launcherPanelButtonRect({payloadExpression}))()",
             "setDisplayState" => $"(async () => globalThis.__launcherSetDisplayState({payloadExpression}))()",
             "getRunnerState" => "(async () => globalThis.__launcherGetRunnerState())()",
             "applyFormConfig" => $"(async () => globalThis.__launcherApplyFormConfig({payloadExpression}))()",

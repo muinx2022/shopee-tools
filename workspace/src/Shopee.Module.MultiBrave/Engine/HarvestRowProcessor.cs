@@ -64,6 +64,7 @@ internal sealed class HarvestRowProcessor
     private int _sessionChecks;
     private bool _sessionProven;      // link mẫu vừa chứng minh phiên ổn trong chuỗi notProduct đang chạy → khỏi kiểm lại tới khi chuỗi bị cắt
     private bool _noSampleChain;      // chuỗi đang chạy đã gặp "không có link mẫu" → phần còn lại của chuỗi bỏ qua (đã log một lần)
+    private int _clickMisses;         // GĐ7: số dòng LIÊN TIẾP app bấm nút hộp nổi mà extension không nhận
 
     public HarvestRowProcessor(InstanceConfig config, HarvestRunOptions options, HarvestPdpBreaker breaker, Action<string> log)
     {
@@ -99,6 +100,19 @@ internal sealed class HarvestRowProcessor
     {
         var rowNumber = row.RowNumber;
         var decision = HarvestStepPolicy.Decide(step, _breaker);
+        // GĐ7: bấm trượt có hệ thống (zoom / bị che…) thì dòng nào cũng hỏng như nhau → N dòng liên tiếp thì dừng CẢ job (lỗi của
+        // máy, không phải tài khoản / SP); chưa tới ngưỡng thì là lỗi dòng tạm như thường.
+        if (step.ClickMissed)
+        {
+            if (++_clickMisses >= HarvestPanelClickFailure.BreakerThreshold)
+            {
+                Book.DiscardPendingPdpRows();
+                _config.RunnerPhase = "error";
+                _config.LastRunnerMessage = HarvestPanelClickFailure.Message(rowNumber, _clickMisses, step.Message);
+                return new(HarvestRowNext.Stop, decision.Action, false, step.TabId ?? row.TabId);
+            }
+        }
+        else _clickMisses = 0;
         // Kết quả dòng KHÁC notProduct (lưu / lỗi dòng / pdpError) cắt chuỗi notProduct → các dòng đang chờ là lỗi dòng thật.
         if (decision.Action is HarvestStepAction.Save or HarvestStepAction.PdpError
             || (decision.Action == HarvestStepAction.RowFailed && !IsNotProduct(decision.Action, step)))
@@ -194,6 +208,16 @@ internal sealed class HarvestRowProcessor
             }
         }
 
+        // GĐ7: bước báo lỗi CHỖ LƯU (vd app chưa nối Hub nên extension không tự đẩy được) → dừng job như sink lỗi (StopJob: nhả
+        // tài khoản nguyên vẹn, không bỏ dòng).
+        if (decision.Action == HarvestStepAction.RowFailed && HarvestSinkFailure.Is(step.Message))
+        {
+            Book.DiscardPendingPdpRows();
+            _config.RunnerPhase = "error";
+            _config.LastRunnerMessage = step.Message;
+            return new(HarvestRowNext.Stop, decision.Action, false, step.TabId ?? row.TabId);
+        }
+
         // SW chết không hồi / CDP đứt → ném lỗi extension để phiên tự mở lại profile rồi chạy tiếp ĐÚNG dòng
         // (như Scrape). Chỉ xét lỗi dòng không có pdpError: có pdpError là extension đã trả lời nên SW còn sống.
         if (decision.Action == HarvestStepAction.RowFailed && string.IsNullOrWhiteSpace(step.PdpError) &&
@@ -207,7 +231,55 @@ internal sealed class HarvestRowProcessor
         var tabId = step.TabId ?? row.TabId;
         var saved = false;
 
-        if (decision.Action == HarvestStepAction.Save)
+        if (decision.Action == HarvestStepAction.Save && _options.ExtensionPush is not null && step.HubPush is not { IsSaved: true })
+        {
+            // GĐ7: extension lấy được JSON nhưng Hub CHƯA nhận → dòng không xong, KHÔNG ghi done (lượt sau lấy lại / bỏ qua nếu Hub
+            // đã có). Bắt được JSON = IP / phiên ổn (cầu dao đã ghi nhận như dòng lưu được).
+            _config.CaptchaError = false;
+            var push = step.HubPush;
+            var why = HarvestStepPolicy.SafeForClassify(push?.Reason);
+            switch (push?.Status)
+            {
+                case HarvestHubPush.Invalid:
+                {
+                    // Nội dung JSON của RIÊNG SP này hỏng (như HarvestItemRejectedException ở outbox) → lỗi VĨNH VIỄN (luật 2 lượt).
+                    var reason = "Dữ liệu SP không xử lý được: " + why;
+                    Book.RowFailed(rowNumber, reason);
+                    _log($"Dòng {rowNumber}: {reason}");
+                    await RecordPermanentAsync(rowNumber,
+                        HarvestItemKey.ForSaved(row.SourceLink, step.ItemId!.Value, step.ShopId), reason, cancellationToken).ConfigureAwait(false);
+                    break;
+                }
+                case HarvestHubPush.Rejected:
+                {
+                    // Hub từ chối dữ liệu: SP Hub từ chối KHÔNG tính là đã có (GĐ6) → lỗi tạm, lượt sau lấy lại.
+                    var reason = $"Hub từ chối SP {step.ItemId}: {why} — lượt sau lấy lại.";
+                    Book.RowFailed(rowNumber, reason);
+                    _log($"Dòng {rowNumber}: {reason}");
+                    break;
+                }
+                case HarvestHubPush.Queued:
+                {
+                    // Hub tạm lỗi: SP nằm BỀN trong hàng đợi của extension (tự gửi lại) — app không ghi done vì chưa chắc Hub
+                    // nhận; lượt sau hỏi Hub (known) thấy đã có thì bỏ qua, chưa có thì lấy lại (không mất SP).
+                    var reason = $"Hub chưa nhận SP {step.ItemId} ({why}) — đã vào hàng đợi của extension, tự gửi lại; lượt sau kiểm lại.";
+                    Book.RowFailed(rowNumber, reason);
+                    _log($"Dòng {rowNumber}: {reason}");
+                    break;
+                }
+                default:
+                    // Không gửi được mà cũng không giữ được (chưa cấu hình / thiếu quyền / token sai / hàng đợi đầy) hoặc extension
+                    // không báo kết quả gửi Hub → lỗi CHỖ LƯU: dừng job (StopJob), dòng không bị bỏ.
+                    _config.RunnerPhase = "error";
+                    _config.LastRunnerMessage = HarvestSinkFailure.Message(rowNumber, new InvalidOperationException(
+                        "extension không gửi được Hub: " + (push is null ? "extension không báo kết quả gửi Hub (extension cũ?)" : why)));
+                    return new(HarvestRowNext.Stop, decision.Action, false, tabId);
+            }
+            if (_sourceMonitor.Record(step.Source) is { } pushReloadRatio)
+                _log($"⚠ Tỉ lệ phải tải lại trang mới bắt được get_pc cao: {pushReloadRatio:P0} trong 20 dòng gần nhất " +
+                    "— trang ít tự gọi get_pc lần đầu, mỗi dòng tốn thêm một lần tải.");
+        }
+        else if (decision.Action == HarvestStepAction.Save)
         {
             _config.CaptchaError = false;
             _config.RunnerPhase = "saving";

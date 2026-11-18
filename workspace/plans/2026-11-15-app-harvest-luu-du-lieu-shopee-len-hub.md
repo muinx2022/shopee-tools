@@ -445,6 +445,87 @@ sheet**. SP đã có dữ liệu trên Hub (lấy từ file/sheet/máy khác) th
 - [ ] Hub nhận `account_id = "harvest"`, `sheet` = tên sheet.
 - [ ] Build Release 0 warning hai solution; test Core / Workspace / Hub / JS xanh.
 
+### GĐ7 — Ext bấm nút kiểu BigSeller, ext tự đẩy Hub
+
+User chốt (2026-11-18): extension `shopee-harvest` có **hộp nổi** góc dưới phải trên trang SP, bấm **"Lấy dữ liệu"** thì mới lấy
+JSON và **đẩy thẳng lên Hub bằng token chung** (`X-Api-Token` + `X-Machine-Id`). Hai cách dùng cùng một nút: (a) cài tay trên máy
+không có app, người dùng tự bấm — SP lưu **không gắn nhóm** (không account / sheet / dòng); (b) app Harvest mở trang rồi **tự bấm
+đúng nút đó bằng chuột thật qua CDP**, ext tự đẩy Hub kèm nguồn, app chỉ chờ kết quả.
+
+1. **Hộp nổi** (`panel-core.js` thuần + `panel.js`, content script ISOLATED `document_idle`, Shadow DOM đóng): hiện SP đã có trên
+   Hub chưa + lấy lúc nào (`known`, chỉ khi bấm tay), số chờ gửi / lỗi của hàng đợi ext, kết quả lần bấm gần nhất; chưa cấu hình
+   Hub → nút "Mở cài đặt". Chỉ nhận cú bấm `isTrusted`. Bị đẩy khỏi trang SP (đăng nhập / xác minh / không phải SP) → hộp vẫn hiện
+   đúng loại lỗi trong 2 phút. SPA đổi SP → hỏi lại trạng thái.
+2. **Lấy JSON**: đi đúng `__launcherExecuteHarvestStep` với `inPlace` (không điều hướng lại — giữ JSON đã bắt; chưa bắt thì chờ / tải
+   lại một lần / captcha / notProduct / loginRequired / traffic như cũ).
+3. **Làm sạch phía ext** (`pdp-clean.js`): bản JS của `HarvestPayloadCleaner` + phần tóm tắt của `ShopeePdpParser`; ra GIỐNG HỆT
+   C# (cùng chuỗi, cùng `raw_hash`, cùng cột). Bảng ký tự bị escape của System.Text.Json (.NET 8, UnsafeRelaxed) sinh từ chính .NET.
+   Bảo đảm bằng file kỳ vọng chung `tests/Shopee.Core.Tests/Fixtures/pdp-clean/{cases,expected}.json` (7 fixture thật + ca tổng
+   hợp): test C# giữ bản C# đúng file, test JS giữ bản JS đúng file.
+4. **Gửi Hub** (`hub-client.js`, `click-flow.js`): request y như client C# (`{machineId, clientNow, items:[HarvestedProductItem]}`,
+   số nguyên ghi đúng từng chữ số). Kết quả gắn vào kết quả bước: `hub.status` = `saved` | `queued` | `rejected` | `invalid` |
+   `failed`. Quyền host tối thiểu: Shopee + Hub mặc định + localhost; Hub khác xin quyền lúc bấm Lưu ở trang Cài đặt.
+5. **Hàng đợi ext** (`hub-queue.js`, `chrome.storage.local`, mỗi mục một khoá): mất mạng / 5xx / 503 / 408 / 429 / 401 (bấm tay)
+   → giữ, lùi dần 30 s → 15 phút (`chrome.alarms`), không trần số lần; 200 + mục ok=false / 4xx dữ liệu → "lỗi", hiện ở popup,
+   nút "Gửi lại"; 413 nhiều mục → gửi lẻ. Trần 100 mục / 6 MB / 2 MB một mục — đầy thì báo lỗi, không âm thầm bỏ mục cũ.
+   - (Sau phản biện GĐ7) Lùi dần **theo từng profile** (`manual` = cấu hình trang Cài đặt, `auto` = cấu hình app truyền): profile
+     gặp lỗi tạm / token / chưa cấu hình chỉ hoãn chính nó, profile kia gửi tiếp (trước đây mục `manual` đầu hàng chặn cả `auto`).
+     Sau 413, profile đó gửi lẻ cho tới khi hết mục chờ (không xen lô / lẻ).
+   - Bấm tay mà Hub từ chối ngay lần gửi đầu (ok=false / 4xx) → SP vẫn vào hàng đợi ở trạng thái **lỗi** kèm lý do (popup hiện,
+     "Gửi lại" được); chế độ tự động thì không (app tự lấy lại lượt sau).
+   - Hub của app là `http://<máy khác>` (vd IP LAN) → báo đúng lý do: ext không gửi token qua http ngoài localhost, cần https hoặc
+     localhost. `chrome.storage.local.setAccessLevel(TRUSTED_CONTEXTS)` lúc nạp SW (content script của ext không đọc storage).
+6. **Chế độ tự động** (`HarvestClickStep`, `RunnerExtensionRpc.HarvestClick`): RPC `prepareHarvestClick` (mở link, gắn ngữ cảnh
+   `account_id="harvest"`, sheet, dòng, link sạch + link gốc, RunId, Hub URL / token / mã máy của app; chờ hộp ≤ 15 s; trả toạ độ
+   nút đã cuộn vào tầm nhìn; không có hộp → ext tự chạy bước tại chỗ, trả đúng loại kết quả) → app bấm chuột thật
+   (`Input.dispatchMouseEvent`, trong 40% giữa nút) → `getHarvestClickResult(token)` tới khi xong (cú bấm không tới sau 8 s → hỏi
+   lại toạ độ, bấm lại, tối đa 2 lần; trần 600 s). Luật GĐ5–GĐ6 giữ nguyên (`HarvestRowProcessor`): `saved` → sink
+   `ExtensionPushedHarvestSink` chỉ ghi `done` + link mẫu (outbox không nhận mục mới, worker vẫn đẩy nốt mục cũ); `queued` /
+   `rejected` → lỗi tạm, KHÔNG `done`; `invalid` → lỗi vĩnh viễn (luật 2 lượt); `failed` / ext không báo kết quả Hub / app chưa
+   nối Hub → dừng job như lỗi chỗ lưu.
+   - (Sau phản biện GĐ7) **Dừng** tới giữa lúc prepare (tải trang / chờ URL / chờ hộp) → trả kết quả `aborted`, KHÔNG chạy bước lấy,
+     KHÔNG đẩy Hub; bước lấy của luồng hộp nổi không tự xoá cờ huỷ (`keepAbort`); keepalive trả về theo trạng thái launcher.
+   - (Sau phản biện GĐ7) **Chống bấm trượt có hệ thống**: khi PING, hộp kiểm `elementFromPoint(tâm nút)` đúng là hộp (bị che → không
+     sẵn sàng, `covered: …`), báo `visualViewport.scale` + `devicePixelRatio`; background báo zoom tab (`chrome.tabs.getZoom`). Zoom tab
+     / thu phóng trang khác 100% → app KHÔNG bấm (không quy đổi chắc được toạ độ CSS px ↔ toạ độ chuột CDP), báo rõ "đặt zoom 100%".
+     Cầu dao app: `HarvestPanelClickFailure.BreakerThreshold` = 3 dòng LIÊN TIẾP bấm trượt (không nhận / bị che / ngoài khung nhìn /
+     zoom / CDP bấm lỗi) → dừng CẢ job (StopJob, tiền tố "Bấm nút hộp nổi lỗi: ", không chữ captcha / verify / proxy), không bỏ dòng;
+     dòng khác chen vào thì đếm lại.
+   - (Sau nghiệm thu GĐ7) Ba số Hub trên màn Harvest + dòng "Hub: …" của bảng tổng kết khối: "đã nhận" = outbox app đẩy + SP ext tự đẩy
+     (bộ đếm bền `counters.ext_saved`, tăng cùng giao dịch ghi `done`); "app chờ đẩy" / "lỗi" = hàng đợi PHÍA APP.
+   - **Hub sập ở chế độ tự động — chọn "ext giữ trong hàng đợi riêng + app coi là lỗi tạm"**: SP đã lấy không mất (nằm bền ở ext,
+     tự gửi khi Hub lên); app không ghi `done` vì chưa chắc Hub nhận (hàng đợi ext có thể bị xoá / đầy / bị từ chối) — lượt sau
+     hỏi Hub (`known`): đã có thì bỏ qua, chưa có thì lấy lại. Đổi lại: Hub sập lâu thì lượt sau có thể lấy lại vài SP còn kẹt.
+7. **Hub**: batch nhận mục không nguồn (đã có từ GĐ1: không trường nguồn nào → chỉ upsert `harvested_products`). Thêm
+   `HarvestRawGuard`: cắt `data.account` → `{}`, `product_shipping` chỉ còn nơi gửi, bỏ `shop_vouchers` dù client nào gửi; raw sạch
+   thì giữ nguyên raw + `raw_hash` của client; phải cắt thì tính lại hash từ chuỗi đã cắt; cần cắt mà có khoá trùng → từ chối mục
+   (`raw-private`). KHÔNG chuyển sang "Hub luôn tự tính `raw_hash`": hợp đồng hiện có (và test) coi hash là định danh nội dung do
+   client gửi; hai client đã chứng minh ra cùng chuỗi + cùng hash nên không lệch.
+8. **Cài máy khác**: Load unpacked từ `extensions\shopee-harvest` cạnh `ShopeeHarvest.exe` hoặc thư mục giải nén từ zip; nhập Hub
+   URL / token / mã máy ở trang Cài đặt (README trong thư mục ext). `manifest.json` 1.1.0.
+9. **JSON giả từ script trang** (phản biện GĐ7, ngoài phạm vi ban đầu): script bất kỳ trên shopee.vn bắn được event `get_pc` giả vào
+   `pdp-store`. Kênh bí mật hook ↔ store **KHÔNG làm**: mọi đường trao bí mật giữa world MAIN và ISOLATED đi qua DOM / `window`
+   (event, `postMessage`, `MessagePort` chuyển qua `postMessage`) mà script trang nghe được — tin `postMessage` gửi lúc
+   `document_start` tới SAU khi script inline đầu tiên của trang có thể đã gắn listener; bí mật gửi kèm từng tin thì trang đọc được
+   ngay ở tin đầu. Chặn rẻ thay thế: trước khi đẩy Hub, `item_id` VÀ `shop_id` của JSON phải khớp URL trang đang xem (shop lệch →
+   `rejected`, lỗi tạm, không vào hàng đợi — có thể là link cũ của SP đổi shop); Hub vẫn kiểm `item_id`/`shop_id` khớp mục.
+
+**Tiêu chí nghiệm thu GĐ7:**
+- [ ] Trang SP Shopee có hộp nổi góc dưới phải (Shadow DOM đóng); trang không phải SP thì không có; bấm bằng script trang
+      (`isTrusted=false`) không làm gì (test JS).
+- [ ] Bấm tay: SP lên Hub **không** có dòng `harvested_product_sources`; hộp báo "✓ Đã lưu Hub"; chưa cấu hình → hộp nhắc mở cài
+      đặt; mất mạng / Hub 503 → "đã vào hàng đợi", alarm gửi lại, popup có số chờ / lỗi + "Gửi lại".
+- [ ] `pdp-clean.js` ra cùng chuỗi + cùng `raw_hash` + cùng cột với C# trên 7 fixture thật + mọi ca tổng hợp (cả ca bị từ chối).
+- [ ] JSON gửi Hub không còn `data.account` (khác `{}`), `delivery_address`, `shop_vouchers`; Hub tự cắt nếu client gửi lên (test
+      Postgres thật); raw sạch thì Hub giữ nguyên hash client.
+- [ ] Chế độ tự động: app chờ hộp, bấm đúng toạ độ nút bằng `Input.dispatchMouseEvent`, bấm lại khi trượt, ánh xạ kết quả ext sang
+      các loại kết quả của app; `done` chỉ ghi khi Hub đã nhận; Hub sập không ghi `done`, không mất SP (test IO giả).
+- [ ] Không có token / URL Hub viết cứng trong code ext; quyền host chỉ Shopee + Hub (+ localhost).
+- [ ] Dừng giữa lúc chờ hộp → không lấy, không đẩy Hub; mục `manual` hỏng không chặn mục `auto` (và ngược lại); hộp bị che / trang
+      zoom ≠ 100% → không bấm, báo rõ; 3 dòng liên tiếp bấm trượt → dừng job; ba số Hub tính cả SP ext tự đẩy (test).
+- [ ] Build Release 0 warning (workspace, Hub); test Core / Workspace / Hub / JS xanh; chạy thật trên Brave (bấm tay + app) do user
+      xác nhận.
+
 ## 4. Tiêu chí nghiệm thu
 
 - [ ] `dotnet build workspace/ShopeeWorkspace.sln -c Release` và `dotnet build suite/server/ShopeeHub.sln` xanh; toàn bộ
@@ -578,3 +659,16 @@ sheet**. SP đã có dữ liệu trên Hub (lấy từ file/sheet/máy khác) th
 - Test: Core 1235 (gồm test của phiên đăng SP), Workspace 369, Hub 362 (Postgres thật), JS 110. 1 vòng nghiệm thu ĐẠT,
   1 vòng phản biện (không chặn; đã sửa nhận cột link, `shope.ee`, chữ không phải link, SP Hub từ chối, kẹp ô số, test
   vòng sheet).
+
+### GĐ7 — Ext bấm nút kiểu BigSeller, ext tự đẩy Hub (2026-11-18): XONG (chưa chạy thật trên Brave, chưa deploy Hub)
+
+- Extension `shopee-harvest` 1.1.0: hộp nổi góc dưới trang SP (Shadow DOM đóng), nút "Lấy dữ liệu" → làm sạch JSON
+  bằng `pdp-clean.js` (giống hệt bản C#, file kỳ vọng chung `Fixtures/pdp-clean/expected.json`) → gửi thẳng Hub bằng
+  token chung nhập ở trang Cài đặt. Bấm tay không gắn nguồn. Hàng đợi riêng trong ext (lùi dần theo từng profile,
+  413 gửi lẻ, 4xx vào danh sách lỗi có "Gửi lại"). Quyền host chỉ Shopee / Hub / localhost. README tiếng Việt.
+- Chế độ tự động: app truyền ngữ cảnh + cấu hình Hub qua RPC, bấm nút bằng chuột CDP; hộp kiểm nút bị che, app từ
+  chối bấm khi zoom ≠ 100%; 3 dòng liên tiếp bấm trượt thì dừng job. `saved` → ghi `done` (cùng giao dịch, đếm
+  `ext_saved`); `queued` (Hub sập) → lỗi tạm. Dừng giữa lúc chờ hộp không còn đẩy Hub.
+- Hub: `HarvestRawGuard` tự cắt khối riêng tư client gửi sót và tính lại hash; batch nhận mục không nguồn.
+- Test: JS 235, Core 1434 (+1 skip của phiên đăng SP), Workspace 399, Hub 382 (Postgres thật). 1 vòng nghiệm thu ĐẠT,
+  1 vòng phản biện (không chặn; đã sửa Dừng lúc chờ hộp, chặn đầu hàng đợi, bấm trượt/zoom, số Hub, 4xx bấm tay).

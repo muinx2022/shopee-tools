@@ -34,7 +34,7 @@ test("có đủ file JS (chống xanh giả khi đường dẫn hỏng)", () => 
 });
 
 // Script THƯỜNG (content script / executeScript files) — còn lại đều nạp dạng ES module (SW type=module, popup).
-const CLASSIC_SCRIPTS = new Set(["pdp-hook.js", "pdp-store.js", "overlay.js"]);
+const CLASSIC_SCRIPTS = new Set(["pdp-hook.js", "pdp-store.js", "overlay.js", "panel-core.js", "panel.js"]);
 
 test("mọi file .js parse được đúng loại (module qua node --check stdin, script thường qua vm.Script)", () => {
   // KHÔNG dùng `node --check file.js` cho module: Node 24 tự dò loại file và BỎ QUA lỗi cú pháp ở file .js có
@@ -87,7 +87,7 @@ test("import tương đối trỏ tới file có thật và có export đúng t�
 test("manifest: tên/phiên bản, file trỏ tới có thật, hook MAIN + kho ISOLATED, document_start trên host Shopee", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
   assert.equal(manifest.name, "Shopee Harvest Runner");
-  assert.equal(manifest.version, "1.0.0");
+  assert.equal(manifest.version, "1.1.0");
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.background.type, "module");
   assert.ok(fs.existsSync(path.join(ROOT, manifest.background.service_worker)));
@@ -95,19 +95,45 @@ test("manifest: tên/phiên bản, file trỏ tới có thật, hook MAIN + kho 
   assert.ok(fs.existsSync(path.join(ROOT, manifest.action.default_popup)));
 
   const cs = manifest.content_scripts;
-  assert.equal(cs.length, 2);
+  assert.equal(cs.length, 3);
   const byFile = Object.fromEntries(cs.map((c) => [c.js.join(","), c]));
   assert.equal(byFile["pdp-hook.js"]?.world, "MAIN");
   assert.equal(byFile["pdp-store.js"]?.world, "ISOLATED");
+  // GĐ7: hộp nổi — panel-core.js nạp TRƯỚC panel.js (panel.js đọc globalThis.__shopeeHarvestPanelCore), world ISOLATED.
+  assert.equal(byFile["panel-core.js,panel.js"]?.world, "ISOLATED");
+  assert.equal(byFile["panel-core.js,panel.js"]?.run_at, "document_idle");
   for (const c of cs) {
-    assert.equal(c.run_at, "document_start");
+    if (!c.js.includes("panel.js")) assert.equal(c.run_at, "document_start");
     assert.equal(c.all_frames, false);
     assert.deepEqual(c.matches, ["*://shopee.vn/*", "*://*.shopee.vn/*"]);
     for (const f of c.js) assert.ok(fs.existsSync(path.join(ROOT, f)), f);
   }
 
-  const html = fs.readFileSync(path.join(ROOT, "popup.html"), "utf8");
-  for (const m of html.matchAll(/<script[^>]*src="([^"]+)"/g)) assert.ok(fs.existsSync(path.join(ROOT, m[1])), m[1]);
+  for (const page of ["popup.html", "options.html"]) {
+    const html = fs.readFileSync(path.join(ROOT, page), "utf8");
+    for (const m of html.matchAll(/<script[^>]*src="([^"]+)"/g)) assert.ok(fs.existsSync(path.join(ROOT, m[1])), m[1]);
+  }
+  assert.equal(manifest.options_ui?.page, "options.html");
+});
+
+test("manifest GĐ7: quyền host tối thiểu — Shopee + Hub (+ localhost khi máy là Hub), không <all_urls>; Hub khác xin lúc Lưu", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
+  assert.deepEqual(manifest.host_permissions, [
+    "*://shopee.vn/*", "*://*.shopee.vn/*", "https://api.schedra.net/*", "http://localhost/*", "http://127.0.0.1/*",
+  ]);
+  assert.equal(JSON.stringify(manifest).includes("<all_urls>"), false);
+  assert.deepEqual(manifest.optional_host_permissions, ["https://*/*"]);
+});
+
+test("GĐ7: không có token / URL Hub viết cứng trong code extension (cấu hình nằm ở chrome.storage.local)", () => {
+  const hits = [];
+  for (const f of extFiles([".js", ".html"])) {
+    const src = fs.readFileSync(f, "utf8");
+    // URL Hub chỉ được nằm ở manifest (quyền host) và chữ gợi ý (placeholder) của options.html — không nằm trong code.
+    if (f.endsWith(".js") && /schedra/i.test(src)) hits.push(`${f}: URL Hub viết cứng`);
+    for (const m of src.matchAll(/\b(?:token|apiToken|X-Api-Token)["']?\s*[:=]\s*["']([^"']+)["']/gi)) hits.push(`${f}: ${m[0]}`);
+  }
+  assert.deepEqual(hits, []);
 });
 
 test("không còn dấu vết BigSeller / tên extension cũ / content.js", () => {
@@ -124,11 +150,16 @@ test("không còn dấu vết BigSeller / tên extension cũ / content.js", () =
 test("background: có __launcherExecuteHarvestStep và probe trả cờ hasHarvestStep", () => {
   const src = fs.readFileSync(path.join(ROOT, "background.js"), "utf8");
   assert.match(src, /globalThis\.__launcherExecuteHarvestStep\s*=/);
+  // GĐ7: 3 lệnh của chế độ tự động có hàm + có trong bảng handler (C# gọi tên lệnh qua SW / popup).
+  for (const [fn, method] of [["__launcherPrepareHarvestClick", "prepareHarvestClick"], ["__launcherGetHarvestClickResult", "getHarvestClickResult"], ["__launcherPanelButtonRect", "panelButtonRect"]]) {
+    assert.match(src, new RegExp(`globalThis\\.${fn}\\s*=`));
+    assert.match(src, new RegExp(`${method}: globalThis\\.${fn},`));
+  }
   assert.match(src, /hasHarvestStep:\s*\n?\s*typeof globalThis\.__launcherExecuteHarvestStep === "function"/);
 });
 
 test("background/popup KHÔNG gọi thẳng get_pc (không fetch, không URL get_pc) — chống thêm lại đường gọi thẳng", () => {
-  for (const name of ["background.js", "popup.js"]) {
+  for (const name of ["background.js", "popup.js", "options.js", "click-flow.js", "hub-queue.js", "panel.js", "panel-core.js"]) {
     const src = fs.readFileSync(path.join(ROOT, name), "utf8");
     // Bỏ comment để không dính chữ "fetch"/"get_pc" trong giải thích.
     const code = src.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
