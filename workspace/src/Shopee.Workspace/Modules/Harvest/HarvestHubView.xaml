@@ -3,10 +3,10 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:b="clr-namespace:Shopee.Workspace.Behaviors"
              x:Name="Root">
-    <!-- Cài đặt → Kết nối Hub (CHỈ app Harvest): URL + token (ô mật khẩu, token đã lưu không hiện lại) + mã máy. -->
-    <ScrollViewer VerticalScrollBarVisibility="Auto">
-        <StackPanel Margin="18,14,18,14" MaxWidth="760" HorizontalAlignment="Left">
-            <TextBlock Style="{StaticResource h1}" Text="Kết nối Hub" />
+    <!-- Nhóm "Kết nối Hub" của màn Cài đặt (HarvestSettingsView, CHỈ app Harvest): URL + token (ô mật khẩu, token đã lưu không
+         hiện lại) + mã máy. KHÔNG có ScrollViewer riêng — màn Cài đặt cuộn chung (ScrollViewer lồng nuốt lăn chuột). -->
+        <StackPanel>
+            <TextBlock Text="Kết nối Hub" FontWeight="SemiBold" FontSize="15" />
             <TextBlock Style="{StaticResource caption}" TextWrapping="Wrap" Margin="0,3,0,4"
                        Text="App lưu dữ liệu SP lên Hub và hỏi Hub SP nào đã có. Nhập URL + token Hub (token dùng chung của cả hệ thống), bấm Lưu — app nối lại ngay rồi tự kiểm tra, không phải mở lại." />
             <TextBlock Style="{StaticResource caption}" TextWrapping="Wrap" Margin="0,0,0,12" Text="{Binding ConfigNote}" />
@@ -61,5 +61,4 @@
                 </StackPanel>
             </Border>
         </StackPanel>
-    </ScrollViewer>
 </UserControl>

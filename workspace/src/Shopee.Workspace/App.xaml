@@ -50,8 +50,8 @@
             <DataTemplate DataType="{x:Type hv:HarvestViewModel}">
                 <hv:HarvestView />
             </DataTemplate>
-            <DataTemplate DataType="{x:Type hv:HarvestHubViewModel}">
-                <hv:HarvestHubView />
+            <DataTemplate DataType="{x:Type hv:HarvestSettingsViewModel}">
+                <hv:HarvestSettingsView />
             </DataTemplate>
         </ResourceDictionary>
     </Application.Resources>

@@ -575,6 +575,10 @@ null → `known` không chạy, extension không nhận được cấu hình Hub
      hẹn của mục chờ (`ResetBackoffAsync` / `HarvestOutbox.ClearDeferrals`) rồi đẩy ngay; N5 `ObjectDisposedException` lúc Reconnect →
      lỗi tạm "kết nối Hub vừa đổi" (không phải "lỗi outbox"); N6 bỏ `xUnit1031` (test dựng màn: VM quét file async trước, view dựng
      trên STA).
+5. **Gom cấu hình Harvest về MỘT màn "Cài đặt"** (`HarvestSettingsView` / `HarvestSettingsViewModel`, chỉ app Harvest): Kết nối Hub (đầu màn,
+   nút "Cài đặt Hub" mở thẳng màn này) · Hiệu năng (giữ: CPU/RAM → `BraveFleet.MaxConcurrentWindows` chặn số Brave của Harvest) · Thu phóng ·
+   Kho tài khoản Shopee & Proxy · Extension (`extensions\shopee-harvest` cạnh exe, "Mở thư mục", hướng dẫn Load unpacked); bỏ AI ở Harvest,
+   app Scrape / Update giữ màn `LocalSettingsView` cũ có AI.
 
 **Tiêu chí nghiệm thu GĐ7.1:**
 - [ ] Ô số không xén chữ, không đè hàng nút ở 1100 / 1900 px × 100 / 125 % (test dựng màn + ảnh).

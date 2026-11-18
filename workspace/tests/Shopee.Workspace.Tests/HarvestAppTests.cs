@@ -616,18 +616,65 @@ public sealed class HarvestAppTests
             Assert.Contains("Cài đặt Hub", texts);
             Assert.DoesNotContain(texts, s => s.Contains("BigSeller", StringComparison.OrdinalIgnoreCase));
 
-            // GĐ7.1: Cài đặt có mục Kết nối Hub; màn Hub dựng được, không có chữ BigSeller.
-            Assert.Contains("Kết nối Hub", RibbonTexts(shell));
-            Assert.NotNull(shell.HarvestHub);
-            var hubView = new Modules.Harvest.HarvestHubView { DataContext = shell.HarvestHub };
-            hubView.Measure(new System.Windows.Size(1200, 900));
-            hubView.Arrange(new System.Windows.Rect(0, 0, 1200, 900));
-            hubView.UpdateLayout();
-            var hubTexts = VisibleTexts(hubView);
-            Assert.Contains("Lấy cấu hình từ Shopee Suite", hubTexts);
-            Assert.Contains("Kiểm tra kết nối", hubTexts);
-            Assert.DoesNotContain(hubTexts, s => s.Contains("BigSeller", StringComparison.OrdinalIgnoreCase));
+            // Tab Cài đặt: MỘT màn "Cài đặt" riêng của Harvest — Kết nối Hub ở đầu, rồi Hiệu năng / Thu phóng / Kho tk / Extension;
+            // không có AI, không BigSeller.
+            var settingsTab = shell.Tabs.Single(t => t.Title == "Cài đặt");
+            var screens = settingsTab.Groups.SelectMany(g => g.Items).OfType<ViewModels.RibbonScreenItem>().ToList();
+            var only = Assert.Single(screens);
+            Assert.Equal("Cài đặt", only.Title);
+            var settings = Assert.IsType<Modules.Harvest.HarvestSettingsViewModel>(only.ScreenVm);
+            Assert.Same(shell.HarvestSettings, settings);
+            Assert.Same(settings.Hub, shell.HarvestHub);
+            Assert.DoesNotMatch(@"\bAI\b|OpenAI|API key", only.ToolTip ?? "");
+
+            var setView = new Modules.Harvest.HarvestSettingsView { DataContext = settings };
+            setView.Measure(new System.Windows.Size(1200, 2400));
+            setView.Arrange(new System.Windows.Rect(0, 0, 1200, 2400));
+            setView.UpdateLayout();
+            var setTexts = VisibleTexts(setView);
+            foreach (var must in new[] { "Kết nối Hub", "Lấy cấu hình từ Shopee Suite", "Kiểm tra kết nối", "Hiệu năng", "Lưu hiệu năng",
+                         "Thu phóng giao diện", "Kho tài khoản Shopee & Proxy", "Nạp lại từ DB", "Extension Shopee Harvest", "Mở thư mục" })
+                Assert.Contains(must, setTexts);
+            Assert.DoesNotContain(setTexts, s => System.Text.RegularExpressions.Regex.IsMatch(s ?? "", @"\bAI\b|OpenAI|Anthropic|Gemini|API key|Prompt"));
+            Assert.DoesNotContain(setTexts, s => s.Contains("BigSeller", StringComparison.OrdinalIgnoreCase));
+            // Kết nối Hub là nhóm ĐẦU của màn (nút "Cài đặt Hub" mở màn này là thấy ngay).
+            var hubTop = TopOf(setView, "Kết nối Hub");
+            Assert.All(new[] { "Hiệu năng", "Thu phóng giao diện", "Kho tài khoản Shopee & Proxy", "Extension Shopee Harvest" },
+                t => Assert.True(TopOf(setView, t) > hubTop, $"{t} phải nằm dưới Kết nối Hub"));
+            SaveRender(setView, 1200, 2400, "harvest-settings.png");
+
+            // Nút "Cài đặt Hub" ở màn Lấy dữ liệu → tab Cài đặt, màn Cài đặt của Harvest.
+            shell.Harvest!.GoToHubSettingsCommand.Execute(null);
+            Assert.Same(settingsTab, shell.SelectedTab);
+            Assert.Same(settings, shell.CurrentScreen);
         });
+    }
+
+    /// <summary>Toạ độ đỉnh (so với <paramref name="root"/>) của TextBlock đầu tiên có đúng chữ <paramref name="text"/>.</summary>
+    private static double TopOf(System.Windows.FrameworkElement root, string text)
+    {
+        var tb = Descendants<System.Windows.Controls.TextBlock>(root).First(t => t.Text == text);
+        return tb.TransformToAncestor(root).Transform(new System.Windows.Point(0, 0)).Y;
+    }
+
+    /// <summary>Lưu ảnh màn đã dựng khi có biến môi trường <c>HARVEST_RENDER_DIR</c> (xem tay).</summary>
+    private static void SaveRender(System.Windows.FrameworkElement view, double w, double h, string name)
+    {
+        var outDir = Environment.GetEnvironmentVariable("HARVEST_RENDER_DIR");
+        if (string.IsNullOrEmpty(outDir)) return;
+        Directory.CreateDirectory(outDir);
+        var bg = new System.Windows.Controls.Border { Background = System.Windows.Media.Brushes.White, Width = w, Height = h };
+        var host = new System.Windows.Controls.Grid();
+        bg.Child = host;
+        bg.Measure(new System.Windows.Size(w, h));
+        bg.Arrange(new System.Windows.Rect(0, 0, w, h));
+        var bmp = new System.Windows.Media.Imaging.RenderTargetBitmap((int)w, (int)h, 96, 96, System.Windows.Media.PixelFormats.Pbgra32);
+        bmp.Render(bg);
+        bmp.Render(view);
+        var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+        enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+        using var fs = File.Create(Path.Combine(outDir, name));
+        enc.Save(fs);
     }
 
     /// <summary>GĐ7.1 (lỗi user báo): dải ô số đè lên hàng nút, chữ trong ô bị xén. Dựng màn ở 2 bề rộng × 100% / 125% (bề rộng DIP
@@ -1060,6 +1107,18 @@ public sealed class HarvestAppTests
             Assert.Contains("Scrape Multi", RibbonTexts(shell));
             Assert.DoesNotContain("Kết nối Hub", RibbonTexts(shell));                // mục Hub mới chỉ có ở Harvest
             Assert.Null(shell.HarvestHub);
+            Assert.Null(shell.HarvestSettings);
+            // Màn Cài đặt của app Scrape vẫn là màn chung, CÒN nhóm AI.
+            var setScreen = Assert.Single(shell.Tabs.Single(t => t.Title == "Cài đặt").Groups.SelectMany(g => g.Items)
+                .OfType<ViewModels.RibbonScreenItem>());
+            var local = Assert.IsType<Modules.Settings.LocalSettingsViewModel>(setScreen.ScreenVm);
+            var localView = new Modules.Settings.LocalSettingsView { DataContext = local };
+            localView.Measure(new System.Windows.Size(1000, 2000));
+            localView.Arrange(new System.Windows.Rect(0, 0, 1000, 2000));
+            localView.UpdateLayout();
+            var localTexts = VisibleTexts(localView);
+            Assert.Contains("AI", localTexts);
+            Assert.Contains("OpenAI model / API key", localTexts);
             Assert.Null(shell.Harvest);
             Assert.True(shell.ShowBigSellerStatus);
             Assert.Same(shell.Workspace, shell.CurrentScreen);

@@ -44,8 +44,10 @@ public sealed partial class ShellViewModel : ObservableObject
     public BigSellerViewModel BigSeller => _bigSeller ?? throw new InvalidOperationException("App Harvest không có màn BigSeller.");
     /// <summary>Màn chính của app Harvest (null ở app khác).</summary>
     public HarvestViewModel? Harvest => _harvest;
-    /// <summary>Cài đặt → Kết nối Hub của app Harvest (null ở app khác).</summary>
+    /// <summary>Nhóm Kết nối Hub trong màn Cài đặt của app Harvest (null ở app khác).</summary>
     public HarvestHubViewModel? HarvestHub { get; private set; }
+    /// <summary>Màn Cài đặt riêng của app Harvest (null ở app khác).</summary>
+    public HarvestSettingsViewModel? HarvestSettings { get; private set; }
 
     public ObservableCollection<RibbonTab> Tabs { get; } = new();
 
@@ -242,15 +244,15 @@ public sealed partial class ShellViewModel : ObservableObject
             new RibbonGroup("Màn hình", new object[] { accScreen }),
         });
 
-        var setScreen = new RibbonScreenItem("Cài đặt", AppIcons.Settings, new LocalSettingsViewModel(),
-            toolTip: "Hiệu năng · AI (OpenAI key) · Kho tài khoản");
-        // Harvest không có màn nào khác để nhập Hub (Workspace không dùng hub-client.json của Shopee Suite) → mục riêng ở Cài đặt.
-        HarvestHub = new HarvestHubViewModel();
-        var hubScreen = new RibbonScreenItem("Kết nối Hub", AppIcons.CloudDownload, HarvestHub,
-            toolTip: "URL + token Hub · kiểm tra kết nối · lấy cấu hình từ Shopee Suite");
+        // MỘT màn Cài đặt riêng của Harvest: Kết nối Hub (đầu) · Hiệu năng · Thu phóng · Kho tài khoản & Proxy · Extension — không AI.
+        // App Scrape / Update vẫn dùng màn chung LocalSettingsViewModel (có AI).
+        HarvestSettings = new HarvestSettingsViewModel();
+        HarvestHub = HarvestSettings.Hub;
+        var setScreen = new RibbonScreenItem("Cài đặt", AppIcons.Settings, HarvestSettings,
+            toolTip: "Kết nối Hub · Hiệu năng · Thu phóng · Kho tài khoản & Proxy · Extension");
         var settingsTab = new RibbonTab("Cài đặt", new List<RibbonGroup>
         {
-            new RibbonGroup("Màn hình", new object[] { setScreen, hubScreen }),
+            new RibbonGroup("Màn hình", new object[] { setScreen }),
         });
 
         Tabs.Add(harvestTab);
@@ -263,7 +265,7 @@ public sealed partial class ShellViewModel : ObservableObject
         harvest.OpenHubSettings = () =>
         {
             SelectedTab = settingsTab;
-            ActivateScreen(hubScreen);
+            ActivateScreen(setScreen);   // nhóm Kết nối Hub ở đầu màn Cài đặt
         };
         HarvestHub.Saved += harvest.OnHubSaved;
 
