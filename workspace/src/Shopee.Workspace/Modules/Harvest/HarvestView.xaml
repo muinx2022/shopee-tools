@@ -7,17 +7,29 @@
     <!-- Màn chính app Harvest: chọn file Excel → danh sách sheet (tick để chạy) → Chạy / Dừng; dưới là tiến trình + log.
          Không có tài khoản / shop đăng bán ở màn này ("shop" gửi Hub = tên sheet). -->
     <UserControl.Resources>
+        <!-- Ô số: KHÔNG đặt Height cố định (theme TextBox có MinHeight 30 + Padding 9,4 → đặt Height nhỏ hơn là xén chữ). Rộng
+             đủ 4 chữ số; chiều cao tự theo chữ. -->
         <Style x:Key="numBox" TargetType="{x:Type TextBox}" BasedOn="{StaticResource {x:Type TextBox}}">
-            <Setter Property="Width" Value="56" />
-            <Setter Property="Height" Value="28" />
-            <Setter Property="Margin" Value="6,0,14,0" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Width" Value="72" />
+            <Setter Property="Padding" Value="8,3" />
             <Setter Property="HorizontalContentAlignment" Value="Right" />
         </Style>
         <Style x:Key="inlineLabel" TargetType="{x:Type TextBlock}">
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="FontSize" Value="12" />
             <Setter Property="Foreground" Value="{StaticResource TextSecondaryBrush}" />
+            <Setter Property="Margin" Value="0,0,6,0" />
+        </Style>
+        <!-- Một nhóm "nhãn + ô (+ đơn vị)" của dải cấu hình — nhóm nào không vừa thì xuống dòng nguyên nhóm. -->
+        <Style x:Key="cfgGroup" TargetType="{x:Type StackPanel}">
+            <Setter Property="Orientation" Value="Horizontal" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="Margin" Value="0,0,20,8" />
+        </Style>
+        <Style x:Key="actionBtn" TargetType="{x:Type Button}" BasedOn="{StaticResource subtle}">
+            <Setter Property="MinHeight" Value="30" />
+            <Setter Property="Padding" Value="10,0" />
+            <Setter Property="Margin" Value="0,0,8,8" />
         </Style>
         <Style x:Key="instanceRow" TargetType="{x:Type DataGridRow}" BasedOn="{StaticResource {x:Type DataGridRow}}">
             <Setter Property="Background"
@@ -37,7 +49,7 @@
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
+            <RowDefinition Height="0" />
             <RowDefinition Height="2*" MinHeight="140" />
             <RowDefinition Height="12" />
             <RowDefinition Height="3*" MinHeight="160" />
@@ -70,14 +82,14 @@
                         </StackPanel>
                     </Button>
                 </StackPanel>
-                <Button DockPanel.Dock="Left" Style="{StaticResource primary}" Command="{Binding PickFileCommand}"
+                <Button DockPanel.Dock="Left" Style="{StaticResource primary}" Command="{Binding PickFileCommand}" VerticalAlignment="Center"
                         ToolTip="Chọn file Excel danh sách link: một sheet dùng chung, hoặc mỗi shop một sheet. Chỉ cần một cột link SP Shopee (cột đầu tiên có link được dùng); dòng 1 là tiêu đề hoặc đã là link đều được; tên SP không bắt buộc.">
                     <StackPanel Orientation="Horizontal">
                         <c:PathIcon Data="{StaticResource IconFolder}" />
                         <TextBlock Style="{StaticResource btnLabel}" Text="Chọn file Excel" />
                     </StackPanel>
                 </Button>
-                <Button DockPanel.Dock="Left" Style="{StaticResource subtle}" Margin="8,0,0,0" Height="30" Padding="10,0"
+                <Button DockPanel.Dock="Left" Style="{StaticResource subtle}" Margin="8,0,0,0" MinHeight="30" Padding="10,0" VerticalAlignment="Center"
                         Command="{Binding RefreshCommand}" ToolTip="Đọc lại file (danh sách sheet + đếm lại đã có / còn phải lấy).">
                     <StackPanel Orientation="Horizontal">
                         <c:PathIcon Data="{StaticResource IconSync}" Width="12" Height="12" />
@@ -92,63 +104,102 @@
             </DockPanel>
         </Border>
 
-        <!-- Cấu hình chạy + nút -->
-        <WrapPanel Grid.Row="2" Margin="0,0,0,8" VerticalAlignment="Center">
-            <TextBlock Style="{StaticResource inlineLabel}" Text="Lấy lại nếu dữ liệu cũ hơn" />
-            <TextBox Style="{StaticResource numBox}" Text="{Binding MaxAgeDays}"
-                     ToolTip="SP đã có dữ liệu (lấy trên máy này hoặc đã có trên Hub) mà cũ hơn số ngày này thì lấy lại; còn mới thì bỏ qua, không mở trang." />
-            <TextBlock Style="{StaticResource inlineLabel}" Text="ngày" Margin="-8,0,18,0" />
-            <TextBlock Style="{StaticResource inlineLabel}" Text="Số cửa sổ" />
-            <TextBox Style="{StaticResource numBox}" Text="{Binding Processes}" ToolTip="Số cửa sổ Brave chạy song song." />
-            <TextBlock Style="{StaticResource inlineLabel}" Text="Dòng mỗi lần" />
-            <TextBox Style="{StaticResource numBox}" Text="{Binding RowsPerAccount}"
-                     ToolTip="Nhịp chạy: mỗi tài khoản Shopee nhận một khối dòng liên tiếp cỡ này rồi trả về kho." />
-            <TextBlock Style="{StaticResource inlineLabel}" Text="Khung tk" />
-            <TextBox Style="{StaticResource numBox}" Text="{Binding FrameSize}"
-                     ToolTip="Số tài khoản Shopee dùng xoay vòng cho lượt chạy (ít nhất bằng số cửa sổ)." />
-            <TextBlock Style="{StaticResource inlineLabel}" Text="Nghỉ giữa link (giây)" />
-            <TextBox Style="{StaticResource numBox}" Text="{Binding RestMinSeconds}" Margin="6,0,4,0" />
-            <TextBlock Style="{StaticResource inlineLabel}" Text="–" />
-            <TextBox Style="{StaticResource numBox}" Text="{Binding RestMaxSeconds}" Margin="4,0,14,0" />
-        </WrapPanel>
+        <!-- Cấu hình chạy + nút + trạng thái: 3 khối xếp DỌC trong một StackPanel (không chồng lên nhau); mỗi khối là WrapPanel
+             → cửa sổ hẹp thì nhóm / nút xuống dòng nguyên khối. -->
+        <StackPanel Grid.Row="2" Margin="0,0,0,8">
+            <WrapPanel>
+                <StackPanel Style="{StaticResource cfgGroup}"
+                            ToolTip="SP đã có dữ liệu (lấy trên máy này hoặc đã có trên Hub) mà cũ hơn số ngày này thì lấy lại; còn mới thì bỏ qua, không mở trang. 1–3650 ngày.">
+                    <TextBlock Style="{StaticResource inlineLabel}" Text="Lấy lại nếu dữ liệu cũ hơn" />
+                    <TextBox Style="{StaticResource numBox}" Text="{Binding MaxAgeDays}" />
+                    <TextBlock Style="{StaticResource inlineLabel}" Text="ngày" Margin="6,0,0,0" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource cfgGroup}" ToolTip="Số cửa sổ Brave chạy song song.">
+                    <TextBlock Style="{StaticResource inlineLabel}" Text="Số cửa sổ" />
+                    <TextBox Style="{StaticResource numBox}" Text="{Binding Processes}" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource cfgGroup}"
+                            ToolTip="Nhịp chạy: mỗi tài khoản Shopee nhận một khối dòng liên tiếp cỡ này rồi trả về kho.">
+                    <TextBlock Style="{StaticResource inlineLabel}" Text="Dòng mỗi lần" />
+                    <TextBox Style="{StaticResource numBox}" Text="{Binding RowsPerAccount}" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource cfgGroup}"
+                            ToolTip="Số tài khoản Shopee dùng xoay vòng cho lượt chạy (ít nhất bằng số cửa sổ).">
+                    <TextBlock Style="{StaticResource inlineLabel}" Text="Khung tk" />
+                    <TextBox Style="{StaticResource numBox}" Text="{Binding FrameSize}" />
+                </StackPanel>
+                <StackPanel Style="{StaticResource cfgGroup}" ToolTip="Nghỉ ngẫu nhiên giữa 2 link, từ … đến … giây.">
+                    <TextBlock Style="{StaticResource inlineLabel}" Text="Nghỉ giữa link (giây)" />
+                    <TextBox Style="{StaticResource numBox}" Text="{Binding RestMinSeconds}" />
+                    <TextBlock Style="{StaticResource inlineLabel}" Text="–" Margin="6,0,6,0" />
+                    <TextBox Style="{StaticResource numBox}" Text="{Binding RestMaxSeconds}" />
+                </StackPanel>
+            </WrapPanel>
 
-        <DockPanel Grid.Row="3" Margin="0,0,0,8">
-            <StackPanel DockPanel.Dock="Left" Orientation="Horizontal">
-                <Button Style="{StaticResource success}" Command="{Binding RunCommand}"
+            <WrapPanel>
+                <Button Style="{StaticResource success}" Command="{Binding RunCommand}" Margin="0,0,8,8"
                         ToolTip="Chạy / Tiếp tục các sheet đã tick, lần lượt từng sheet. SP đã có (trên máy hoặc trên Hub, còn hạn) được bỏ qua.">
                     <StackPanel Orientation="Horizontal">
                         <c:PathIcon Data="{StaticResource IconPlay}" />
                         <TextBlock Style="{StaticResource btnLabel}" Text="Chạy / Tiếp tục" />
                     </StackPanel>
                 </Button>
-                <Button Style="{StaticResource danger}" Margin="8,0,0,0" Command="{Binding StopCommand}" ToolTip="Dừng lượt đang chạy (giữ tiến độ).">
+                <Button Style="{StaticResource danger}" Command="{Binding StopCommand}" Margin="0,0,8,8" ToolTip="Dừng lượt đang chạy (giữ tiến độ).">
                     <StackPanel Orientation="Horizontal">
                         <c:PathIcon Data="{StaticResource IconStop}" />
                         <TextBlock Style="{StaticResource btnLabel}" Text="Dừng" />
                     </StackPanel>
                 </Button>
-                <Button Style="{StaticResource subtle}" Margin="8,0,0,0" Height="30" Padding="10,0" Command="{Binding ResetCommand}"
+                <Button Style="{StaticResource actionBtn}" Command="{Binding ResetCommand}"
                         ToolTip="Xoá tiến độ của các sheet đã tick để lấy lại từ đầu (có hỏi trước).">
                     <TextBlock Style="{StaticResource btnLabel}" Text="Reset…" />
                 </Button>
-                <Button Style="{StaticResource subtle}" Margin="8,0,0,0" Height="30" Padding="10,0" Command="{Binding RetrySkippedCommand}"
+                <Button Style="{StaticResource actionBtn}" Command="{Binding RetrySkippedCommand}"
                         ToolTip="SP bị bỏ qua vì lỗi (không phải trang SP / SP không tồn tại…) ở các sheet đã tick sẽ được thử lại ở lượt Chạy sau.">
                     <TextBlock Style="{StaticResource btnLabel}" Text="Cào lại dòng đã bỏ" />
                 </Button>
-            </StackPanel>
-            <StackPanel Margin="14,0,0,0" VerticalAlignment="Center">
-                <TextBlock Text="{Binding Status}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Status}" />
-                <TextBlock Text="{Binding HubNote}" FontSize="11" Foreground="{StaticResource WarningBrush}" TextWrapping="Wrap"
-                           Visibility="{Binding HubNote, Converter={StaticResource StringToVis}}" />
-            </StackPanel>
-        </DockPanel>
+            </WrapPanel>
+
+            <!-- Trạng thái Hub: đã nối / chưa nối + nút tới Cài đặt → Kết nối Hub. -->
+            <DockPanel Margin="0,0,0,4">
+                <Button DockPanel.Dock="Right" Style="{StaticResource actionBtn}" Margin="8,0,0,0" VerticalAlignment="Top"
+                        Command="{Binding GoToHubSettingsCommand}"
+                        ToolTip="Mở Cài đặt → Kết nối Hub (URL, token, kiểm tra kết nối).">
+                    <TextBlock Style="{StaticResource btnLabel}" Text="Cài đặt Hub" />
+                </Button>
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="{Binding HubStatus}" TextWrapping="Wrap" FontWeight="SemiBold">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsHubConnected}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <TextBlock Text="{Binding Status}" TextWrapping="Wrap" Margin="0,2,0,0" />
+                    <TextBlock Text="{Binding HubNote}" FontSize="11" Foreground="{StaticResource WarningBrush}" TextWrapping="Wrap"
+                               Visibility="{Binding HubNote, Converter={StaticResource StringToVis}}" />
+                </StackPanel>
+            </DockPanel>
+        </StackPanel>
 
         <!-- Danh sách sheet -->
         <Border Grid.Row="4" Style="{StaticResource card}" ClipToBounds="True">
             <DataGrid ItemsSource="{Binding Sheets}" BorderThickness="0" AutoGenerateColumns="False" CanUserSortColumns="False"
                       CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single" RowStyle="{StaticResource sheetRow}">
                 <DataGrid.Columns>
-                    <DataGridTemplateColumn Header="Chạy" Width="52">
+                    <DataGridTemplateColumn Width="70">
+                        <!-- Ô tiêu đề: tick hết / bỏ hết / một phần (null) — nhớ như tick tay. -->
+                        <DataGridTemplateColumn.Header>
+                            <CheckBox Content="Chạy" VerticalAlignment="Center"
+                                      IsChecked="{Binding DataContext.AllSheetsChecked, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}, Mode=TwoWay}"
+                                      IsEnabled="{Binding DataContext.IsIdle, RelativeSource={RelativeSource AncestorType={x:Type UserControl}}}"
+                                      ToolTip="Chọn / bỏ chọn tất cả sheet" />
+                        </DataGridTemplateColumn.Header>
                         <DataGridTemplateColumn.CellTemplate>
                             <DataTemplate>
                                 <CheckBox HorizontalAlignment="Center" VerticalAlignment="Center"

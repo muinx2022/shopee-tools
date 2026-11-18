@@ -15,7 +15,8 @@ public sealed class MachineInfo
 }
 
 /// <summary>
-/// Danh tính máy này, lưu tại %AppData%\ShopeeSuite\machine.json (NGAY DƯỚI Root, KHÔNG dưới
+/// Danh tính máy này, lưu tại <c>&lt;SuitePaths.Root&gt;\machine.json</c> (<c>%AppData%\ShopeeBackend\Workspace\</c> hoặc theo
+/// <c>data-dir.txt</c>; NGAY DƯỚI Root, KHÔNG dưới
 /// shared\ và KHÔNG bao giờ đồng bộ — mỗi máy phải có id riêng để điều phối/khoá phân biệt được).
 /// Sinh GUID 1 lần rồi giữ nguyên; tên máy làm tươi mỗi lần nạp. Singleton.
 /// </summary>

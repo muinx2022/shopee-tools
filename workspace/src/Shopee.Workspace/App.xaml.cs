@@ -58,8 +58,11 @@ public partial class App : Application
                 return;
             }
             DatCheDoHarvest();
-            // Poller Hub chỉ fold ledger harvest vào harvest-progress.json — KHÔNG đụng scrape-progress.json.
-            Shopee.Core.Coordination.HttpCoordinationHub.ProgressFoldOp = Shopee.Core.Coordination.CoordOp.Harvest;
+            // Harvest chỉ cần client Hub (known / đẩy SP / truyền cấu hình cho extension): KHÔNG suất workspace — không heartbeat,
+            // không poll /fleet, không fold ledger, không kéo cấu hình / cookie BigSeller, không tranh việc với app Scrape cùng máy.
+            Shopee.Core.Coordination.CoordinationRuntime.ClientOnly = true;
+            // Cấu hình Hub RIÊNG của Harvest (harvest\hub-client.json) — không đọc / ghi hub-client.json chung của app Scrape / Update.
+            Shopee.Core.Coordination.CoordinationRuntime.ClientStore = Modules.Harvest.HarvestHubPort.Store;
         }
 
         // Kiểm tra Brave trước khi làm gì khác

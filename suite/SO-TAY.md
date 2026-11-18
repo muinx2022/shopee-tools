@@ -815,3 +815,21 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/tests/Shopee.Core.Tests/PdpCleanGoldenTests.cs:113-125`
 - **Bằng chứng**: nghiệm thu GĐ7 — chỉ chạy khi đặt `HARVEST_PDP_GOLDEN_WRITE=1`.
 - **Vì sao không sửa ngay**: thấp.
+
+### P-20261118-13 · [MỞ] · VỪA — App Harvest chưa kiểm extension đã có quyền tới Hub chưa trước khi chạy — Hub URL khác mặc định mà chưa cấp quyền thì ext dồn mục vào hàng đợi "Chưa cấp quyền truy cập", job vẫn chạy
+- **Thấy lúc**: GĐ7.1 plan harvest (kiểm nối Hub)
+- **Ở đâu**: `workspace/extensions/shopee-harvest/background.js:1012`
+- **Bằng chứng**: GĐ7.1 — `hasHubPermission` chỉ dùng ở đường gửi của hàng đợi; màn Kết nối Hub mới chỉ nhắc cấp quyền.
+- **Vì sao không sửa ngay**: cần thêm RPC hỏi quyền trước khi chạy.
+
+### P-20261118-14 · [MỞ] · NHẸ — Máy chỉ chạy Harvest (init chỉ-client) không hiện trong fleet trên Hub và không nhận lệnh cập nhật app qua heartbeat
+- **Thấy lúc**: GĐ7.1 plan harvest (kiểm nối Hub)
+- **Ở đâu**: `workspace/src/Shopee.Core/Coordination/CoordinationRuntime.cs` (`ClientOnly`)
+- **Bằng chứng**: GĐ7.1 — đánh đổi có chủ ý để Harvest không tranh việc BigSeller với app Scrape cùng máy.
+- **Vì sao không sửa ngay**: chưa cần.
+
+### P-20261118-15 · [MỞ] · NHẸ — `HttpCoordinationHub.ProgressFoldOp` không còn ai đặt giá trị khác mặc định (code gần như chết)
+- **Thấy lúc**: GĐ7.1 plan harvest (kiểm nối Hub)
+- **Ở đâu**: `workspace/src/Shopee.Core/Coordination/HttpCoordinationHub.cs:368`
+- **Bằng chứng**: đọc mã — trước GĐ7.1 chỉ Harvest đặt.
+- **Vì sao không sửa ngay**: dọn sau.

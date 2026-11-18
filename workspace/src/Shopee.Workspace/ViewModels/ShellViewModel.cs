@@ -44,6 +44,8 @@ public sealed partial class ShellViewModel : ObservableObject
     public BigSellerViewModel BigSeller => _bigSeller ?? throw new InvalidOperationException("App Harvest không có màn BigSeller.");
     /// <summary>Màn chính của app Harvest (null ở app khác).</summary>
     public HarvestViewModel? Harvest => _harvest;
+    /// <summary>Cài đặt → Kết nối Hub của app Harvest (null ở app khác).</summary>
+    public HarvestHubViewModel? HarvestHub { get; private set; }
 
     public ObservableCollection<RibbonTab> Tabs { get; } = new();
 
@@ -242,9 +244,13 @@ public sealed partial class ShellViewModel : ObservableObject
 
         var setScreen = new RibbonScreenItem("Cài đặt", AppIcons.Settings, new LocalSettingsViewModel(),
             toolTip: "Hiệu năng · AI (OpenAI key) · Kho tài khoản");
+        // Harvest không có màn nào khác để nhập Hub (Workspace không dùng hub-client.json của Shopee Suite) → mục riêng ở Cài đặt.
+        HarvestHub = new HarvestHubViewModel();
+        var hubScreen = new RibbonScreenItem("Kết nối Hub", AppIcons.CloudDownload, HarvestHub,
+            toolTip: "URL + token Hub · kiểm tra kết nối · lấy cấu hình từ Shopee Suite");
         var settingsTab = new RibbonTab("Cài đặt", new List<RibbonGroup>
         {
-            new RibbonGroup("Màn hình", new object[] { setScreen }),
+            new RibbonGroup("Màn hình", new object[] { setScreen, hubScreen }),
         });
 
         Tabs.Add(harvestTab);
@@ -252,6 +258,14 @@ public sealed partial class ShellViewModel : ObservableObject
         Tabs.Add(settingsTab);
         WireScreens();
         SelectedTab = harvestTab;
+
+        // Màn Lấy dữ liệu báo trạng thái Hub + nút đi tới Kết nối Hub; lưu Hub xong thì cập nhật ngay.
+        harvest.OpenHubSettings = () =>
+        {
+            SelectedTab = settingsTab;
+            ActivateScreen(hubScreen);
+        };
+        HarvestHub.Saved += harvest.OnHubSaved;
 
         _scrape.PropertyChanged += OnJobStateChanged;
         RefreshJobStatus();

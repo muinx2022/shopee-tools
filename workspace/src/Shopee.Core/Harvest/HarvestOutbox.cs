@@ -432,6 +432,14 @@ public sealed class HarvestOutbox : IHarvestSink, IHarvestFailureSink
     }
 
     /// <summary>Đưa mọi mục <c>failed</c> về <c>pending</c> (đến hạn ngay, xoá đếm thử). Trả số mục.</summary>
+    /// <summary>Mọi mục <c>pending</c> đang hẹn giờ (lùi dần) → đến hạn ngay (giữ đếm thử / lỗi gần nhất). Trả số mục.</summary>
+    internal int ClearDeferrals() => WithWriteRetry(con =>
+    {
+        using var cmd = con.CreateCommand();
+        cmd.CommandText = "UPDATE pending SET next_try_at = 0 WHERE status = 'pending' AND next_try_at > 0;";
+        return cmd.ExecuteNonQuery();
+    }, CancellationToken.None);
+
     public int RequeueFailed() => WithWriteRetry(con =>
     {
         using var cmd = con.CreateCommand();

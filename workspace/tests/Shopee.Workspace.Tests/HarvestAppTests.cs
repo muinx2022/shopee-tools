@@ -1,3 +1,4 @@
+using System.Net.Http;
 using Shopee.Core.Coordination;
 using Shopee.Core.Harvest;
 using Shopee.Core.Scrape;
@@ -612,8 +613,440 @@ public sealed class HarvestAppTests
             Assert.Contains("Lấy lại nếu dữ liệu cũ hơn", texts);
             Assert.Contains("Đẩy lại mục lỗi", texts);
             Assert.Contains("Chạy / Tiếp tục", texts);
+            Assert.Contains("Cài đặt Hub", texts);
             Assert.DoesNotContain(texts, s => s.Contains("BigSeller", StringComparison.OrdinalIgnoreCase));
+
+            // GĐ7.1: Cài đặt có mục Kết nối Hub; màn Hub dựng được, không có chữ BigSeller.
+            Assert.Contains("Kết nối Hub", RibbonTexts(shell));
+            Assert.NotNull(shell.HarvestHub);
+            var hubView = new Modules.Harvest.HarvestHubView { DataContext = shell.HarvestHub };
+            hubView.Measure(new System.Windows.Size(1200, 900));
+            hubView.Arrange(new System.Windows.Rect(0, 0, 1200, 900));
+            hubView.UpdateLayout();
+            var hubTexts = VisibleTexts(hubView);
+            Assert.Contains("Lấy cấu hình từ Shopee Suite", hubTexts);
+            Assert.Contains("Kiểm tra kết nối", hubTexts);
+            Assert.DoesNotContain(hubTexts, s => s.Contains("BigSeller", StringComparison.OrdinalIgnoreCase));
         });
+    }
+
+    /// <summary>GĐ7.1 (lỗi user báo): dải ô số đè lên hàng nút, chữ trong ô bị xén. Dựng màn ở 2 bề rộng × 100% / 125% (bề rộng DIP
+    /// tương ứng cửa sổ ~1100 px và ~1900 px): chữ trong mọi ô số không bị xén (ExtentHeight ≤ ViewportHeight), không ô số nào chồng
+    /// lên nút nào. Đặt biến môi trường <c>HARVEST_RENDER_DIR</c> thì lưu ảnh PNG để xem tay. VM dựng + quét file TRƯỚC (async), view
+    /// dựng trên luồng STA.</summary>
+    [Fact]
+    public async Task ManHarvest_BoCuc_OSoKhongXenChu_KhongDeLenNut()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var file = Workbook(dir, "links.xlsx", Enumerable.Range(1, 12)
+                .Select(i => ($"Shop {i}", new[] { $"https://shopee.vn/a-i.77.{i}", $"https://shopee.vn/b-i.77.{i + 100}" })).ToArray());
+            var settings = new HarvestSettingsStore(Path.Combine(dir, "harvest-settings.json"));
+            settings.Current.WorkbookPath = file;
+            settings.Current.RestMinSeconds = 1200;
+            settings.Current.RestMaxSeconds = 2400;
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
+            var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), settings,
+                hub: new FakeHubPort(), suiteHubConfigPath: Path.Combine(dir, "khong-co.json"));
+            await vm.RefreshCommand.ExecuteAsync(null);
+            Assert.Equal(12, vm.Sheets.Count);
+            OnSta(() =>
+            {
+                WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
+                var outDir = Environment.GetEnvironmentVariable("HARVEST_RENDER_DIR");
+                foreach (var (widthPx, dpi) in new[] { (1100, 96.0), (1100, 120.0), (1900, 96.0), (1900, 120.0) })
+                {
+                    var w = widthPx * 96.0 / dpi;   // bề rộng DIP của cửa sổ widthPx pixel ở DPI này
+                    var h = 1000 * 96.0 / dpi;
+                    var view = new Modules.Harvest.HarvestView { DataContext = vm };
+                    view.Measure(new System.Windows.Size(w, h));
+                    view.Arrange(new System.Windows.Rect(0, 0, w, h));
+                    view.UpdateLayout();
+                    var boxes = Descendants<System.Windows.Controls.TextBox>(view).Where(t => t.Style == view.FindResource("numBox")).ToList();
+                    Assert.Equal(6, boxes.Count);
+                    foreach (var b in boxes)
+                    {
+                        Assert.True(b.ExtentHeight <= b.ViewportHeight + 0.5,
+                            $"{widthPx}px@{dpi}: chữ '{b.Text}' bị xén ({b.ExtentHeight:0.0} > {b.ViewportHeight:0.0})");
+                        Assert.True(b.ExtentWidth <= b.ViewportWidth + 0.5, $"{widthPx}px@{dpi}: ô '{b.Text}' không đủ rộng");
+                    }
+                    var buttons = Descendants<System.Windows.Controls.Button>(view).Where(x => x.IsVisible).ToList();
+                    foreach (var b in boxes)
+                    {
+                        var rb = BoundsIn(b, view);
+                        foreach (var btn in buttons)
+                            Assert.False(rb.IntersectsWith(BoundsIn(btn, view)) && !rb.Equals(BoundsIn(btn, view)),
+                                $"{widthPx}px@{dpi}: ô '{b.Text}' chồng lên nút");
+                    }
+                    if (!string.IsNullOrEmpty(outDir))
+                    {
+                        Directory.CreateDirectory(outDir);
+                        var bmp = new System.Windows.Media.Imaging.RenderTargetBitmap(
+                            (int)Math.Ceiling(w * dpi / 96), (int)Math.Ceiling(h * dpi / 96), dpi, dpi, System.Windows.Media.PixelFormats.Pbgra32);
+                        var bg = new System.Windows.Controls.Border
+                        {
+                            Background = System.Windows.Media.Brushes.White, Child = view, Width = w, Height = h,
+                        };
+                        bg.Measure(new System.Windows.Size(w, h));
+                        bg.Arrange(new System.Windows.Rect(0, 0, w, h));
+                        bg.UpdateLayout();
+                        bmp.Render(bg);
+                        var enc = new System.Windows.Media.Imaging.PngBitmapEncoder();
+                        enc.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bmp));
+                        using var fs = File.Create(Path.Combine(outDir, $"harvest-{widthPx}px-{(int)(dpi / 96 * 100)}pct.png"));
+                        enc.Save(fs);
+                        bg.Child = null;
+                    }
+                }
+            });
+        }
+        finally
+        {
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Full);
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    private static System.Windows.Rect BoundsIn(System.Windows.FrameworkElement e, System.Windows.Media.Visual root) =>
+        e.TransformToAncestor(root).TransformBounds(new System.Windows.Rect(0, 0, e.ActualWidth, e.ActualHeight));
+
+    private static IEnumerable<T> Descendants<T>(System.Windows.DependencyObject root) where T : System.Windows.DependencyObject
+    {
+        for (var i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(root); i++)
+        {
+            var c = System.Windows.Media.VisualTreeHelper.GetChild(root, i);
+            if (c is T t) yield return t;
+            foreach (var d in Descendants<T>(c)) yield return d;
+        }
+    }
+
+    // ── GĐ7.1: chọn / bỏ chọn tất cả sheet; Hub cho Harvest ──
+
+    private sealed class FakeHubPort : Modules.Harvest.IHarvestHubPort
+    {
+        public Shopee.Core.Coordination.HubClientConfig Saved { get; private set; } = new();
+        public int Reconnects { get; private set; }
+        public int Saves { get; private set; }
+        public bool FailSave { get; set; }
+        public bool ConnectOnReconnect { get; set; } = true;
+        public string ConfigPath => @"C:\gia\harvest\hub-client.json";
+        public Shopee.Core.Coordination.HubClientConfig Current => Saved.Clone();
+        public bool Save(Shopee.Core.Coordination.HubClientConfig config)
+        {
+            Saves++;
+            if (FailSave) return false;
+            Saved = config.Clone();
+            return true;
+        }
+        public bool Reconnect()
+        {
+            Reconnects++;
+            Connected = ConnectOnReconnect && Saved.IsConfigured && !string.IsNullOrWhiteSpace(Saved.ApiToken);
+            return Connected;
+        }
+        public bool Connected { get; set; }
+        public string MachineId => "may-test";
+    }
+
+    private sealed class FakeHttp(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
+    {
+        public List<HttpRequestMessage> Requests { get; } = [];
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Requests.Add(request);
+            return Task.FromResult(respond(request));
+        }
+
+        public IEnumerable<string> TokensSent => Requests.Where(r => r.Headers.Contains("X-Api-Token"))
+            .Select(r => r.Headers.GetValues("X-Api-Token").Single());
+    }
+
+    /// <summary>Hub giả: /health 200; lệnh có token 200 nếu token = <paramref name="good"/>, không thì 401.</summary>
+    private static FakeHttp HubGia(string good = "bi-mat-123") => new(r => new HttpResponseMessage(
+        r.RequestUri!.AbsolutePath == "/health" || (r.Headers.Contains("X-Api-Token") && r.Headers.GetValues("X-Api-Token").Single() == good)
+            ? System.Net.HttpStatusCode.OK : System.Net.HttpStatusCode.Unauthorized));
+
+    private static string KhongCo() => Path.Combine(Path.GetTempPath(), "khong-co-" + Guid.NewGuid());
+
+    [Fact]
+    public async Task ChonTatCa_BaTrangThai_TickHetBoHet_NhoQuaLanMoSau()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var file = Workbook(dir, "links.xlsx", ("A", ["https://shopee.vn/a-i.1.1"]), ("B", ["https://shopee.vn/a-i.1.2"]),
+                ("C", ["https://shopee.vn/a-i.1.3"]));
+            var settings = new HarvestSettingsStore(Path.Combine(dir, "harvest-settings.json"));
+            settings.Current.WorkbookPath = file;
+            var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), settings, hub: new FakeHubPort(),
+                suiteHubConfigPath: Path.Combine(dir, "khong-co.json"));
+            await vm.RefreshCommand.ExecuteAsync(null);
+            var changed = new List<string?>();
+            vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
+
+            Assert.True(vm.AllSheetsChecked);                                        // mặc định tick hết
+            vm.Sheets[1].IsChecked = false;
+            Assert.Null(vm.AllSheetsChecked);                                        // một phần
+            Assert.Contains(nameof(vm.AllSheetsChecked), changed);
+            vm.AllSheetsChecked = null;                                              // bấm khi đang một phần → tick hết
+            Assert.All(vm.Sheets, s => Assert.True(s.IsChecked));
+            vm.AllSheetsChecked = false;                                             // bỏ hết
+            Assert.All(vm.Sheets, s => Assert.False(s.IsChecked));
+            Assert.False(vm.AllSheetsChecked);
+            Assert.False(vm.RunCommand.CanExecute(null));
+            Assert.Equal(3, new HarvestSettingsStore(settings.FilePath).Current.UncheckedSheetKeys.Count);   // nhớ qua lần mở sau
+            vm.AllSheetsChecked = true;
+            Assert.Empty(new HarvestSettingsStore(settings.FilePath).Current.UncheckedSheetKeys);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    [Fact]
+    public async Task HubHarvest_LuuNapLai_NoiLaiNgay_TuKiemTra_TokenKhongHienLai()
+    {
+        var port = new FakeHubPort();
+        var http = HubGia();
+        var hub = new Modules.Harvest.HarvestHubViewModel(port, suiteConfigPath: KhongCo(), checkHandler: http);
+        Assert.False(hub.IsConnected);
+        Assert.StartsWith("Chưa nối Hub", hub.Status);
+        Assert.Contains(@"harvest\hub-client.json", hub.ConfigNote);                 // nói rõ file RIÊNG của Harvest
+        var saved = new List<Modules.Harvest.HarvestHubSaveResult>();
+        hub.Saved += saved.Add;
+
+        hub.BaseUrl = "https://hub.test/ ";
+        hub.Token = "bi-mat-123";
+        await hub.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(("https://hub.test", "bi-mat-123", true), (port.Saved.BaseUrl, port.Saved.ApiToken, port.Saved.Enabled));
+        Assert.Equal(1, port.Reconnects);                                            // nối lại ngay, không mở lại app
+        Assert.True(hub.IsConnected);
+        Assert.True(hub.StatusOk);                                                   // N1: tự kiểm tra sau Lưu, token đúng → xanh
+        Assert.Equal("Kết nối Hub tốt (token đúng).", hub.CheckResult);
+        Assert.True(Assert.Single(saved).Ok);
+        Assert.Equal("", hub.Token);                                                 // token đã lưu không hiện lại
+        Assert.DoesNotContain("bi-mat-123", hub.Status + hub.TokenNote + hub.CheckResult);
+
+        // Mở lại màn: URL từ cấu hình đã lưu, token ẩn; Lưu lại CÙNG URL không gõ token → giữ token cũ.
+        var again = new Modules.Harvest.HarvestHubViewModel(port, suiteConfigPath: KhongCo(), checkHandler: http);
+        Assert.Equal(("https://hub.test", ""), (again.BaseUrl, again.Token));
+        Assert.Contains("để trống nếu giữ nguyên", again.TokenNote);
+        await again.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(("https://hub.test", "bi-mat-123"), (port.Saved.BaseUrl, port.Saved.ApiToken));
+        Assert.Equal("", again.UrlWarning);
+        Assert.Contains("https://hub.test", again.PermissionNote);                   // khác Hub mặc định → nhắc cấp quyền ext
+    }
+
+    /// <summary>V1: đổi sang URL khác URL đã lưu → KHÔNG tự gửi token cũ (Lưu đòi nhập lại; Kiểm tra chỉ gọi /health).</summary>
+    [Fact]
+    public async Task HubHarvest_DoiUrl_KhongGuiTokenCu_BatNhapLai()
+    {
+        var port = new FakeHubPort();
+        port.Save(new Shopee.Core.Coordination.HubClientConfig { Enabled = true, BaseUrl = "https://hub.test", ApiToken = "bi-mat-123" });
+        var http = HubGia();
+        var hub = new Modules.Harvest.HarvestHubViewModel(port, suiteConfigPath: KhongCo(), checkHandler: http);
+        hub.BaseUrl = "https://hub-la.test";
+        Assert.Contains("nhập token cho Hub này", hub.TokenNote);
+        await hub.CheckCommand.ExecuteAsync(null);
+        Assert.Empty(http.TokensSent);                                               // không gửi token cũ sang Hub khác
+        Assert.Contains("chưa có token", hub.CheckResult);
+        await hub.SaveCommand.ExecuteAsync(null);
+        Assert.Equal("https://hub.test", port.Saved.BaseUrl);                        // không lưu
+        Assert.Contains("Chưa có token cho URL này", hub.Status);
+        Assert.False(hub.StatusOk);
+
+        hub.Token = "token-moi";
+        await hub.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(("https://hub-la.test", "token-moi"), (port.Saved.BaseUrl, port.Saved.ApiToken));
+    }
+
+    /// <summary>V1: luật URL chung với extension — chỉ https, hoặc http tới localhost / 127.0.0.1. http ra ngoài máy: cảnh báo rõ,
+    /// không lưu, Kiểm tra KHÔNG gửi token. Hub mặc định / localhost: không cần nhắc cấp quyền extension.</summary>
+    [Fact]
+    public async Task HubHarvest_UrlHttpRaNgoai_CanhBao_KhongGuiToken_KhongLuu()
+    {
+        var port = new FakeHubPort();
+        var http = HubGia("bi-mat-123");
+        var hub = new Modules.Harvest.HarvestHubViewModel(port, suiteConfigPath: KhongCo(), checkHandler: http);
+        hub.BaseUrl = "http://192.168.1.5:8088";
+        hub.Token = "bi-mat-123";
+        Assert.Contains("http ra ngoài máy", hub.UrlWarning);
+        await hub.CheckCommand.ExecuteAsync(null);
+        Assert.Empty(http.TokensSent);
+        Assert.Contains("KHÔNG gửi token", hub.CheckResult);
+        await hub.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(0, port.Saves);
+        Assert.Contains("http ra ngoài máy", hub.Status);
+
+        hub.BaseUrl = "http://localhost:8088";
+        Assert.Equal(("", ""), (hub.UrlWarning, hub.PermissionNote));
+        hub.BaseUrl = Shopee.Core.Coordination.HubDefaults.BaseUrl + "/duong/dan?x=1";
+        Assert.Equal(("", ""), (hub.UrlWarning, hub.PermissionNote));
+        await hub.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(Shopee.Core.Coordination.HubDefaults.BaseUrl, port.Saved.BaseUrl);   // chuẩn hoá về gốc như extension
+
+        Assert.True(HarvestHubUrl.TryNormalize("https://Hub.Test:8443/api/", out var o, out _, out _));
+        Assert.Equal("https://hub.test:8443", o);
+        Assert.False(HarvestHubUrl.TryNormalize("http://10.0.0.2", out _, out _, out var outside));
+        Assert.True(outside);
+        Assert.False(HarvestHubUrl.TryNormalize("ftp://hub.test", out _, out _, out outside));
+        Assert.False(outside);
+        Assert.True(HarvestHubUrl.TryNormalize("http://127.0.0.1:8088", out _, out _, out _));
+    }
+
+    /// <summary>V4 + N1: lưu hỏng → báo lỗi, không nối lại, không "Đã nối"; token sai → báo rõ, không xanh, màn chính không báo "đã nối".</summary>
+    [Fact]
+    public async Task HubHarvest_LuuHong_TokenSai_BaoRo_KhongXanh()
+    {
+        var port = new FakeHubPort { FailSave = true };
+        var hub = new Modules.Harvest.HarvestHubViewModel(port, suiteConfigPath: KhongCo(), checkHandler: HubGia("token-dung"));
+        var results = new List<Modules.Harvest.HarvestHubSaveResult>();
+        hub.Saved += results.Add;
+        hub.BaseUrl = "https://hub.test";
+        hub.Token = "token-sai";
+        await hub.SaveCommand.ExecuteAsync(null);
+        Assert.Contains("Không lưu được cấu hình Hub", hub.Status);
+        Assert.DoesNotContain("Đã", hub.Status);
+        Assert.Equal(0, port.Reconnects);
+        Assert.False(hub.StatusOk);
+        Assert.False(Assert.Single(results).Ok);
+
+        port.FailSave = false;
+        await hub.SaveCommand.ExecuteAsync(null);
+        Assert.Equal(1, port.Reconnects);
+        Assert.False(hub.StatusOk);                                                  // token sai → không xanh
+        Assert.Contains("token sai", hub.Status);
+        Assert.DoesNotContain("token-sai", hub.Status + hub.CheckResult);
+
+        var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(),
+            new HarvestSettingsStore(Path.Combine(Path.GetTempPath(), "hs-" + Guid.NewGuid().ToString("N") + ".json")),
+            hub: port, suiteHubConfigPath: KhongCo());
+        Assert.True(vm.IsHubConnected);                                              // client có (chưa biết kết quả kiểm tra)
+        vm.OnHubSaved(results[^1]);
+        Assert.False(vm.IsHubConnected);
+        Assert.Contains("Hub chưa dùng được", vm.HubStatus);
+        Assert.Contains("token sai", vm.HubStatus);
+    }
+
+    [Fact]
+    public async Task HubHarvest_LayTuShopeeSuite_ChiKhiBam_BaCauBao_LuuMoiDung()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var suite = Path.Combine(dir, "hub-client.json");
+            var port = new FakeHubPort();
+            var hub = new Modules.Harvest.HarvestHubViewModel(port, suiteConfigPath: suite, checkHandler: HubGia("tok-suite"));
+            hub.ImportFromSuiteCommand.Execute(null);                                // N3: thiếu file
+            Assert.Contains("Không thấy file cấu hình Hub của Shopee Suite", hub.Status);
+            File.WriteAllText(suite, "{ hong");
+            hub.ImportFromSuiteCommand.Execute(null);                                // N3: file hỏng
+            Assert.Contains("bị hỏng", hub.Status);
+            File.WriteAllText(suite, "{\"Enabled\":true,\"BaseUrl\":\"https://api.suite.test/\",\"ApiToken\":\"\"}");
+            hub.ImportFromSuiteCommand.Execute(null);                                // N3: thiếu token
+            Assert.Contains("không có token", hub.Status);
+            Assert.False(port.Saved.IsConfigured);
+
+            File.WriteAllText(suite, "{\"Enabled\":true,\"BaseUrl\":\"https://api.suite.test/\",\"ApiToken\":\"tok-suite\"}");
+            var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), new HarvestSettingsStore(Path.Combine(dir, "s.json")),
+                hub: port, suiteHubConfigPath: suite);
+            Assert.False(vm.IsHubConnected);
+            Assert.Contains("Lấy cấu hình từ Shopee Suite", vm.HubStatus);           // chỉ GỢI Ý, không tự đọc file của Suite
+            Assert.Equal(0, port.Reconnects);
+            Assert.False(port.Saved.IsConfigured);
+
+            hub.ImportFromSuiteCommand.Execute(null);
+            Assert.Equal("https://api.suite.test", hub.BaseUrl);
+            Assert.Equal("", hub.Token);                                             // token Suite giữ ẩn
+            Assert.False(port.Saved.IsConfigured);                                   // chưa Lưu thì chưa ghi gì
+            await hub.SaveCommand.ExecuteAsync(null);
+            Assert.Equal(("https://api.suite.test", "tok-suite"), (port.Saved.BaseUrl, port.Saved.ApiToken));
+            vm.OnHubSaved(new Modules.Harvest.HarvestHubSaveResult(true, "ok"));
+            Assert.True(vm.IsHubConnected);
+            Assert.Equal("Đã nối Hub: https://api.suite.test", vm.HubStatus);
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    /// <summary>N2: lưu Hub xong mà app rảnh + đã có file → quét lại (hỏi Hub lại) để "Đã có" / "Còn phải lấy" tính theo Hub.</summary>
+    [Fact]
+    public async Task HubHarvest_LuuXong_QuetLaiFile()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var file = Workbook(dir, "links.xlsx", ("A", ["https://shopee.vn/a-i.1.1", "https://shopee.vn/a-i.1.2"]));
+            var rt = new HarvestRuntime(Path.Combine(dir, "outbox.db"), () => null);
+            var asked = 0;
+            rt.KnownQuery = (ids, _, _) =>
+            {
+                Interlocked.Increment(ref asked);
+                return Task.FromResult<IReadOnlyDictionary<long, DateTimeOffset>>(ids.Where(i => i == 2).ToDictionary(i => i, _ => DateTimeOffset.UtcNow));
+            };
+            HarvestRuntime.SetCurrentForTest(rt);
+            var settings = new HarvestSettingsStore(Path.Combine(dir, "s.json"));
+            settings.Current.WorkbookPath = file;
+            var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), settings, hub: new FakeHubPort { Connected = true },
+                suiteHubConfigPath: KhongCo());
+            await vm.RefreshCommand.ExecuteAsync(null);
+            var before = Volatile.Read(ref asked);
+            vm.OnHubSaved(new Modules.Harvest.HarvestHubSaveResult(true, "ok"));
+            for (var i = 0; i < 100 && (Volatile.Read(ref asked) == before || vm.IsScanning); i++) await Task.Delay(50);
+            Assert.True(Volatile.Read(ref asked) > before, "lưu Hub xong phải quét lại file");
+            Assert.Equal((1, 1), (vm.Sheets[0].HaveCount, vm.Sheets[0].TodoCount));
+        }
+        finally
+        {
+            HarvestRuntime.SetCurrentForTest(null);
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public void HubHarvest_ChuaCauHinh_BaoChuaNoi()
+    {
+        var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(),
+            new HarvestSettingsStore(Path.Combine(Path.GetTempPath(), "hs-" + Guid.NewGuid().ToString("N") + ".json")),
+            hub: new FakeHubPort(), suiteHubConfigPath: KhongCo());
+        Assert.False(vm.IsHubConnected);
+        Assert.StartsWith("Chưa nối Hub", vm.HubStatus);
+        Assert.Contains("Cài đặt → Kết nối Hub", vm.HubStatus);
+        var opened = 0;
+        vm.OpenHubSettings = () => opened++;
+        vm.GoToHubSettingsCommand.Execute(null);
+        Assert.Equal(1, opened);
+    }
+
+    [Fact]
+    public async Task HubHarvest_KiemTraKetNoi_HealthRoiLenhCoToken()
+    {
+        var ok = HubGia("dung");
+        Assert.Equal((true, "Kết nối Hub tốt (token đúng)."), await Modules.Harvest.HarvestHubCheck.CheckAsync("https://hub.test", "dung", ok));
+        Assert.Equal("/api/harvested-products/stats", ok.Requests[1].RequestUri!.AbsolutePath);
+        var (sai, msg) = await Modules.Harvest.HarvestHubCheck.CheckAsync("https://hub.test", "sai-xyz", ok);
+        Assert.False(sai);
+        Assert.Contains("token sai", msg);
+        Assert.DoesNotContain("sai-xyz", msg);
+        var down = new FakeHttp(_ => throw new HttpRequestException("No such host"));
+        Assert.False((await Modules.Harvest.HarvestHubCheck.CheckAsync("https://hub.test", "x", down)).Ok);
+        Assert.False((await Modules.Harvest.HarvestHubCheck.CheckAsync("abc", "x", ok)).Ok);
+    }
+
+    /// <summary>V2: Harvest dùng kho cấu hình Hub RIÊNG (harvest\hub-client.json), gán cho CoordinationRuntime trước init; app chỉ-client.</summary>
+    [Fact]
+    public void NoiDay_HarvestChiDungClientHub_KhoCauHinhRieng()
+    {
+        var app = Src(Path.Combine("src", "Shopee.Workspace", "App.xaml.cs"));
+        var harvestStart = Between(app, "if (WorkspaceAppConfig.IsHarvest)", "// Kiểm tra Brave");
+        Assert.Contains("CoordinationRuntime.ClientOnly = true;", harvestStart);
+        Assert.Contains("CoordinationRuntime.ClientStore = Modules.Harvest.HarvestHubPort.Store;", harvestStart);
+        Assert.True(app.IndexOf("CoordinationRuntime.ClientStore = ", StringComparison.Ordinal)
+                    < app.IndexOf("CoordinationRuntime.InitForCurrentMode();", StringComparison.Ordinal));
+        var rt = Src(Path.Combine("src", "Shopee.Core", "Coordination", "CoordinationRuntime.cs"));
+        Assert.Contains("InitClientOnlyFromConfig();", Between(rt, "if (ClientOnly)", "var mode ="));
+        Assert.Equal(Path.Combine(Shopee.Core.Infrastructure.SuitePaths.ModuleDir("harvest"), "hub-client.json"),
+            Modules.Harvest.HarvestHubPort.Store.FilePath);
+        Assert.NotEqual(Shopee.Core.Infrastructure.SuitePaths.RootFile("hub-client.json"), Modules.Harvest.HarvestHubPort.Store.FilePath);
+        Assert.Equal(Modules.Harvest.HarvestHubPort.Store.FilePath, Modules.Harvest.HarvestHubPort.Instance.ConfigPath);
     }
 
     [Fact]
@@ -625,6 +1058,8 @@ public sealed class HarvestAppTests
             var shell = new ViewModels.ShellViewModel();
             Assert.Equal(["Workspace", "Cấu hình BigSeller", "Tài khoản & Proxy", "Cài đặt"], shell.Tabs.Select(t => t.Title));
             Assert.Contains("Scrape Multi", RibbonTexts(shell));
+            Assert.DoesNotContain("Kết nối Hub", RibbonTexts(shell));                // mục Hub mới chỉ có ở Harvest
+            Assert.Null(shell.HarvestHub);
             Assert.Null(shell.Harvest);
             Assert.True(shell.ShowBigSellerStatus);
             Assert.Same(shell.Workspace, shell.CurrentScreen);

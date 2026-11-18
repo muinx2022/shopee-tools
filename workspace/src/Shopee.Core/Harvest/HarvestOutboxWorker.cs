@@ -238,6 +238,21 @@ public sealed class HarvestOutboxWorker : IAsyncDisposable
         return n;
     }
 
+    /// <summary>Vừa nối lại Hub (người dùng lưu cấu hình Hub): bỏ mốc lùi dần chung + mốc hẹn của các mục đang chờ (lùi vì "chưa kết
+    /// nối Hub" / lỗi mạng trước đó) rồi đánh thức vòng nền đẩy ngay. Mục nghi vấn / mục lỗi (Hub từ chối) giữ nguyên.</summary>
+    public async Task ResetBackoffAsync()
+    {
+        await _pushGate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            _globalNextTryMs = 0;
+            _failStreak = 0;
+            _outbox.ClearDeferrals();
+        }
+        finally { _pushGate.Release(); }
+        Nudge();
+    }
+
     /// <summary>Đánh thức vòng nền đẩy ngay (vd vừa lưu mục mới, vừa kết nối lại Hub). Mốc lùi dần chung vẫn giữ.</summary>
     public void Nudge()
     {
@@ -320,6 +335,8 @@ public sealed class HarvestOutboxWorker : IAsyncDisposable
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
         catch (OperationCanceledException) { return Transient(batch, "Hub không phản hồi (timeout)"); }
         catch (HttpRequestException ex) { return Transient(batch, "mất kết nối Hub: " + ex.Message); }
+        // Người dùng vừa lưu cấu hình Hub → Reconnect dispose client cũ giữa lúc lô đang bay: lỗi TẠM của kết nối, không phải lỗi outbox.
+        catch (ObjectDisposedException) { return Transient(batch, "kết nối Hub vừa đổi (đang nối lại)"); }
         _responseSeq++;
 
         var codeNo = (int)status;

@@ -74,6 +74,9 @@ public sealed class HarvestRuntime
 
     public Task<int> RequeueFailedAsync() => Worker.RequeueFailedAsync();
 
+    /// <summary>Vừa nối lại Hub (lưu cấu hình Hub): worker bỏ mốc lùi dần "chưa kết nối" và đẩy ngay.</summary>
+    public Task OnHubReconnectedAsync() => Worker.ResetBackoffAsync();
+
     /// <summary>Dòng "Hub: đã nhận P · chờ đẩy Q · lỗi R" cho bảng tổng kết cuối khối (engine tự giới hạn thời gian chờ).</summary>
     public async Task<string?> HubStatusLineAsync(CancellationToken cancellationToken)
     {

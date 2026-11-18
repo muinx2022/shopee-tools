@@ -25,11 +25,18 @@ public sealed partial class HarvestViewModel : ObservableObject
     private readonly IFilePickerService? _picker;
     private CancellationTokenSource? _scanCts;
 
-    public HarvestViewModel(ScrapeViewModel scrape, HarvestSettingsStore? settings = null, IFilePickerService? picker = null)
+    private readonly IHarvestHubPort _hub;
+    private readonly string _suiteHubConfigPath;
+
+    public HarvestViewModel(ScrapeViewModel scrape, HarvestSettingsStore? settings = null, IFilePickerService? picker = null,
+        IHarvestHubPort? hub = null, string? suiteHubConfigPath = null)
     {
         Scrape = scrape;
         _settings = settings ?? HarvestSettingsStore.Shared;
         _picker = picker;
+        _hub = hub ?? HarvestHubPort.Instance;
+        _suiteHubConfigPath = suiteHubConfigPath ?? HarvestHubViewModel.DefaultSuiteConfigPath();
+        RefreshHubState();
         var s = _settings.Current;
         _loading = true;
         WorkbookPath = s.WorkbookPath ?? "";
@@ -139,6 +146,7 @@ public sealed partial class HarvestViewModel : ObservableObject
             var scan = await HarvestScan.ScanAsync(path, MaxAgeDays, HarvestRuntime.Current, cts.Token);
             if (cts.IsCancellationRequested) return;
             ApplyScan(scan);
+            RefreshHubState();
             Status = $"{scan.Sheets.Count} sheet · {scan.Sheets.Sum(x => x.Range.Links?.Items.Count ?? 0)} link.";
         }
         catch (OperationCanceledException) when (cts.IsCancellationRequested) { }
@@ -165,20 +173,92 @@ public sealed partial class HarvestViewModel : ObservableObject
         HubNote = scan.Hub.Known is null
             ? $"⚠ Không hỏi được Hub ({scan.Hub.Error}) — \"đã có\" chỉ tính SP đã lấy trên máy này."
             : "";
-        RunCommand.NotifyCanExecuteChanged();
-        ResetCommand.NotifyCanExecuteChanged();
-        RetrySkippedCommand.NotifyCanExecuteChanged();
+        OnCheckedSetChanged();
     }
+
+    // Đang tick / bỏ tick hàng loạt (ô "chọn tất cả") → lưu MỘT lần ở cuối.
+    private bool _bulkChecking;
 
     private void OnSheetChecked(HarvestSheetRowViewModel row)
     {
         var list = _settings.Current.UncheckedSheetKeys;
         list.RemoveAll(k => string.Equals(k, row.Key, StringComparison.OrdinalIgnoreCase));
         if (!row.IsChecked) list.Add(row.Key);
+        if (_bulkChecking) return;
         _settings.Save();
+        OnCheckedSetChanged();
+    }
+
+    private void OnCheckedSetChanged()
+    {
+        OnPropertyChanged(nameof(AllSheetsChecked));
         RunCommand.NotifyCanExecuteChanged();
         ResetCommand.NotifyCanExecuteChanged();
         RetrySkippedCommand.NotifyCanExecuteChanged();
+    }
+
+    /// <summary>Ô ở tiêu đề cột "Chạy": true = tick hết, false = không sheet nào, null = một phần. Gán true / false → tick / bỏ hết
+    /// (nhớ như tick tay).</summary>
+    public bool? AllSheetsChecked
+    {
+        get
+        {
+            if (Sheets.Count == 0) return false;
+            var n = Sheets.Count(s => s.IsChecked);
+            return n == Sheets.Count ? true : n == 0 ? false : null;
+        }
+        set
+        {
+            var target = value ?? true;   // bấm khi đang "một phần" → tick hết
+            _bulkChecking = true;
+            try { foreach (var s in Sheets) s.IsChecked = target; }
+            finally { _bulkChecking = false; }
+            _settings.Save();
+            OnCheckedSetChanged();
+        }
+    }
+
+    // ── Trạng thái Hub ─────────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Đã nối Hub (có client) chưa.</summary>
+    [ObservableProperty] private bool _isHubConnected;
+    /// <summary>Dòng trạng thái Hub trên màn chính ("Đã nối Hub: …" / "Chưa nối Hub — …").</summary>
+    [ObservableProperty] private string _hubStatus = "";
+
+    /// <summary>Shell cấp: mở Cài đặt → Kết nối Hub.</summary>
+    public Action? OpenHubSettings { get; set; }
+
+    [RelayCommand]
+    private void GoToHubSettings() => OpenHubSettings?.Invoke();
+
+    /// <summary>Đọc lại trạng thái Hub (sau khi lưu ở Kết nối Hub). Chưa nối mà máy có cấu hình của Shopee Suite → gợi ý lấy (KHÔNG tự
+    /// đọc ngầm file của app khác).</summary>
+    public void RefreshHubState()
+    {
+        var cur = _hub.Current;
+        // Lần lưu / kiểm tra gần nhất báo Hub chưa dùng được (vd token sai) → KHÔNG báo "đã nối" dù đã có client.
+        var failed = _lastHubSave is { Ok: false };
+        IsHubConnected = _hub.Connected && !failed;
+        HubStatus = IsHubConnected
+            ? $"Đã nối Hub: {cur.BaseUrl}"
+            : failed && _hub.Connected
+                ? $"Hub chưa dùng được: {_lastHubSave!.Message} Vào Cài đặt → Kết nối Hub."
+            : File.Exists(_suiteHubConfigPath)
+                ? "Chưa nối Hub — có cấu hình Hub của Shopee Suite trên máy này: vào Cài đặt → Kết nối Hub, bấm \"Lấy cấu hình từ Shopee Suite\" rồi Lưu."
+                : "Chưa nối Hub — dữ liệu chỉ lưu trên máy, chưa đẩy lên Hub được và không bỏ qua được SP Hub đã có. Vào Cài đặt → Kết nối Hub.";
+        if (IsHubConnected && HubNote.Contains("chưa nối Hub", StringComparison.Ordinal)) HubNote = "";
+    }
+
+    // Kết quả lưu + kiểm tra Hub gần nhất (null = chưa lưu lần nào trong phiên này).
+    private HarvestHubSaveResult? _lastHubSave;
+
+    /// <summary>Vừa lưu ở Cài đặt → Kết nối Hub: cập nhật dòng trạng thái; app rảnh và đã có file thì quét lại để "Đã có" / "Còn phải
+    /// lấy" tính lại theo Hub (N2).</summary>
+    public void OnHubSaved(HarvestHubSaveResult result)
+    {
+        _lastHubSave = result;
+        RefreshHubState();
+        if (!Scrape.IsBusy && HasFile) _ = RefreshAsync();
     }
 
     // ── Cấu hình chạy ───────────────────────────────────────────────────────────────────────────────────────────────

@@ -17,7 +17,8 @@ public sealed class HubServerConfig
     public HubServerConfig Clone() => new() { Enabled = Enabled, Port = Port, ApiToken = ApiToken };
 }
 
-/// <summary>Kho cấu hình chế độ Hub, đọc từ %AppData%\ShopeeSuite\hub-server.json (local-only, CHỈ ĐỌC —
+/// <summary>Kho cấu hình chế độ Hub, đọc từ <c>&lt;SuitePaths.Root&gt;\hub-server.json</c> (<c>%AppData%\ShopeeBackend\Workspace\</c>
+/// hoặc theo <c>data-dir.txt</c>; local-only, CHỈ ĐỌC —
 /// hub web nay chạy riêng trên VM nên app không còn ghi file này). Singleton.</summary>
 public sealed class HubServerConfigStore
 {

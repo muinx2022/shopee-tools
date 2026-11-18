@@ -8,6 +8,8 @@ using Xunit;
 
 namespace Shopee.Workspace.Tests;
 
+// Đặt WorkspaceAppConfig.Role (static) → chạy tuần tự với các lớp test khác cũng đổi vai trò (HarvestAppTests), không thì đua nhau.
+[Collection("Sequential")]
 public sealed class ScrapeMultiViewTests
 {
     [Fact]

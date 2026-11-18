@@ -810,6 +810,40 @@ public sealed class HarvestOutboxWorkerTests : IDisposable
     }
 
     /// <summary>Hub giả: ghi lại request đã parse, trả theo <see cref="Respond"/> (tham số 2 = số thứ tự lần gọi).</summary>
+    /// <summary>GĐ7.1 N4: chưa nối Hub → lô lùi dần (mốc chung + mốc hẹn từng mục). Người dùng lưu cấu hình Hub → ResetBackoffAsync bỏ
+    /// mọi mốc đó: lượt kế đẩy NGAY, không phải chờ hết lùi dần.</summary>
+    [Fact]
+    public async Task NoiLaiHub_BoMocLuiDanChuaKetNoi_DayNgay()
+    {
+        await Seed(2);
+        HubClient? client = null;
+        var w = new HarvestOutboxWorker(_box, () => client, s => { lock (_log) _log.Add(s); }, null, () => _clock.Now, () => 0.5);
+        Assert.Equal(HarvestPushOutcome.Transient, await w.PushOnceAsync(ignoreBackoff: false, CancellationToken.None));
+        Assert.Contains("chưa kết nối Hub", w.LastError);
+        client = _client;                                                            // vừa lưu cấu hình, đã có client
+        Assert.Equal(HarvestPushOutcome.NotDue, await w.PushOnceAsync(ignoreBackoff: false, CancellationToken.None));
+        Assert.Empty(_hub.Requests);
+
+        await w.ResetBackoffAsync();
+        Assert.Equal(HarvestPushOutcome.Sent, await w.PushOnceAsync(ignoreBackoff: false, CancellationToken.None));
+        Assert.Single(_hub.Requests);
+        Assert.Equal(0, (await w.GetStatsAsync()).Pending);
+    }
+
+    /// <summary>GĐ7.1 N5: Reconnect dispose client cũ giữa lúc lô đang bay → ObjectDisposedException là lỗi TẠM của kết nối (giữ lô,
+    /// lùi dần, nhãn đúng), không phải "lỗi outbox".</summary>
+    [Fact]
+    public async Task ClientBiDisposeGiuaLuot_LaLoiTamKetNoi_NhanDung()
+    {
+        await Seed(1);
+        _hub.OnSend = () => throw new ObjectDisposedException("HttpClient");
+        var w = Worker();
+        Assert.Equal(HarvestPushOutcome.Transient, await w.PushOnceAsync(ignoreBackoff: false, CancellationToken.None));
+        Assert.Contains("kết nối Hub vừa đổi", w.LastError);
+        Assert.DoesNotContain("outbox", w.LastError);
+        Assert.Equal("pending", Row(1).Status);
+    }
+
     private sealed class FakeHub : HttpMessageHandler
     {
         public Func<HarvestedProductBatchRequest, int, HttpResponseMessage> Respond { get; set; } = (r, _) => Ok(r);

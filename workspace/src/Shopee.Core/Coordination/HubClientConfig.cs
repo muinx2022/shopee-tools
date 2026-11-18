@@ -19,13 +19,14 @@ public sealed class HubClientConfig
     public HubClientConfig Clone() => new() { Enabled = Enabled, BaseUrl = BaseUrl, ApiToken = ApiToken };
 }
 
-/// <summary>Kho cấu hình client→Hub, lưu tại %AppData%\ShopeeSuite\hub-client.json (local-only). Singleton.</summary>
+/// <summary>Kho cấu hình client→Hub (local-only). <see cref="Shared"/> = <c>&lt;SuitePaths.Root&gt;\hub-client.json</c>
+/// (<c>%AppData%\ShopeeBackend\Workspace\hub-client.json</c>, hoặc theo <c>data-dir.txt</c>) — app Scrape / Update dùng. Kho
+/// khác (vd app Harvest: <c>harvest\hub-client.json</c>) dựng bằng <see cref="HubClientConfigStore(string)"/>.</summary>
 public sealed class HubClientConfigStore
 {
-    private static readonly Lazy<HubClientConfigStore> _shared = new(() => new HubClientConfigStore());
+    private static readonly Lazy<HubClientConfigStore> _shared = new(() => new HubClientConfigStore(SuitePaths.RootFile("hub-client.json")));
     public static HubClientConfigStore Shared => _shared.Value;
 
-    private static readonly string FilePath = SuitePaths.RootFile("hub-client.json");
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
     private readonly object _lock = new();
@@ -33,7 +34,14 @@ public sealed class HubClientConfigStore
 
     public event Action? Changed;
 
-    private HubClientConfigStore() => Load();
+    /// <summary>Đường dẫn file cấu hình của kho này.</summary>
+    public string FilePath { get; }
+
+    public HubClientConfigStore(string filePath)
+    {
+        FilePath = filePath;
+        Load();
+    }
 
     public HubClientConfig Current { get { lock (_lock) return _config.Clone(); } }
 
@@ -46,15 +54,19 @@ public sealed class HubClientConfigStore
         }
     }
 
-    public void Save(HubClientConfig config)
+    /// <summary>Ghi cấu hình. true = đã xuống đĩa; false = ghi hỏng (không ném — caller cần báo người dùng thì xem kết quả). Bản
+    /// trong RAM vẫn đổi như cũ.</summary>
+    public bool Save(HubClientConfig config)
     {
+        var ok = false;
         try
         {
             string json;
             lock (_lock) { _config = config.Clone(); json = JsonSerializer.Serialize(_config, JsonOpts); }
-            JsonAtomicFile.SaveText(FilePath, json);   // serialize trong lock, ghi đĩa ngoài lock (giữ như cũ)
+            ok = JsonAtomicFile.SaveText(FilePath, json);   // serialize trong lock, ghi đĩa ngoài lock (giữ như cũ)
         }
         catch { }
         Changed?.Invoke();
+        return ok;
     }
 }

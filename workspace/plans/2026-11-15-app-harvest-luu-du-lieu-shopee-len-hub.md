@@ -526,6 +526,65 @@ không có app, người dùng tự bấm — SP lưu **không gắn nhóm** (kh
 - [ ] Build Release 0 warning (workspace, Hub); test Core / Workspace / Hub / JS xanh; chạy thật trên Brave (bấm tay + app) do user
       xác nhận.
 
+### GĐ7.1 — sửa giao diện + nối Hub cho Harvest
+
+User chạy bản GĐ6+GĐ7 (2026-11-18) báo: dải ô số trên màn Lấy dữ liệu bị xén chữ và đè lên hàng nút; thiếu chọn tất cả sheet; màn
+báo "Không hỏi được Hub (chưa nối Hub)" — Workspace đọc `SuitePaths.RootFile("hub-client.json")` (`%AppData%\ShopeeBackend\Workspace`)
+mà máy user chỉ có cấu hình ở `%AppData%\ShopeeSuite\hub-client.json`, và Workspace không có màn nhập Hub → `CoordinationRuntime.Client`
+null → `known` không chạy, extension không nhận được cấu hình Hub ở chế độ tự động, outbox không đẩy được.
+
+1. **Giao diện** (`Modules/Harvest/HarvestView.xaml`): ô số bỏ chiều cao cố định (theme TextBox MinHeight 30 + Padding 9,4 — đặt
+   Height 28 là xén chữ), rộng 72 (đủ 4 chữ số), bỏ margin âm; dải cấu hình / hàng nút / dòng trạng thái là 3 khối xếp dọc trong một
+   StackPanel, mỗi khối là WrapPanel theo NHÓM (nhãn + ô + đơn vị) → cửa sổ hẹp thì xuống dòng nguyên nhóm, không chồng nhau. Test dựng
+   màn ở 1100 / 1900 px × 100 / 125 %: chữ mọi ô số không xén (ExtentHeight ≤ ViewportHeight), không ô nào chồng lên nút; biến môi
+   trường `HARVEST_RENDER_DIR` lưu ảnh PNG.
+2. **Chọn tất cả sheet:** ô ở tiêu đề cột "Chạy" (`HarvestViewModel.AllSheetsChecked`: true = tất cả, false = không, null = một phần);
+   bấm → tick hết / bỏ hết (đang một phần → tick hết), nhớ như tick tay (lưu một lần).
+3. **Nối Hub cho Harvest:**
+   - Cài đặt → **Kết nối Hub** (`HarvestHubView` / `HarvestHubViewModel`, CHỈ app Harvest): URL, token (ô mật khẩu, token đã lưu không
+     hiện lại — để trống = giữ nguyên), mã máy chỉ đọc; **Lưu** ghi `hub-client.json` của Workspace rồi `CoordinationRuntime.Reconnect()`
+     ngay; **Kiểm tra kết nối** gọi `/health` rồi `stats` có token (phân biệt "không tới được Hub" / "token sai"); **Lấy cấu hình từ
+     Shopee Suite** đọc `%AppData%\ShopeeSuite\hub-client.json` CHỈ khi người dùng bấm, điền URL, giữ token ẩn chờ Lưu.
+   - Không tự đọc file của Suite lúc khởi động: đọc ngầm token của app khác (có thể là Hub / token khác người dùng muốn) là thao tác
+     người dùng không thấy; thay vào đó màn Lấy dữ liệu GỢI Ý ("có cấu hình Hub của Shopee Suite… bấm Lấy cấu hình") khi chưa nối mà
+     file Suite có mặt.
+   - Màn Lấy dữ liệu: dòng trạng thái Hub (đã nối: URL / chưa nối: hậu quả + cách sửa) + nút "Cài đặt Hub"; lưu Hub xong cập nhật ngay.
+   - **Init chỉ-client:** `CoordinationRuntime.ClientOnly = true` cho Harvest (đặt trước init) → `InitForCurrentMode` / `Reconnect` chỉ
+     dựng `Client` (`InitClientOnlyFromConfig`): không `HttpCoordinationHub` (không heartbeat máy, không poll `/fleet`, không fold
+     ledger, không kéo cấu hình / cookie BigSeller, không tranh việc với app Scrape cùng máy, không cùng mã máy heartbeat 2 process).
+     Harvest từ GĐ6 không dùng gì của `HttpCoordinationHub` (không lease theo dòng, không ledger; tiến độ dựng lại từ `done`); bỏ dòng đặt
+     `HttpCoordinationHub.ProgressFoldOp = Harvest`. Các app khác: `ClientOnly` mặc định false, không đổi.
+   - Token không ra log / câu báo (kể cả câu báo "token sai").
+4. **Vòng sửa sau phản biện (user chốt V2):**
+   - **V2 — file cấu hình Hub RIÊNG của Harvest:** `<SuitePaths.Root>\harvest\hub-client.json` (`HarvestHubPort.Store` =
+     `new HubClientConfigStore(path)` — kho nhận đường dẫn). App Harvest gán `CoordinationRuntime.ClientStore` = kho này trước init →
+     init / Reconnect / `HarvestHubAccess` đọc file riêng; app Scrape / Update vẫn `HubClientConfigStore.Shared`
+     (`<Root>\hub-client.json`), không đổi. Lưu ở Harvest không tạo / sửa file chung (test). Sửa chú thích sai đường dẫn
+     (`%AppData%\ShopeeSuite\…` → `<SuitePaths.Root>` = `%AppData%\ShopeeBackend\Workspace\…`) ở `HubClientConfig.cs`,
+     `HubServerConfig.cs`, `MachineIdentity.cs`.
+   - **V1 — luật URL chung với extension** (`HarvestHubUrl`, bản C# của `normalizeHubUrl`): chỉ https, hoặc http tới localhost /
+     127.0.0.1; chuẩn hoá về gốc `scheme://host[:port]`. http ra ngoài máy → cảnh báo đỏ, không Lưu, Kiểm tra chỉ gọi `/health`
+     (KHÔNG gửi token). Đổi URL khác URL đã lưu (hoặc khác URL lấy từ Suite) → không tự gửi token cũ, bắt nhập lại. URL khác Hub mặc
+     định (không phải localhost) → nhắc cấp quyền ở trang Cài đặt của extension. (Chưa làm: app tự hỏi extension có quyền trước khi
+     chạy — extension hiện báo "Chưa cấp quyền truy cập …" vào hàng đợi của nó.)
+   - **V3 — test hành vi `ClientOnly`** (Core, cấu hình giả hợp lệ ở kho tạm): sau `InitForCurrentMode()` và `Reconnect()`: `Hub` null,
+     `Coordination.Hub` là NoOp, `Client` có, `OrdersSlot` / `Relogin` null; reset static sau test.
+   - **V4:** `HubClientConfigStore.Save` trả `bool`; Lưu hỏng → báo lỗi (đường dẫn file), không nối lại, không "Đã nối".
+   - N1 Lưu xong tự Kiểm tra kết nối (token sai → báo rõ, không xanh; màn chính "Hub chưa dùng được"); N2 Lưu xong, app rảnh + có file
+     → quét lại; N3 lấy từ Suite: 3 câu báo thiếu file / file hỏng / thiếu URL-token; N4 Lưu xong → worker outbox bỏ mốc lùi dần + mốc
+     hẹn của mục chờ (`ResetBackoffAsync` / `HarvestOutbox.ClearDeferrals`) rồi đẩy ngay; N5 `ObjectDisposedException` lúc Reconnect →
+     lỗi tạm "kết nối Hub vừa đổi" (không phải "lỗi outbox"); N6 bỏ `xUnit1031` (test dựng màn: VM quét file async trước, view dựng
+     trên STA).
+
+**Tiêu chí nghiệm thu GĐ7.1:**
+- [ ] Ô số không xén chữ, không đè hàng nút ở 1100 / 1900 px × 100 / 125 % (test dựng màn + ảnh).
+- [ ] Ô tiêu đề "Chạy" 3 trạng thái, bấm tick / bỏ hết, nhớ qua lần mở sau (test VM).
+- [ ] Lưu cấu hình Hub → nạp lại đúng, nối lại ngay; lấy từ file Suite (file giả); chưa cấu hình → báo "Chưa nối Hub" kèm cách sửa;
+      app Scrape không có mục Kết nối Hub (test).
+- [ ] Harvest init chỉ-client (không suất workspace); user nhập Hub trên máy thật → màn báo "Đã nối Hub", `known` chạy, outbox đẩy được.
+- [ ] Cấu hình Hub của Harvest nằm ở `harvest\hub-client.json`; Lưu ở Harvest không tạo / sửa `hub-client.json` chung (test).
+- [ ] URL http ra ngoài máy: cảnh báo, không lưu, không gửi token; đổi URL không tự gửi token cũ (test); lưu hỏng / token sai báo rõ.
+
 ## 4. Tiêu chí nghiệm thu
 
 - [ ] `dotnet build workspace/ShopeeWorkspace.sln -c Release` và `dotnet build suite/server/ShopeeHub.sln` xanh; toàn bộ

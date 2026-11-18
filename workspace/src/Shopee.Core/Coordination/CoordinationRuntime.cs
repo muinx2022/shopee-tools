@@ -27,6 +27,23 @@ public static class CoordinationRuntime
     /// Van thoát khi chắc chắn máy kia đã dừng nhưng khoá còn sót.</summary>
     public static bool ForceNextRun { get; set; }
 
+    /// <summary>true → <see cref="InitForCurrentMode"/> (và <see cref="Reconnect"/>) chỉ dựng <see cref="Client"/>
+    /// (<see cref="InitClientOnlyFromConfig"/>), bất kể chế độ app. Đặt MỘT lần lúc khởi động, trước lần init đầu (app Harvest).
+    /// Mặc định false — các app khác không đổi.</summary>
+    public static bool ClientOnly { get; set; }
+
+    private static HubClientConfigStore? _clientStore;
+
+    /// <summary>Kho cấu hình client→Hub mà init / <see cref="Reconnect"/> đọc. Mặc định <see cref="HubClientConfigStore.Shared"/>
+    /// (app Scrape / Update không đổi); app Harvest đặt kho RIÊNG (<c>harvest\hub-client.json</c>) MỘT lần lúc khởi động, trước init.
+    /// Gán null = về mặc định.</summary>
+    [System.Diagnostics.CodeAnalysis.AllowNull]
+    public static HubClientConfigStore ClientStore
+    {
+        get => _clientStore ?? HubClientConfigStore.Shared;
+        set => _clientStore = value;
+    }
+
     /// <summary>
     /// Khởi tạo điều phối theo CHẾ ĐỘ app hiện hành — MỘT chỗ duy nhất quyết suất nào chạy (xem
     /// <see cref="MachineSlots"/>), dùng cả lúc khởi động lẫn lúc <see cref="Reconnect"/>:
@@ -38,6 +55,13 @@ public static class CoordinationRuntime
     /// </summary>
     public static void InitForCurrentMode()
     {
+        // App chỉ cần đẩy/đọc dữ liệu (Harvest) — không suất workspace: không heartbeat máy, không poll /fleet, không fold ledger,
+        // không kéo cấu hình / cookie BigSeller, không tranh việc với app Scrape cùng máy. Áp cả lúc Reconnect.
+        if (ClientOnly)
+        {
+            InitClientOnlyFromConfig();
+            return;
+        }
         var mode = Infrastructure.AppModeStore.Shared.Current;
         if (Infrastructure.AppModeStore.ShowsWorkspace(mode)) InitFromConfig();
         else InitClientOnlyFromConfig();
@@ -135,7 +159,7 @@ public static class CoordinationRuntime
         var srv = HubServerConfigStore.Shared.Current;
         return srv.Enabled && !string.IsNullOrWhiteSpace(srv.ApiToken)
             ? new HubClientConfig { Enabled = true, BaseUrl = $"http://localhost:{srv.Port}", ApiToken = srv.ApiToken }
-            : HubClientConfigStore.Shared.Current;
+            : ClientStore.Current;
     }
 
     /// <summary>

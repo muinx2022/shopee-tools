@@ -1,0 +1,65 @@
+<UserControl x:Class="Shopee.Workspace.Modules.Harvest.HarvestHubView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:b="clr-namespace:Shopee.Workspace.Behaviors"
+             x:Name="Root">
+    <!-- Cài đặt → Kết nối Hub (CHỈ app Harvest): URL + token (ô mật khẩu, token đã lưu không hiện lại) + mã máy. -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="18,14,18,14" MaxWidth="760" HorizontalAlignment="Left">
+            <TextBlock Style="{StaticResource h1}" Text="Kết nối Hub" />
+            <TextBlock Style="{StaticResource caption}" TextWrapping="Wrap" Margin="0,3,0,4"
+                       Text="App lưu dữ liệu SP lên Hub và hỏi Hub SP nào đã có. Nhập URL + token Hub (token dùng chung của cả hệ thống), bấm Lưu — app nối lại ngay rồi tự kiểm tra, không phải mở lại." />
+            <TextBlock Style="{StaticResource caption}" TextWrapping="Wrap" Margin="0,0,0,12" Text="{Binding ConfigNote}" />
+
+            <Border Style="{StaticResource card}" Padding="14,12">
+                <StackPanel>
+                    <TextBlock Text="{Binding Status}" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,10">
+                        <TextBlock.Style>
+                            <Style TargetType="{x:Type TextBlock}">
+                                <Setter Property="Foreground" Value="{StaticResource WarningBrush}" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding StatusOk}" Value="True">
+                                        <Setter Property="Foreground" Value="{StaticResource SuccessBrush}" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+
+                    <TextBlock Style="{StaticResource fieldLabel}" Text="URL Hub" />
+                    <TextBox Text="{Binding BaseUrl, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Text="{Binding UrlWarning}" Foreground="{StaticResource DangerBrush}" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Visibility="{Binding UrlWarning, Converter={StaticResource StringToVis}}" />
+                    <TextBlock Text="{Binding PermissionNote}" Foreground="{StaticResource WarningBrush}" FontSize="11.5" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Visibility="{Binding PermissionNote, Converter={StaticResource StringToVis}}" />
+                    <Border Height="10" />
+
+                    <TextBlock Style="{StaticResource fieldLabel}" Text="Token" />
+                    <PasswordBox b:PasswordBoxAssist.BindPassword="True" MinHeight="30" Padding="9,4" VerticalContentAlignment="Center"
+                                 b:PasswordBoxAssist.BoundPassword="{Binding Token, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                    <TextBlock Style="{StaticResource caption}" Text="{Binding TokenNote}" Margin="0,4,0,10" TextWrapping="Wrap" />
+
+                    <TextBlock Style="{StaticResource fieldLabel}" Text="Mã máy (chỉ đọc)" />
+                    <TextBox Text="{Binding MachineId, Mode=OneWay}" IsReadOnly="True" Margin="0,0,0,12" />
+
+                    <WrapPanel>
+                        <Button Style="{StaticResource primary}" Command="{Binding SaveCommand}" Margin="0,0,8,6"
+                                ToolTip="Lưu vào file cấu hình Hub riêng của app Harvest (harvest\hub-client.json) rồi nối lại Hub ngay và tự kiểm tra.">
+                            <TextBlock Style="{StaticResource btnLabel}" Text="Lưu" />
+                        </Button>
+                        <Button Style="{StaticResource subtle}" Command="{Binding CheckCommand}" Margin="0,0,8,6" Padding="10,0" MinHeight="30"
+                                ToolTip="Gọi /health rồi một lệnh có token để biết URL và token có đúng không (không lưu). URL http ra ngoài máy: chỉ gọi /health, không gửi token.">
+                            <TextBlock Style="{StaticResource btnLabel}" Text="Kiểm tra kết nối" />
+                        </Button>
+                        <Button Style="{StaticResource subtle}" Command="{Binding ImportFromSuiteCommand}" Margin="0,0,8,6" Padding="10,0" MinHeight="30"
+                                ToolTip="Đọc cấu hình Hub của app Shopee Suite trên máy này (%AppData%\ShopeeSuite\hub-client.json) rồi điền vào — bấm Lưu để dùng.">
+                            <TextBlock Style="{StaticResource btnLabel}" Text="Lấy cấu hình từ Shopee Suite" />
+                        </Button>
+                    </WrapPanel>
+                    <TextBlock Text="{Binding CheckResult}" TextWrapping="Wrap" Margin="0,4,0,0"
+                               Visibility="{Binding CheckResult, Converter={StaticResource StringToVis}}" />
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>
