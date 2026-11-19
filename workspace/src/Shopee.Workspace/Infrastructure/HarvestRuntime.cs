@@ -32,6 +32,10 @@ public sealed class HarvestRuntime
     /// <summary>GĐ7 — URL / token / mã máy Hub app đang dùng, truyền cho extension (null = chưa nối Hub).</summary>
     public Func<HarvestHubAccess?> HubAccess { get; }
 
+    /// <summary>GĐ9 — số liệu ảnh gốc extension đẩy lên Hub trong các khoảng nghỉ (cộng dồn mọi cửa sổ, từ lúc mở app). Đổi → bắn
+    /// <see cref="StatsChanged"/>.</summary>
+    public HarvestSourceImageProgress SourceImages { get; } = new();
+
     /// <summary>Số liệu có thể đã đổi (lưu mới / đẩy xong / lỗi / requeue) — UI gọi lại <see cref="GetStatsAsync"/>. Bắn từ
     /// luồng nền.</summary>
     public event Action? StatsChanged;
@@ -58,6 +62,7 @@ public sealed class HarvestRuntime
             RaiseStatsChanged();
         });
         ExtensionSink = new ExtensionPushedHarvestSink(Outbox, HubAccess, RaiseStatsChanged);
+        SourceImages.Changed += RaiseStatsChanged;
     }
 
     /// <summary>Dựng outbox tại đường dẫn mặc định + chạy worker nền. Gọi MỘT lần lúc khởi động app Harvest, sau khi

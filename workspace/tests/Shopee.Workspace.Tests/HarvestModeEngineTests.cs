@@ -1092,6 +1092,420 @@ public sealed class HarvestModeEngineTests
         Assert.True(x.Cfg.LastCompletedRow < 6, $"LastCompletedRow={x.Cfg.LastCompletedRow}");
     }
 
+    // ── GĐ9: lượt ảnh gốc trong khoảng nghỉ giữa 2 SP ──
+
+    /// <summary>IO giả có ĐỒNG HỒ CHẠY (nghỉ / chờ cộng thời gian) + lượt ảnh theo kịch bản; ghi thứ tự sự kiện.</summary>
+    private sealed class ImageIo(Func<int, HarvestStepResult> stepOf) : IHarvestLoopIo
+    {
+        public DateTimeOffset Clock = Received;
+        public int CurrentLinkIndex { get; set; }
+        public DateTimeOffset Now => Clock;
+        public List<string> Events { get; } = [];
+        public List<int> Budgets { get; } = [];
+        public List<DateTimeOffset> StepTimes { get; } = [];
+        public Func<int, CancellationToken, Task<SourceImageRound?>> Images { get; set; } =
+            (_, _) => Task.FromResult<SourceImageRound?>(null);
+        public Func<int?> Missing { get; set; } = () => null;
+        public Func<RunnerExtensionRpc.BeforeNextLinkCheckResult>? Check { get; set; }
+
+        public Task<HarvestStepResult> ExecuteStepAsync(string link, int rowNumber, string statusText, int? tabId, CancellationToken cancellationToken)
+        {
+            Events.Add($"step:{rowNumber}");
+            StepTimes.Add(Clock);
+            return Task.FromResult(stepOf(rowNumber));
+        }
+        public Task PushDisplayStateAsync(int linkIndex, int? tabId, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task ShowOverlayAsync(int? tabId, string text, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task SimulateRestAsync(string pageUrl, int delayMs, CancellationToken cancellationToken)
+        {
+            Events.Add("rest");
+            Clock = Clock.AddMilliseconds(delayMs);
+            return Task.CompletedTask;
+        }
+        public Task<RunnerExtensionRpc.BeforeNextLinkCheckResult> CheckBeforeNextLinkAsync(int tabId, int rowNumber, string sku, CancellationToken cancellationToken)
+        {
+            Events.Add("check");
+            return Task.FromResult(Check?.Invoke() ?? new RunnerExtensionRpc.BeforeNextLinkCheckResult(true, false, false, false, null, tabId, null));
+        }
+        public Task DelayAsync(int ms, CancellationToken cancellationToken)
+        {
+            Events.Add($"delay:{ms}");
+            Clock = Clock.AddMilliseconds(ms);
+            return Task.CompletedTask;
+        }
+        public async Task<SourceImageRound?> RunSourceImagesAsync(int budgetMs, CancellationToken cancellationToken)
+        {
+            Budgets.Add(budgetMs);
+            Events.Add("images:start");
+            var r = await Images(budgetMs, cancellationToken);
+            Events.Add("images:end");
+            return r;
+        }
+        public Task<int?> SourceImagesMissingAsync(CancellationToken cancellationToken)
+        {
+            Events.Add("missing");
+            return Task.FromResult(Missing());
+        }
+    }
+
+    private static SourceImageRound ImgRound(int pushed = 0, int existed = 0, int failed = 0, int missing = 0, string? stoppedBy = null,
+        string? hubFullCode = null) =>
+        new("r1", 0, 0, pushed, existed, failed, 0, 0, stoppedBy, hubFullCode, null, 0, missing, []);
+
+    private static async Task<(bool Done, ImageIo Io, InstanceConfig Cfg, List<string> Log)> RunImageBlock(
+        Action<ImageIo> setup, int restSeconds, int from = 2, int to = 3, CancellationToken ct = default)
+    {
+        var x = ProcF(new FakeFailureSink());
+        var io = new ImageIo(_ => Step(ok: true));
+        setup(io);
+        var items = Enumerable.Range(from, to - from + 1)
+            .Select(r => new Shopee.Core.Scrape.SheetLinkItem(r, new Dictionary<string, object?>(), $"https://shopee.vn/sp-i.1.{r}"))
+            .ToList();
+        var done = await HarvestRunnerLoop.RunRowsAsync(items, x.Cfg, x.P, x.Host, io,
+            Shopee.Core.Scrape.ScrapeRestWindow.Resolve(restSeconds, restSeconds), "hdr", to, "Data",
+            new System.Runtime.CompilerServices.StrongBox<int?>(5), x.Log.Add, () => { }, ct);
+        return (done, io, x.Cfg, x.Log);
+    }
+
+    /// <summary>Nghỉ 60 s → lượt ảnh ngân sách 45 s, khởi động TRƯỚC phần nghỉ, chạy song song với nghỉ + kiểm captcha, được chờ xong
+    /// TRƯỚC khi chờ nốt tới mốc link kế; mốc link kế không đổi; có số → 1 dòng log. Hết khối: hỏi số còn chờ (không có → thôi).</summary>
+    [Fact]
+    public async Task AnhGoc_ChaySongSongTrongKhoangNghi_DungNganSach_ChoXongTruocLinkKe()
+    {
+        var tcs = new TaskCompletionSource<SourceImageRound?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var (done, io, _, log) = await RunImageBlock(io =>
+        {
+            io.Images = (_, _) => tcs.Task;
+            io.Check = () =>
+            {
+                tcs.SetResult(ImgRound(pushed: 8, existed: 2, failed: 1, missing: 30));   // lượt ảnh xong trong lúc kiểm captcha
+                return new RunnerExtensionRpc.BeforeNextLinkCheckResult(true, false, false, false, null, 5, null);
+            };
+        }, restSeconds: 60);
+
+        Assert.True(done);
+        Assert.Equal([45_000], io.Budgets);
+        Assert.Equal(["step:2", "images:start", "rest", "check", "images:end", "delay:30000", "step:3", "missing"], io.Events);
+        Assert.Equal(Received.AddSeconds(60), io.StepTimes[1]);   // mốc mở link kế không đổi
+        Assert.Contains("Ảnh gốc: đẩy 8 · đã có 2 · lỗi 1 · còn thiếu 30", log);
+    }
+
+    /// <summary>Lượt ảnh chạy quá mốc link kế (chậm): link kế mở NGAY sau khi lượt xong, không cộng thêm chờ.</summary>
+    [Fact]
+    public async Task AnhGoc_ChayQuaMoc_KhongChoThem()
+    {
+        ImageIo? io0 = null;
+        var (done, io, _, _) = await RunImageBlock(io =>
+        {
+            io0 = io;
+            io.Images = (_, _) =>
+            {
+                io0!.Clock = io0.Clock.AddSeconds(70);
+                return Task.FromResult<SourceImageRound?>(ImgRound());
+            };
+        }, restSeconds: 60);
+        Assert.True(done);
+        Assert.DoesNotContain(io.Events, e => e.StartsWith("delay:", StringComparison.Ordinal));
+        Assert.Equal(Received.AddSeconds(70 + 30), io.StepTimes[1]);
+    }
+
+    /// <summary>Không chạy lượt sau dòng cuối khối; nghỉ quá ngắn (ngân sách &lt; 10 s) thì chỉ hỏi số còn chờ; lượt không có số thì
+    /// không log.</summary>
+    [Fact]
+    public async Task AnhGoc_KhongChaySauDongCuoi_VaKhiNghiQuaNgan()
+    {
+        var (done, io, _, log) = await RunImageBlock(_ => { }, restSeconds: 60, from: 2, to: 5);
+        Assert.True(done);
+        Assert.Equal([45_000, 45_000, 45_000], io.Budgets);   // 4 dòng → 3 khoảng nghỉ
+        Assert.Equal(["step:5", "missing"], io.Events[^2..]);
+        Assert.DoesNotContain(log, l => l.Contains("Ảnh gốc", StringComparison.Ordinal));
+
+        var (done2, io2, _, _) = await RunImageBlock(_ => { }, restSeconds: 24);   // 24 s − 15 s = 9 s < 10 s
+        Assert.True(done2);
+        Assert.Empty(io2.Budgets);
+        Assert.Equal(2, io2.Events.Count(e => e == "missing"));          // khoảng nghỉ ngắn + hết khối
+        var (_, io3, _, _) = await RunImageBlock(_ => { }, restSeconds: 25);
+        Assert.Equal([10_000], io3.Budgets);
+    }
+
+    /// <summary>Nghỉ quá ngắn mà hàng đợi còn ảnh → cảnh báo MỘT lần mỗi khối; hết khối còn ảnh → một lượt dọn 30 s; dọn chưa hết →
+    /// cảnh báo "hết khối".</summary>
+    [Fact]
+    public async Task AnhGoc_NghiNgan_CanhBaoMotLan_HetKhoi_DonMotLuot()
+    {
+        var (done, io, _, log) = await RunImageBlock(io => io.Missing = () => 7, restSeconds: 20, from: 2, to: 5);
+        Assert.True(done);
+        Assert.Equal(1, log.Count(l => l == SourceImageRound.PendingWarning(7, SourceImageRound.WhyShortRest)));
+        Assert.Equal([HarvestRunnerLoop.BlockEndImageBudgetMs], io.Budgets);       // chỉ lượt dọn cuối khối
+        Assert.Equal(["step:5", "missing", "images:start", "images:end"], io.Events[^4..]);
+        Assert.Contains(SourceImageRound.PendingWarning(7, SourceImageRound.WhyBlockEnd), log);   // lượt dọn không có kết quả
+
+        var (_, io2, _, log2) = await RunImageBlock(io =>
+        {
+            io.Missing = () => 12;
+            io.Images = (b, _) => Task.FromResult<SourceImageRound?>(b == HarvestRunnerLoop.BlockEndImageBudgetMs ? ImgRound(pushed: 9, missing: 3) : null);
+        }, restSeconds: 60);
+        Assert.Equal([45_000, HarvestRunnerLoop.BlockEndImageBudgetMs], io2.Budgets);
+        Assert.Contains("Ảnh gốc: đẩy 9 · đã có 0 · lỗi 0 · còn thiếu 3", log2);
+        Assert.Contains(SourceImageRound.PendingWarning(3, SourceImageRound.WhyBlockEnd), log2);
+
+        var (_, io3, _, log3) = await RunImageBlock(io =>
+        {
+            io.Missing = () => 4;
+            io.Images = (_, _) => Task.FromResult<SourceImageRound?>(ImgRound(pushed: 4, missing: 0));
+        }, restSeconds: 60);
+        Assert.DoesNotContain(log3, l => l.Contains("chưa đẩy", StringComparison.Ordinal));      // dọn hết → không cảnh báo
+        Assert.Equal(2, io3.Budgets.Count);
+    }
+
+    /// <summary>Lượt ảnh ném (đồng bộ lẫn bất đồng bộ) → dòng vẫn tính lưu, khối vẫn xong; Hub hết chỗ → log cảnh báo.</summary>
+    [Fact]
+    public async Task AnhGoc_Nem_KhongHongDong_HubHetCho_LogCanhBao()
+    {
+        var (done, _, cfg, _) = await RunImageBlock(io => io.Images = (_, _) => throw new InvalidOperationException("CDP đứt"), 60, 2, 4);
+        Assert.True(done);
+        Assert.Equal(3, cfg.HarvestSavedRows);
+
+        var (done2, _, cfg2, _) = await RunImageBlock(io => io.Images = async (_, _) =>
+        {
+            await Task.Yield();
+            throw new InvalidOperationException("lỗi muộn");
+        }, 60, 2, 4);
+        Assert.True(done2);
+        Assert.Equal(3, cfg2.HarvestSavedRows);
+
+        var (done3, _, _, _) = await RunImageBlock(io =>
+        {
+            io.Missing = () => throw new InvalidOperationException("status hỏng");
+            io.Images = (_, _) => throw new InvalidOperationException("x");
+        }, 20, 2, 4);
+        Assert.True(done3);
+
+        var (_, _, _, log) = await RunImageBlock(io => io.Images = (_, _) =>
+            Task.FromResult<SourceImageRound?>(ImgRound(pushed: 1, stoppedBy: "hubFull", hubFullCode: "disk-low")), 60);
+        Assert.Contains(log, l => l.StartsWith("⚠ Hub hết chỗ (disk-low) — dừng đẩy ảnh", StringComparison.Ordinal));
+    }
+
+    /// <summary>Dừng sớm vì captcha trước link kế trong lúc lượt ảnh còn chạy: vòng trả false NGAY (không chờ lượt ảnh), lỗi muộn của
+    /// lượt ảnh được quan sát (không thành UnobservedTaskException).</summary>
+    [Fact]
+    public async Task AnhGoc_DungSomViCaptcha_KhongChoLuotAnh_LoiMuonDuocQuanSat()
+    {
+        var tcs = new TaskCompletionSource<SourceImageRound?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var unobserved = 0;
+        EventHandler<UnobservedTaskExceptionEventArgs> onUnobserved = (_, e) =>
+        {
+            if (e.Exception.InnerExceptions.Any(x => x.Message == "lượt ảnh hỏng muộn")) Interlocked.Increment(ref unobserved);
+        };
+        TaskScheduler.UnobservedTaskException += onUnobserved;
+        try
+        {
+            var run = RunImageBlock(io =>
+            {
+                io.Images = (_, _) => tcs.Task;
+                io.Check = () => new RunnerExtensionRpc.BeforeNextLinkCheckResult(false, true, false, false, "captcha", 5, null);
+            }, restSeconds: 60);
+            var finished = await Task.WhenAny(run, Task.Delay(5_000));
+            Assert.Same(run, finished);
+            var (done, io, cfg, _) = await run;
+            Assert.False(done);
+            Assert.True(cfg.CaptchaError);
+            Assert.DoesNotContain("images:end", io.Events);
+
+            tcs.SetException(new InvalidOperationException("lượt ảnh hỏng muộn"));
+            await Task.Delay(50);
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            Assert.Equal(0, unobserved);
+        }
+        finally { TaskScheduler.UnobservedTaskException -= onUnobserved; }
+    }
+
+    /// <summary>Dừng job trong lúc chờ lượt ảnh → huỷ lan ra (không nuốt).</summary>
+    [Fact]
+    public async Task AnhGoc_HuyJob_LanRa()
+    {
+        using var cts = new CancellationTokenSource();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => RunImageBlock(io => io.Images = async (_, ct) =>
+        {
+            cts.Cancel();
+            await Task.Delay(Timeout.Infinite, ct);
+            return null;
+        }, 60, ct: cts.Token));
+    }
+
+    /// <summary>RPC treo THẬT (start không trả lời, bỏ qua token) với driver thật: vòng dòng vẫn mở link kế, chỉ trễ tối đa grace sau
+    /// hạn chót của lượt ảnh.</summary>
+    [Fact]
+    public async Task AnhGoc_RpcTreo_LinkKeKhongTreQuaGrace()
+    {
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var (done, io, _, _) = await RunImageBlock(io => io.Images = (_, ct) => SourceImageRoundDriver.RunAsync(
+            (_, _, _) => new TaskCompletionSource<SourceImageStart?>().Task,     // treo, không nghe token
+            _ => new TaskCompletionSource<SourceImageStatus?>().Task,
+            (_, _) => Task.CompletedTask, () => DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMilliseconds(300),
+            new HarvestSourceImageProgress(), "P", ct, grace: TimeSpan.FromMilliseconds(200), minStartMs: 100), restSeconds: 60);
+        sw.Stop();
+        Assert.True(done);
+        Assert.Equal(2, io.StepTimes.Count);
+        Assert.True(sw.ElapsedMilliseconds < 3_000, $"{sw.ElapsedMilliseconds} ms");
+    }
+
+    // ── GĐ9: điều một lượt ảnh phía app (SourceImageRoundDriver) ──
+
+    private sealed class DriverFake
+    {
+        public DateTimeOffset Clock = Received;
+        public List<bool> StartClears { get; } = [];
+        public List<int> StartBudgets { get; } = [];
+        public int Polls;
+        public SourceImageStart? Start = new(true, "r1", null);
+        public Func<int, SourceImageStatus?> Status = _ => null;
+
+        public Task<SourceImageRound?> Run(HarvestSourceImageProgress? progress, int budgetMs = 45_000, string key = "P1",
+            TimeSpan lateStart = default) =>
+            SourceImageRoundDriver.RunAsync(
+                (clear, budget, _) => { StartClears.Add(clear); StartBudgets.Add(budget); return Task.FromResult(Start); },
+                _ => Task.FromResult(Status(++Polls)),
+                (d, _) => { Clock += d; return Task.CompletedTask; },
+                () => Clock + lateStart, Clock.AddMilliseconds(budgetMs), progress, key, CancellationToken.None);
+    }
+
+    private static SourceImageStatus St(bool running, string id, int pushed, int missing = 0, string? stoppedBy = null) =>
+        new(running, ImgRound(pushed: pushed, missing: missing, stoppedBy: stoppedBy) with { RoundId = id });
+
+    [Fact]
+    public async Task Driver_HoiToiKhiXong_GhiDanSo_KhongCongHaiLan()
+    {
+        var p = new HarvestSourceImageProgress();
+        var f = new DriverFake { Status = n => n < 3 ? St(true, "r1", n) : St(false, "r1", 5, missing: 7) };
+        var r = await f.Run(p);
+        Assert.Equal(5, r!.Pushed);
+        Assert.Equal(3, f.Polls);
+        Assert.Equal(5, p.Pushed);
+        Assert.Equal(7, p.Missing);
+        Assert.Equal([45_000], f.StartBudgets);
+        await f.Run(p);
+        Assert.Equal(5, p.Pushed);             // cùng lượt r1 báo lại → không cộng
+    }
+
+    /// <summary>Hạn chót tính từ ĐẦU khoảng nghỉ: start trễ thì ngân sách gửi extension là phần còn lại; quá hạn chót + grace thì thôi
+    /// hỏi, giữ số giữa chừng.</summary>
+    [Fact]
+    public async Task Driver_HanChotTuDauKhoangNghi_ThoiHoiSauGrace_GiuSoGiuaChung()
+    {
+        var p = new HarvestSourceImageProgress();
+        var f = new DriverFake { Status = n => St(true, "r1", n) };
+        var r = await f.Run(p, budgetMs: 20_000);
+        // 20 s + 5 s grace, mỗi lần hỏi cách 2 s → 13 lần.
+        Assert.Equal(13, f.Polls);
+        Assert.Equal(13, r!.Pushed);
+        Assert.Equal(13, p.Pushed);
+
+        var late = new DriverFake { Status = _ => St(false, "r1", 1) };
+        await late.Run(null, budgetMs: 45_000, lateStart: TimeSpan.FromSeconds(12));   // start bắt đầu trễ 12 s sau đầu nghỉ
+        Assert.Equal([33_000], late.StartBudgets);
+        var tooLate = new DriverFake();
+        Assert.Null(await tooLate.Run(null, budgetMs: 45_000, lateStart: TimeSpan.FromSeconds(41)));
+        Assert.Empty(tooLate.StartClears);                                              // còn < 5 s → không bắt đầu
+    }
+
+    /// <summary>Status treo THẬT (không trả lời, bỏ qua token) sau một lần báo giữa chừng: driver trả về đúng hạn, giữ số đã thấy.</summary>
+    [Fact]
+    public async Task Driver_StatusTreo_TraVeDungHan_GiuSoGiuaChung()
+    {
+        var p = new HarvestSourceImageProgress();
+        var polls = 0;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var r = await SourceImageRoundDriver.RunAsync(
+            (_, _, _) => Task.FromResult<SourceImageStart?>(new SourceImageStart(true, "r1", null)),
+            _ => ++polls == 1 ? Task.FromResult<SourceImageStatus?>(St(true, "r1", 4)) : new TaskCompletionSource<SourceImageStatus?>().Task,
+            (_, _) => Task.CompletedTask, () => DateTimeOffset.UtcNow, DateTimeOffset.UtcNow.AddMilliseconds(300),
+            p, "P", CancellationToken.None, grace: TimeSpan.FromMilliseconds(200), minStartMs: 100);
+        sw.Stop();
+        Assert.Equal(4, r!.Pushed);
+        Assert.Equal(4, p.Pushed);
+        Assert.True(sw.ElapsedMilliseconds < 2_000, $"{sw.ElapsedMilliseconds} ms");
+    }
+
+    [Fact]
+    public async Task Driver_LuotKhacDangChay_TheoDoiLuotDo_LuotLaBoQua()
+    {
+        var f = new DriverFake { Start = new SourceImageStart(false, "r0", "Đang chạy"), Status = _ => St(false, "r0", 2) };
+        Assert.Equal(2, (await f.Run(null))!.Pushed);
+
+        var g = new DriverFake { Status = _ => St(false, "khac", 9) };   // trạng thái của lượt khác (SW khởi động lại)
+        Assert.Null(await g.Run(new HarvestSourceImageProgress()));
+    }
+
+    /// <summary>Thẻ "bỏ mốc Hub hết chỗ" chỉ dùng hết khi extension đã nhận (bắt đầu lượt / báo đã bỏ mốc); RPC hỏng → lần sau gửi lại.</summary>
+    [Fact]
+    public async Task Driver_ClearHubFull_ChiTieuKhiExtensionNhan()
+    {
+        var p = new HarvestSourceImageProgress();
+        var f = new DriverFake { Start = null, Status = _ => St(false, "r1", 0) };
+        await f.Run(p);                                          // RPC hỏng
+        f.Start = new SourceImageStart(false, null, "x", Unsupported: true);
+        await f.Run(p);                                          // extension cũ
+        f.Start = new SourceImageStart(true, "r1", null);
+        await f.Run(p);                                          // nhận
+        await f.Run(p);
+        Assert.Equal([true, true, true, false], f.StartClears);
+
+        p.ResetHubFull();
+        f.Start = new SourceImageStart(false, "r9", "Đang chạy lượt khác", HubFullCleared: true);
+        await f.Run(p);                                          // không bắt đầu nhưng đã bỏ mốc
+        f.Start = new SourceImageStart(true, "r1", null);
+        await f.Run(p);
+        Assert.Equal([true, true, true, false, true, false], f.StartClears);
+    }
+
+    [Fact]
+    public async Task Driver_ExtensionCu_TuChoi_LoiRpc_HubHetCho()
+    {
+        var unsupported = new DriverFake { Start = new SourceImageStart(false, null, "x", Unsupported: true) };
+        Assert.Null(await unsupported.Run(new HarvestSourceImageProgress()));
+        Assert.Equal(0, unsupported.Polls);
+
+        var p = new HarvestSourceImageProgress();
+        var refused = new DriverFake { Start = new SourceImageStart(false, null, "Extension chưa được cấp quyền truy cập https://hub") };
+        Assert.Null(await refused.Run(p));
+        Assert.Equal("Ảnh gốc: Extension chưa được cấp quyền truy cập https://hub", p.LastError);
+
+        var rpcDown = new DriverFake { Start = null };
+        Assert.Null(await rpcDown.Run(p));
+
+        var throwing = new DriverFake { Status = _ => throw new InvalidOperationException("CDP đứt") };
+        Assert.Null(await throwing.Run(p));
+
+        var full = new HarvestSourceImageProgress();
+        full.Apply("P1", ImgRound(stoppedBy: "hubFull", hubFullCode: "disk-low"));
+        var skipped = new DriverFake { Status = _ => St(false, "r1", 1) };
+        Assert.Null(await skipped.Run(full));
+        Assert.Empty(skipped.StartClears);   // Hub hết chỗ → không gọi extension
+        full.ResetHubFull();
+        Assert.Equal(1, (await skipped.Run(full))!.Pushed);
+        Assert.Equal([true], skipped.StartClears);
+    }
+
+    /// <summary>Hỏi riêng số còn chờ: ghi vào Missing; treo / lỗi → null đúng hạn.</summary>
+    [Fact]
+    public async Task Driver_RefreshMissing()
+    {
+        var p = new HarvestSourceImageProgress();
+        var n = await SourceImageRoundDriver.RefreshMissingAsync(
+            _ => Task.FromResult<SourceImageStatus?>(new SourceImageStatus(false, null, 17)), p, "P", CancellationToken.None);
+        Assert.Equal(17, n);
+        Assert.Equal(17, p.Missing);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        Assert.Null(await SourceImageRoundDriver.RefreshMissingAsync(
+            _ => new TaskCompletionSource<SourceImageStatus?>().Task, p, "P", CancellationToken.None, TimeSpan.FromMilliseconds(100)));
+        Assert.True(sw.ElapsedMilliseconds < 2_000);
+        Assert.Null(await SourceImageRoundDriver.RefreshMissingAsync(_ => throw new InvalidOperationException("x"), p, "P", CancellationToken.None));
+        Assert.Equal(17, p.Missing);
+    }
+
     /// <summary>Lần mở LẠI link mẫu sau khi giải captcha ném lỗi → bắt như lần đầu, thông điệp đã làm sạch cho Classify.</summary>
     [Fact]
     public async Task KiemChungPhien_MoLaiMauSauCaptchaNem_BatVaLamSach()

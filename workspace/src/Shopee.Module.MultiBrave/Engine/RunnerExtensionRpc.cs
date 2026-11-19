@@ -400,6 +400,10 @@ internal static partial class RunnerExtensionRpc
             "prepareHarvestClick" => $"(async () => globalThis.__launcherPrepareHarvestClick({payloadExpression}))()",
             "getHarvestClickResult" => $"(async () => globalThis.__launcherGetHarvestClickResult({payloadExpression}))()",
             "panelButtonRect" => $"(async () => globalThis.__launcherPanelButtonRect({payloadExpression}))()",
+            // GĐ9: lượt ảnh gốc. Extension cũ (đã có lệnh GĐ7, chưa có lệnh này) → { unsupported: true } thay vì "is not a
+            // function" (lỗi đó bị coi là SW đang khởi động → thử lại / đánh thức vô ích).
+            "startSourceImages" => SourceImagesExpression("__launcherStartSourceImages", payloadExpression),
+            "sourceImagesStatus" => SourceImagesExpression("__launcherSourceImagesStatus", "null"),
             "setDisplayState" => $"(async () => globalThis.__launcherSetDisplayState({payloadExpression}))()",
             "getRunnerState" => "(async () => globalThis.__launcherGetRunnerState())()",
             "applyFormConfig" => $"(async () => globalThis.__launcherApplyFormConfig({payloadExpression}))()",
@@ -413,6 +417,10 @@ internal static partial class RunnerExtensionRpc
             "checkBeforeNextLink" => $"(async () => globalThis.__launcherCheckBeforeNextLink({payloadExpression}))()",
             _ => BuildPopupInvokeExpression(method, payloadExpression),
         };
+
+    private static string SourceImagesExpression(string function, string payloadExpression) =>
+        $"(async () => (typeof globalThis.{function} !== 'function' && typeof globalThis.__launcherPrepareHarvestClick === 'function')" +
+        $" ? {{ unsupported: true }} : globalThis.{function}({payloadExpression}))()";
 
     private static string PayloadExpression(string? payloadJson) =>
         payloadJson is null ? "null" : $"JSON.parse({JsonSerializer.Serialize(payloadJson)})";

@@ -56,12 +56,14 @@ public sealed partial class HarvestViewModel : ObservableObject
             {
                 var st = await rt.GetStatsAsync().ConfigureAwait(false);
                 var err = rt.Worker.LastError ?? "";
+                var img = rt.SourceImages.Snapshot();
                 UiThread.Post(() =>
                 {
                     HubSaved = st.HubReceivedTotal;   // GĐ7: outbox app đẩy + extension tự đẩy
                     HubPending = st.Pending;
                     HubFailed = st.Failed;
                     HubError = err;
+                    ApplySourceImages(img);
                 });
             });
             rt.StatsChanged += RefreshHubStats;
@@ -501,6 +503,32 @@ public sealed partial class HarvestViewModel : ObservableObject
     [NotifyCanExecuteChangedFor(nameof(RequeueFailedCommand))]
     private int _hubFailed;
     [ObservableProperty] private string _hubError = "";
+
+    // ── GĐ9: ảnh gốc extension đẩy lên Hub (cộng dồn từ lúc mở app, mọi cửa sổ) ──
+    /// <summary>Số ảnh gốc Harvest đã đẩy lên kho ảnh gốc Hub.</summary>
+    [ObservableProperty] private long _sourcePushed;
+    /// <summary>Số ảnh của các SP đã cào còn chờ đẩy (đẩy dần trong các khoảng nghỉ sau).</summary>
+    [ObservableProperty] private int _sourceMissing;
+    /// <summary>Số ảnh không lấy được (app Upload tự tải từ CDN lúc xuất).</summary>
+    [ObservableProperty] private long _sourceFailed;
+    /// <summary>" · bỏ N SP" khi extension đã bỏ ảnh của SP nào đó (lỗi riêng lặp lại / hàng đợi đầy); rỗng = không.</summary>
+    [ObservableProperty] private string _sourceDroppedText = "";
+    /// <summary>Dòng đỏ khi Hub hết chỗ lưu ảnh gốc; rỗng = không.</summary>
+    [ObservableProperty] private string _sourceHubFull = "";
+    /// <summary>Lỗi gần nhất của lượt ảnh; rỗng = không.</summary>
+    [ObservableProperty] private string _sourceError = "";
+
+    internal void ApplySourceImages(HarvestSourceImageSnapshot s)
+    {
+        SourcePushed = s.Pushed;
+        SourceMissing = s.Missing;
+        SourceFailed = s.Failed;
+        SourceDroppedText = s.Dropped > 0 ? $" · bỏ {s.Dropped} SP" : "";
+        SourceHubFull = s.HubFullCode is { } code
+            ? $"Hub hết chỗ ({code}) — đã dừng đẩy ảnh; dọn kho ảnh gốc ở app Upload rồi bấm Chạy lại."
+            : "";
+        SourceError = s.LastError ?? "";
+    }
 
     private readonly CoalescingRefresher? _hubStatsRefresher;
 

@@ -89,6 +89,16 @@
                                    Foreground="{StaticResource TextMutedBrush}" TextTrimming="CharacterEllipsis"
                                    ToolTip="{Binding HubError}"
                                    Visibility="{Binding HubError, Converter={StaticResource StringToVis}}" />
+                        <!-- GĐ9: ảnh gốc extension đẩy lên kho ảnh gốc Hub trong các khoảng nghỉ giữa 2 SP -->
+                        <TextBlock FontSize="12" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,2,0,0"
+                                   ToolTip="Đã đẩy = ảnh Harvest đẩy lên kho ảnh gốc Hub từ lúc mở app · Còn thiếu = ảnh của các SP đã cào chưa lên Hub, sẽ đẩy trong các khoảng nghỉ sau · Lỗi = ảnh không lấy được (CDN không còn ảnh, ảnh WebP / quá 2 MB, Hub từ chối) — app Upload sẽ tự tải những ảnh này từ CDN lúc xuất"><Run Text="Ảnh gốc: đã đẩy " /><Run Text="{Binding SourcePushed, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · còn thiếu " /><Run Text="{Binding SourceMissing, Mode=OneWay}" FontWeight="SemiBold" /><Run Text=" · lỗi " /><Run Text="{Binding SourceFailed, Mode=OneWay}" FontWeight="SemiBold" /><Run Text="{Binding SourceDroppedText, Mode=OneWay}" /></TextBlock>
+                        <TextBlock Text="{Binding SourceHubFull}" FontSize="11" MaxWidth="360" TextWrapping="Wrap"
+                                   Foreground="{StaticResource DangerBrush}" FontWeight="SemiBold"
+                                   Visibility="{Binding SourceHubFull, Converter={StaticResource StringToVis}}" />
+                        <TextBlock Text="{Binding SourceError}" FontSize="10.5" MaxWidth="360"
+                                   Foreground="{StaticResource TextMutedBrush}" TextTrimming="CharacterEllipsis"
+                                   ToolTip="{Binding SourceError}"
+                                   Visibility="{Binding SourceError, Converter={StaticResource StringToVis}}" />
                     </StackPanel>
                     <Button Style="{StaticResource subtle}" Margin="10,0,0,0" Height="28" Padding="10,0"
                             Command="{Binding RequeueFailedCommand}"

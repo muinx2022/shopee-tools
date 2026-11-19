@@ -34,6 +34,9 @@ public enum RunnerMode
 /// <param name="DisplayRow">Dòng nén (engine chạy, tiến độ, sổ bỏ qua — giữ nguyên) → số dòng HIỂN THỊ cho người dùng (số dòng Excel
 /// thật, vd <see cref="HarvestRowRange.ExcelRowMap"/>): log, overlay trên Brave, cột "Dòng" / "Trạng thái" của bảng Tiến trình.
 /// null = hiện đúng dòng nén.</param>
+/// <param name="SourceImages">GĐ9: số liệu ảnh gốc cộng dồn của app (<c>HarvestRuntime.SourceImages</c>). Khác null + có
+/// <paramref name="ExtensionPush"/> → mỗi khoảng nghỉ giữa 2 SP, extension tải ảnh gốc của các SP đã cào rồi đẩy lên Hub (dừng khi
+/// <see cref="HarvestSourceImageProgress.HubFullCode"/> khác null). null = không chạy lượt ảnh.</param>
 public sealed record HarvestRunOptions(
     IHarvestSink Sink,
     string ShopId,
@@ -45,7 +48,8 @@ public sealed record HarvestRunOptions(
     string? RunId = null,
     Func<string?>? SampleLink = null,
     HarvestExtensionPush? ExtensionPush = null,
-    Func<int, int>? DisplayRow = null)
+    Func<int, int>? DisplayRow = null,
+    HarvestSourceImageProgress? SourceImages = null)
 {
     /// <summary>Số dòng hiện cho người dùng của dòng nén <paramref name="row"/> (xem <see cref="DisplayRow"/>).</summary>
     public int Row(int row) => DisplayRow?.Invoke(row) ?? row;

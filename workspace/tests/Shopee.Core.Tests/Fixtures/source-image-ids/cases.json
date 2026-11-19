@@ -1,0 +1,160 @@
+{
+  "_note": "GĐ9 — luật mã ảnh gốc Harvest đẩy lên Hub. Dùng CHUNG: extensions/shopee-harvest/tests/source-images.test.mjs (imageIdsOf, so ĐÚNG THỨ TỰ: ảnh SP trước, ảnh phân loại sau) và Shopee.Core.Tests/SourceImageIdParityTests.cs (ShopeeListingReader + luật MassUploadExporter.ImageKeys, so TẬP). C# ImageKeys KHÔNG lọc id sai luật Hub (exporter tự xếp chúng vào 'missing'); JS bỏ chúng (skipped) — test C# lọc SourceImageLimits.IsValidId trước khi so. 'skipped' = id sai luật JS phải báo (so tập).",
+  "cases": [
+    {
+      "name": "sp-thuong-hon-12-anh",
+      "expected": ["vn-11134207-aa0001", "vn-11134207-aa0002", "vn-11134207-aa0003", "vn-11134207-aa0004", "vn-11134207-aa0005", "vn-11134207-aa0006", "vn-11134207-aa0007", "vn-11134207-aa0008", "vn-11134207-aa0009", "vn-11134207-aa0010", "vn-11134207-aa0011", "vn-11134207-aa0012"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": { "item_id": 1001, "shop_id": 9, "title": "SP 15 ảnh", "tier_variations": [], "models": [] },
+          "product_images": {
+            "images": ["vn-11134207-aa0001", "vn-11134207-aa0002", "vn-11134207-aa0003", "vn-11134207-aa0004", "vn-11134207-aa0005", "vn-11134207-aa0006", "vn-11134207-aa0007", "vn-11134207-aa0008", "vn-11134207-aa0009", "vn-11134207-aa0010", "vn-11134207-aa0011", "vn-11134207-aa0012", "vn-11134207-aa0013", "vn-11134207-aa0014", "vn-11134207-aa0015"]
+          }
+        }
+      }
+    },
+    {
+      "name": "hai-nhom-anh-nhom1-trung-anh-sp-va-thua-anh",
+      "expected": ["vn-11134207-bb0001", "vn-11134207-bb0002", "vn-11134207-bb0003", "vn-11134207-bt0001", "vn-11134207-bt0002"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1002, "shop_id": 9, "title": "SP 2 nhóm",
+            "tier_variations": [
+              { "name": "Màu", "options": ["Đỏ", "Xanh", "Vàng"], "images": ["vn-11134207-bb0002", "vn-11134207-bt0001", "vn-11134207-bt0002", "vn-11134207-bt0099"] },
+              { "name": "Size", "options": ["S", "M"], "images": ["vn-11134207-bs0001", "vn-11134207-bs0002"] }
+            ],
+            "models": []
+          },
+          "product_images": { "images": ["vn-11134207-bb0001", "vn-11134207-bb0002", "vn-11134207-bb0003"] }
+        }
+      }
+    },
+    {
+      "name": "khong-bien-the-nhom-rong-mang-anh",
+      "expected": ["vn-11134207-cc0001", "vn-11134207-cc0002"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1003, "shop_id": 9, "title": "SP không biến thể",
+            "tier_variations": [ { "name": "", "options": [""], "images": ["vn-11134207-ct0001"] } ],
+            "models": []
+          },
+          "product_images": { "images": ["vn-11134207-cc0001", "vn-11134207-cc0002"] }
+        }
+      }
+    },
+    {
+      "name": "khong-bien-the-ten-trang-lua-chon-ky-tu-dieu-khien",
+      "expected": ["vn-11134207-cd0001"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1004, "shop_id": 9, "title": "SP không biến thể (tên trắng)",
+            "tier_variations": [ { "name": "  　", "options": ["\u0001\r\n"], "images": ["vn-11134207-cdt001"] } ],
+            "models": []
+          },
+          "product_images": { "images": ["vn-11134207-cd0001"] }
+        }
+      }
+    },
+    {
+      "name": "mot-nhom-ten-rong-hai-lua-chon-la-co-bien-the",
+      "expected": ["vn-11134207-ce0001", "vn-11134207-cet001", "vn-11134207-cet002"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1005, "shop_id": 9, "title": "SP 1 nhóm tên rỗng 2 lựa chọn",
+            "tier_variations": [ { "name": "", "options": ["A", "B"], "images": ["vn-11134207-cet001", "vn-11134207-cet002"] } ],
+            "models": []
+          },
+          "product_images": { "images": ["vn-11134207-ce0001"] }
+        }
+      }
+    },
+    {
+      "name": "thieu-product-images",
+      "expected": ["vn-11134207-dt0001", "vn-11134207-dt0002"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1006, "shop_id": 9, "title": "SP thiếu product_images",
+            "tier_variations": [ { "name": "Màu", "options": ["Đỏ", "Xanh"], "images": ["vn-11134207-dt0001", "vn-11134207-dt0002"] } ],
+            "models": []
+          }
+        }
+      }
+    },
+    {
+      "name": "id-sai-luat-van-chiem-cho-12",
+      "expected": ["vn-11134207-ee0002", "vn-11134207-ee0003", "vn-11134207-ee0004", "vn-11134207-ee0005", "vn-11134207-ee0006", "vn-11134207-ee0007", "vn-11134207-ee0008", "vn-11134207-ee0009", "vn-11134207-et0001"],
+      "skipped": ["short", "   ", "https://cf.shopee.vn/file/vn-11134207-ee0099", "_vn-11134207-ee0098", "bad id with space"],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1007, "shop_id": 9, "title": "SP có id sai luật",
+            "tier_variations": [ { "name": "Màu", "options": ["Đỏ", "Xanh", "Tím"], "images": ["vn-11134207-et0001", "  ", "bad id with space"] } ],
+            "models": []
+          },
+          "product_images": {
+            "images": ["short", "vn-11134207-ee0002", "   ", "vn-11134207-ee0003", "https://cf.shopee.vn/file/vn-11134207-ee0099", "vn-11134207-ee0004", "vn-11134207-ee0005", "vn-11134207-ee0006", "vn-11134207-ee0007", "_vn-11134207-ee0098", "vn-11134207-ee0008", "vn-11134207-ee0009", "vn-11134207-ee0010", "vn-11134207-ee0011", 12345, null, ""]
+          }
+        }
+      },
+      "_why": "13 chuỗi khác rỗng đầu (kể cả id sai luật, chuỗi trắng) chiếm 12 chỗ → ee0010, ee0011 bị cắt. Ảnh nhóm 1 '  ' bị ImageKeys bỏ (trắng); 'bad id with space' là id sai luật → skipped."
+    },
+    {
+      "name": "anh-mo-ta-khong-lay",
+      "expected": ["vn-11134207-ff0001"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1008, "shop_id": 9, "title": "SP có ảnh mô tả",
+            "description": "vn-11134207-ffdesc1",
+            "rich_text_description": { "paragraph_list": [ { "type": 1, "img_id": "vn-11134207-ffrich1" } ] },
+            "tier_variations": [],
+            "models": [],
+            "size_chart": "vn-11134207-ffsize1"
+          },
+          "product_images": { "images": ["vn-11134207-ff0001"], "video": { "default_format": { "url": "https://x/video.mp4" } } },
+          "product_description": { "paragraph_list": [ { "type": 0, "text": "Mô tả" }, { "type": 1, "img_id": "vn-11134207-ffdesc2", "ratio": 1 } ] }
+        }
+      }
+    },
+    {
+      "name": "anh-nhom1-null-rong-va-it-hon-lua-chon",
+      "expected": ["vn-11134207-gg0001", "vn-11134207-gt0003"],
+      "skipped": [],
+      "json": {
+        "data": {
+          "item": {
+            "item_id": 1009, "shop_id": 9, "title": "SP ảnh nhóm 1 thiếu",
+            "tier_variations": [ { "name": "Màu", "options": ["A", "B", "C", "D"], "images": [null, "", "vn-11134207-gt0003"] } ],
+            "models": []
+          },
+          "product_images": { "images": ["vn-11134207-gg0001"] }
+        }
+      }
+    },
+    {
+      "name": "nhom-dau-khong-phai-object-va-goc-la-data",
+      "expected": ["vn-11134207-hh0001", "vn-11134207-ht0001", "vn-11134207-ht0002"],
+      "skipped": [],
+      "json": {
+        "item": {
+          "item_id": 1010, "shop_id": 9, "title": "Gốc là data",
+          "tier_variations": [ "lạ", { "name": "Màu", "options": ["Đỏ", "Xanh"], "images": ["vn-11134207-ht0001", "vn-11134207-ht0002"] } ],
+          "models": []
+        },
+        "product_images": { "images": ["vn-11134207-hh0001", "vn-11134207-hh0001"] }
+      }
+    }
+  ]
+}

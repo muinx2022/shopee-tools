@@ -95,6 +95,7 @@ public sealed partial class ScrapeViewModel
             IsBusy = true;
             ShopeeAccountUsage.Shared.BeginRun();
             _jobFatal.TryRemove(HarvestSource.AccountId, out _);
+            rt.SourceImages.ResetHubFull();   // GĐ9: người dùng có thể vừa dọn kho ảnh gốc trên Hub → thử đẩy lại
             OnUi(() =>
             {
                 LogLines.Clear();
@@ -242,7 +243,8 @@ public sealed partial class ScrapeViewModel
                     RunId: runId,   // lỗi vĩnh viễn cần thấy ở ≥ 2 lượt bấm Chạy khác nhau
                     SampleLink: () => HarvestRuntime.Current?.Outbox.LastSavedLink(),
                     ExtensionPush: new HarvestExtensionPush(rt.HubAccess),
-                    DisplayRow: showRow),
+                    DisplayRow: showRow,
+                    SourceImages: rt.SourceImages),   // GĐ9: ảnh gốc lên Hub trong khoảng nghỉ giữa 2 SP
             };
             s.Jobs.TryUpdate(key, j => j.Runner = runner);
             RunnerCreated?.Invoke(runner);

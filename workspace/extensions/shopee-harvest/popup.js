@@ -229,6 +229,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     } catch (err) {
       hubQueueLine.textContent = `Không đọc được hàng đợi — ${err?.message || err}`;
     }
+    await renderSourceImages();
+  };
+
+  // GĐ9: ảnh gốc lên Hub — 1 dòng: còn thiếu (số ảnh trong các việc chờ) + lượt gần nhất.
+  const sourceImagesLine = document.getElementById("sourceImagesLine");
+  const renderSourceImages = async () => {
+    try {
+      const st = await askBackground({ type: "SOURCE_IMAGES", op: "status" });
+      const r = st?.round;
+      let text = `Ảnh gốc: còn thiếu ${st?.queue?.ids ?? 0}`;
+      if (r) text += ` · lượt ${st.running ? "đang chạy" : "gần nhất"} đẩy ${r.pushed} / lỗi ${r.failed}`;
+      if (st?.hubFullUntil) text += ` · Hub hết chỗ (${st.hubFullCode || "507"}) — tạm dừng đẩy ảnh`;
+      if (r?.lastError) text += `\nLỗi gần nhất: ${r.lastError}`;
+      sourceImagesLine.textContent = text;
+    } catch (err) {
+      sourceImagesLine.textContent = `Ảnh gốc: không đọc được trạng thái — ${err?.message || err}`;
+    }
   };
 
   hubRetryBtn.addEventListener("click", async () => {
@@ -256,6 +273,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       renderState();
     }
     if (changes.hubQueue || changes.hubSettings) renderHub();
+    if (changes.sourceImages) renderSourceImages();
   });
 
   if (coreError) exportStatus.textContent = coreError;

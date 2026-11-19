@@ -263,6 +263,7 @@ internal static class HarvestRunnerLoop
         CancellationToken cancellationToken)
     {
         var totalLinks = items.Count;
+        var warnedShortRest = false;
         for (var index = 0; index < items.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -330,69 +331,99 @@ internal static class HarvestRunnerLoop
                 var waitMsg = $"{accountHeader}\n{nextMsg}\n{rowOutcomeOverlay}";
                 var pageUrl = step.PageUrl ?? link;
 
-                config.RunnerPhase = "waiting";
-                config.LastRunnerMessage = waitMsg;
-                await io.PushDisplayStateAsync(index + 1, tab.Value, cancellationToken).ConfigureAwait(false);
-                await io.ShowOverlayAsync(tab.Value, waitMsg, cancellationToken).ConfigureAwait(false);
-
-                log(waitMsg);
-                var preCheckDelay = Math.Max(0, restMs - 30_000);
-                await io.SimulateRestAsync(pageUrl, preCheckDelay, cancellationToken).ConfigureAwait(false);
-
-                // Chỉ kiểm trước link kế khi dòng vừa rồi LƯU ĐƯỢC (tab chắc đang ở trang SP) — xem chú thích hàm.
-                if (tab.Value is not null && outcome.Saved)
+                // GĐ9: lượt ảnh gốc chạy SONG SONG với phần nghỉ (lướt trang + kiểm captcha), chờ xong ngay trước khi chờ nốt tới
+                // nextAt — mốc mở link kế KHÔNG đổi (driver tự cắt mọi RPC ở hạn chót + grace). Nghỉ quá ngắn → chỉ hỏi số ảnh còn chờ.
+                // Lối dừng sớm vẫn quan sát task (finally) để lỗi không lạc.
+                var imageBudget = HarvestImageBudget.For(restMs);
+                var images = imageBudget > 0
+                    ? RunSourceImagesSafeAsync(io, imageBudget, cancellationToken)
+                    : MissingOnlyAsync(io, cancellationToken);
+                try
                 {
-                    config.LastRunnerMessage = $"Kiểm tra captcha trước link tiếp theo — dòng {processor.Row(nextRow)}.";
+                    config.RunnerPhase = "waiting";
+                    config.LastRunnerMessage = waitMsg;
                     await io.PushDisplayStateAsync(index + 1, tab.Value, cancellationToken).ConfigureAwait(false);
-                    onProgress();
+                    await io.ShowOverlayAsync(tab.Value, waitMsg, cancellationToken).ConfigureAwait(false);
 
-                    var check = await io.CheckBeforeNextLinkAsync(tab.Value.Value, rowNumber, sku, cancellationToken)
-                        .ConfigureAwait(false);
+                    log(waitMsg);
+                    var preCheckDelay = Math.Max(0, restMs - 30_000);
+                    await io.SimulateRestAsync(pageUrl, preCheckDelay, cancellationToken).ConfigureAwait(false);
 
-                    if (check.Aborted)
-                        throw new OperationCanceledException();
-
-                    if (check.TrafficError)
+                    // Chỉ kiểm trước link kế khi dòng vừa rồi LƯU ĐƯỢC (tab chắc đang ở trang SP) — xem chú thích hàm.
+                    if (tab.Value is not null && outcome.Saved)
                     {
-                        processor.Book.DiscardPendingPdpRows();
-                        processor.DiscardPendingNotProduct();
-                        LauncherRunnerLoop.MarkTrafficBlock(config, rowNumber);
-                        await io.PushDisplayStateAsync(index + 1, check.TabId ?? tab.Value, cancellationToken).ConfigureAwait(false);
+                        config.LastRunnerMessage = $"Kiểm tra captcha trước link tiếp theo — dòng {processor.Row(nextRow)}.";
+                        await io.PushDisplayStateAsync(index + 1, tab.Value, cancellationToken).ConfigureAwait(false);
                         onProgress();
-                        log(config.LastRunnerMessage ?? "");
-                        return false;
+
+                        var check = await io.CheckBeforeNextLinkAsync(tab.Value.Value, rowNumber, sku, cancellationToken)
+                            .ConfigureAwait(false);
+
+                        if (check.Aborted)
+                            throw new OperationCanceledException();
+
+                        if (check.TrafficError)
+                        {
+                            processor.Book.DiscardPendingPdpRows();
+                            processor.DiscardPendingNotProduct();
+                            LauncherRunnerLoop.MarkTrafficBlock(config, rowNumber);
+                            await io.PushDisplayStateAsync(index + 1, check.TabId ?? tab.Value, cancellationToken).ConfigureAwait(false);
+                            onProgress();
+                            log(config.LastRunnerMessage ?? "");
+                            return false;
+                        }
+
+                        if (!check.Ok)
+                        {
+                            processor.Book.DiscardPendingPdpRows();
+                            processor.DiscardPendingNotProduct();
+                            config.RunnerPhase = check.Captcha ? "paused" : "error";
+                            if (check.Captcha) config.CaptchaError = true;
+                            if (check.Captcha) config.CaptchaUrl = pageUrl;
+                            config.LastRunnerMessage =
+                                check.Message ?? (check.Captcha
+                                    ? $"Dừng vì captcha trước link tiếp theo - {config.DisplayName}, dòng {processor.Row(rowNumber)} (SKU: {sku})."
+                                    : $"URL hiện tại không hợp lệ trước link tiếp theo - dòng {processor.Row(rowNumber)}.");
+                            await io.PushDisplayStateAsync(index + 1, check.TabId ?? tab.Value, cancellationToken).ConfigureAwait(false);
+                            onProgress();
+                            log(config.LastRunnerMessage);
+                            return false;
+                        }
+
+                        if (check.Waited)
+                        {
+                            log($"Đã giải captcha trước link tiếp theo - dòng {processor.Row(rowNumber)}.");
+                            await io.ShowOverlayAsync(tab.Value, $"Đã giải captcha - chuẩn bị mở link tiếp theo (dòng {processor.Row(nextRow)})",
+                                cancellationToken).ConfigureAwait(false);
+                        }
                     }
 
-                    if (!check.Ok)
+                    if (images is not null)
                     {
-                        processor.Book.DiscardPendingPdpRows();
-                        processor.DiscardPendingNotProduct();
-                        config.RunnerPhase = check.Captcha ? "paused" : "error";
-                        if (check.Captcha) config.CaptchaError = true;
-                        if (check.Captcha) config.CaptchaUrl = pageUrl;
-                        config.LastRunnerMessage =
-                            check.Message ?? (check.Captcha
-                                ? $"Dừng vì captcha trước link tiếp theo - {config.DisplayName}, dòng {processor.Row(rowNumber)} (SKU: {sku})."
-                                : $"URL hiện tại không hợp lệ trước link tiếp theo - dòng {processor.Row(rowNumber)}.");
-                        await io.PushDisplayStateAsync(index + 1, check.TabId ?? tab.Value, cancellationToken).ConfigureAwait(false);
-                        onProgress();
-                        log(config.LastRunnerMessage);
-                        return false;
+                        var rest = await images.ConfigureAwait(false);
+                        images = null;
+                        if (rest.Round?.LogLine() is { } imageLine) log(imageLine);
+                        if (imageBudget == 0 && rest.Missing is > 0 and var waiting && !warnedShortRest)
+                        {
+                            warnedShortRest = true;   // một lần mỗi khối
+                            log(SourceImageRound.PendingWarning(waiting, SourceImageRound.WhyShortRest));
+                        }
                     }
 
-                    if (check.Waited)
-                    {
-                        log($"Đã giải captcha trước link tiếp theo - dòng {processor.Row(rowNumber)}.");
-                        await io.ShowOverlayAsync(tab.Value, $"Đã giải captcha - chuẩn bị mở link tiếp theo (dòng {processor.Row(nextRow)})",
-                            cancellationToken).ConfigureAwait(false);
-                    }
+                    var remainingDelay = (int)Math.Max(0, (nextAt - io.Now).TotalMilliseconds);
+                    if (remainingDelay > 0)
+                        await io.DelayAsync(remainingDelay, cancellationToken).ConfigureAwait(false);
                 }
-
-                var remainingDelay = (int)Math.Max(0, (nextAt - io.Now).TotalMilliseconds);
-                if (remainingDelay > 0)
-                    await io.DelayAsync(remainingDelay, cancellationToken).ConfigureAwait(false);
+                finally
+                {
+                    if (images is not null) ObserveLate(images);
+                }
             }
         }
+
+        // GĐ9: hết khối mà hàng đợi ảnh còn việc (SP cuối khối không có khoảng nghỉ sau) → MỘT lượt dọn ngắn trước khi đóng khối
+        // (không còn SP kế nên không kéo dài nghỉ giữa SP); vẫn còn thì cảnh báo — các khoảng nghỉ của khối sau đẩy tiếp.
+        await FinishBlockImagesAsync(io, log, cancellationToken).ConfigureAwait(false);
 
         await processor.FlushPendingNotProductAsync(cancellationToken).ConfigureAwait(false);   // chuỗi notProduct chưa tới ngưỡng = lỗi dòng thật
         processor.CompleteBlock(totalLinks, sheet);
@@ -401,6 +432,50 @@ internal static class HarvestRunnerLoop
         config.NextRunRow = endRow + 1;
         return true;
     }
+
+    /// <summary>Lượt ảnh gốc của khoảng nghỉ — lỗi bất kỳ (kể cả IO ném đồng bộ) thành null: lượt ảnh không bao giờ làm hỏng dòng.
+    /// Chỉ huỷ của job mới được ném ra.</summary>
+    internal static async Task<RestImages> RunSourceImagesSafeAsync(IHarvestLoopIo io, int budgetMs,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var round = await io.RunSourceImagesAsync(budgetMs, cancellationToken).ConfigureAwait(false);
+            return new RestImages(round, round?.QueueIds);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { return new RestImages(null, null); }
+    }
+
+    /// <summary>Chỉ hỏi số ảnh còn chờ (không chạy lượt) — lỗi bất kỳ thành null. Chỉ huỷ của job mới được ném ra.</summary>
+    internal static async Task<RestImages> MissingOnlyAsync(IHarvestLoopIo io, CancellationToken cancellationToken)
+    {
+        try { return new RestImages(null, await io.SourceImagesMissingAsync(cancellationToken).ConfigureAwait(false)); }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch { return new RestImages(null, null); }
+    }
+
+    /// <summary>Ngân sách lượt dọn ảnh cuối khối.</summary>
+    internal const int BlockEndImageBudgetMs = 30_000;
+
+    /// <summary>Cuối khối: hỏi hàng đợi ảnh; còn việc → một lượt dọn <see cref="BlockEndImageBudgetMs"/>; vẫn còn → cảnh báo.</summary>
+    internal static async Task FinishBlockImagesAsync(IHarvestLoopIo io, Action<string> log, CancellationToken cancellationToken)
+    {
+        var missing = (await MissingOnlyAsync(io, cancellationToken).ConfigureAwait(false)).Missing;
+        if (missing is not > 0) return;
+        var rest = await RunSourceImagesSafeAsync(io, BlockEndImageBudgetMs, cancellationToken).ConfigureAwait(false);
+        if (rest.Round?.LogLine() is { } line) log(line);
+        var left = rest.Round is not null ? rest.Missing : missing;
+        if (left is > 0 and var n) log(SourceImageRound.PendingWarning(n, SourceImageRound.WhyBlockEnd));
+    }
+
+    /// <summary>Kết quả phần ảnh của một khoảng nghỉ: lượt (null = không chạy / không có kết quả) + số ảnh còn chờ (null = không biết).</summary>
+    internal readonly record struct RestImages(SourceImageRound? Round, int? Missing);
+
+    /// <summary>Task không còn ai chờ (lối dừng sớm): quan sát lỗi / huỷ muộn để không thành UnobservedTaskException.</summary>
+    private static void ObserveLate(Task task) =>
+        _ = task.ContinueWith(t => _ = t.Exception, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
     /// <summary>Dòng "Hub: …" cho bảng tổng kết: null khi app không cung cấp, ném, hoặc quá <see cref="HubStatusTimeout"/>.
     /// Chỉ huỷ của job (nút Dừng) mới được ném ra.</summary>
@@ -472,6 +547,28 @@ internal static class HarvestRunnerLoop
 
         public Task DelayAsync(int ms, CancellationToken cancellationToken) => Task.Delay(ms, cancellationToken);
 
+        // GĐ9: chỉ ở luồng "extension tự đẩy Hub" (extension có cấu hình Hub của app) và khi app chưa biết Hub hết chỗ. Khoá số liệu
+        // theo THƯ MỤC profile: mỗi profile Brave một extension, một hàng đợi ảnh riêng, dùng lại qua các lượt. Hạn chót tính NGAY lúc
+        // gọi (= đầu khoảng nghỉ), không đợi start trả lời.
+        public Task<SourceImageRound?> RunSourceImagesAsync(int budgetMs, CancellationToken cancellationToken)
+        {
+            var deadline = DateTimeOffset.UtcNow.AddMilliseconds(budgetMs);
+            if (options.ExtensionPush is not { } push || push.HubAccess() is not { } hub || options.SourceImages is not { } progress)
+                return Task.FromResult<SourceImageRound?>(null);
+            return SourceImageRoundDriver.RunAsync(
+                (clear, budget, ct) => RunnerExtensionRpc.StartSourceImagesAsync(cdpPort, profileRoot, hub, budget, clear, ct),
+                ct => RunnerExtensionRpc.GetSourceImagesStatusAsync(cdpPort, profileRoot, ct),
+                Task.Delay, () => DateTimeOffset.UtcNow, deadline, progress, profileRoot.FullName, cancellationToken);
+        }
+
+        public Task<int?> SourceImagesMissingAsync(CancellationToken cancellationToken)
+        {
+            if (options.ExtensionPush is null || options.SourceImages is not { } progress) return Task.FromResult<int?>(null);
+            return SourceImageRoundDriver.RefreshMissingAsync(
+                ct => RunnerExtensionRpc.GetSourceImagesStatusAsync(cdpPort, profileRoot, ct), progress, profileRoot.FullName,
+                cancellationToken);
+        }
+
         public int CurrentLinkIndex { get; set; }
 
         public async Task ReportAsync(int? tabId, CancellationToken cancellationToken)
@@ -517,4 +614,11 @@ internal interface IHarvestLoopIo
     Task<RunnerExtensionRpc.BeforeNextLinkCheckResult> CheckBeforeNextLinkAsync(int tabId, int rowNumber, string sku,
         CancellationToken cancellationToken);
     Task DelayAsync(int ms, CancellationToken cancellationToken);
+    /// <summary>GĐ9: một lượt ảnh gốc trong khoảng nghỉ (ngân sách <paramref name="budgetMs"/>), chờ tới khi xong. null = không chạy /
+    /// không có kết quả. Không ném trừ huỷ của job. Mặc định không chạy.</summary>
+    Task<SourceImageRound?> RunSourceImagesAsync(int budgetMs, CancellationToken cancellationToken) =>
+        Task.FromResult<SourceImageRound?>(null);
+    /// <summary>GĐ9: hỏi riêng số ảnh còn chờ đẩy (không chạy lượt) — khi nghỉ quá ngắn / hết khối. null = không hỏi được / không
+    /// dùng ảnh gốc. Không ném trừ huỷ của job. Mặc định null.</summary>
+    Task<int?> SourceImagesMissingAsync(CancellationToken cancellationToken) => Task.FromResult<int?>(null);
 }

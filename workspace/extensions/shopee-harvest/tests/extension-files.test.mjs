@@ -87,7 +87,7 @@ test("import tương đối trỏ tới file có thật và có export đúng t�
 test("manifest: tên/phiên bản, file trỏ tới có thật, hook MAIN + kho ISOLATED, document_start trên host Shopee", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "manifest.json"), "utf8"));
   assert.equal(manifest.name, "Shopee Harvest Runner");
-  assert.equal(manifest.version, "1.1.0");
+  assert.equal(manifest.version, "1.2.0");
   assert.equal(manifest.manifest_version, 3);
   assert.equal(manifest.background.type, "module");
   assert.ok(fs.existsSync(path.join(ROOT, manifest.background.service_worker)));
@@ -151,11 +151,20 @@ test("background: có __launcherExecuteHarvestStep và probe trả cờ hasHarve
   const src = fs.readFileSync(path.join(ROOT, "background.js"), "utf8");
   assert.match(src, /globalThis\.__launcherExecuteHarvestStep\s*=/);
   // GĐ7: 3 lệnh của chế độ tự động có hàm + có trong bảng handler (C# gọi tên lệnh qua SW / popup).
-  for (const [fn, method] of [["__launcherPrepareHarvestClick", "prepareHarvestClick"], ["__launcherGetHarvestClickResult", "getHarvestClickResult"], ["__launcherPanelButtonRect", "panelButtonRect"]]) {
+  // GĐ9: + 2 lệnh lượt ảnh gốc do app điều nhịp.
+  for (const [fn, method] of [["__launcherPrepareHarvestClick", "prepareHarvestClick"], ["__launcherGetHarvestClickResult", "getHarvestClickResult"], ["__launcherPanelButtonRect", "panelButtonRect"],
+    ["__launcherStartSourceImages", "startSourceImages"], ["__launcherSourceImagesStatus", "sourceImagesStatus"]]) {
     assert.match(src, new RegExp(`globalThis\\.${fn}\\s*=`));
     assert.match(src, new RegExp(`${method}: globalThis\\.${fn},`));
   }
   assert.match(src, /hasHarvestStep:\s*\n?\s*typeof globalThis\.__launcherExecuteHarvestStep === "function"/);
+  assert.match(src, /hasSourceImages:\s*typeof globalThis\.__launcherStartSourceImages === "function"/);
+  // GĐ9: clearHubFull phải bỏ mốc Hub hết chỗ TRƯỚC khi xét "đang có lượt khác" (không bị bỏ qua khi lượt khác đang chạy).
+  const start = src.slice(src.indexOf("globalThis.__launcherStartSourceImages ="));
+  const clearAt = start.indexOf("sourceImages.clearHubFull()");
+  const busyAt = start.indexOf("if (sourceRound)");
+  assert.ok(clearAt > 0 && busyAt > 0 && clearAt < busyAt, `clearHubFull ở ${clearAt}, kiểm lượt đang chạy ở ${busyAt}`);
+  assert.match(start.slice(0, start.indexOf("\n};")), /hubFullCleared/);
 });
 
 test("background/popup KHÔNG gọi thẳng get_pc (không fetch, không URL get_pc) — chống thêm lại đường gọi thẳng", () => {

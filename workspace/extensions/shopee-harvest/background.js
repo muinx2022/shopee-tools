@@ -21,6 +21,7 @@ import { extractProductIds, checkPdpBody, redactPrivate } from "./pdp-core.js";
 import { pushCaptured, outcomeOf } from "./click-flow.js";
 import { createHubQueue } from "./hub-queue.js";
 import { postBatch, postKnown, isHubConfigured, hubPermissionPattern, normalizeHubUrl } from "./hub-client.js";
+import { createSourceImageQueue, imageIdsOf, newRoundId } from "./source-images.js";
 
 const OVERLAY_SCRIPT = "overlay.js";
 const TAB_LOAD_TIMEOUT_MS = 30_000;
@@ -1062,6 +1063,57 @@ const pushDeps = {
   queue: hubQueue,
 };
 
+// ── GĐ9: ảnh gốc lên Hub (source-images.js) ─────────────────────────────────────────────────────────────────────────
+// SP vừa lên Hub (saved / queued) → thêm việc ảnh vào hàng đợi BỀN. Lượt xử lý: app gọi startSourceImages đầu mỗi khoảng nghỉ
+// giữa 2 SP (profile "auto", cấu hình app truyền) rồi hỏi sourceImagesStatus tới khi xong; bấm tay thì tự chạy 1 lượt ngắn sau
+// lần bấm (profile "manual", cấu hình trang Cài đặt). Mỗi lúc chỉ MỘT lượt.
+const MANUAL_SOURCE_BUDGET_MS = 90_000;
+const MIN_SOURCE_BUDGET_MS = 5_000;
+const MAX_SOURCE_BUDGET_MS = 10 * 60_000;
+
+const sourceImages = createSourceImageQueue({
+  storage: {
+    get: (keys) => timed(chrome.storage.local.get(keys)),
+    set: (obj) => timed(chrome.storage.local.set(obj)),
+  },
+});
+let sourceRound = null; // { roundId, profile } của lượt đang chạy
+
+/** Thêm việc ảnh cho SP vừa đẩy (JSON đã làm sạch). Lỗi KHÔNG được làm hỏng kết quả lấy dữ liệu → nuốt, trả lý do. */
+const enqueueSourceImages = async (profile, result) => {
+  try {
+    const { ids, skipped } = imageIdsOf(result.json);
+    let itemId = result.itemId != null ? String(result.itemId) : "";
+    if (!itemId) { try { itemId = String(JSON.parse(result.json)?.data?.item?.item_id ?? ""); } catch (_) {} }
+    return await sourceImages.enqueue({ profile, itemId, ids, skipped: skipped.length });
+  } catch (e) {
+    return { ok: false, reason: e?.message || String(e) };
+  }
+};
+
+/** Bắt đầu một lượt chạy nền (không chờ). Đang có lượt khác → { started:false, roundId của lượt đó }. */
+const startSourceRound = ({ profile, cfg, budgetMs, clearHubFull = false }) => {
+  if (sourceRound) return { started: false, reason: "Đang chạy một lượt ảnh gốc khác.", roundId: sourceRound.roundId };
+  const roundId = newRoundId();
+  sourceRound = { roundId, profile };
+  startKeepAlive(); // lượt dài hơn 30 s idle của SW (bấm tay: không có launcher giữ SW)
+  sourceImages.runRound({ profile, cfg, budgetMs, roundId, clearHubFull })
+    .catch(() => {})
+    .finally(() => {
+      sourceRound = null;
+      readState().then(syncKeepAlive).catch(() => {});
+    });
+  return { started: true, roundId };
+};
+
+/** Bấm tay: SP vừa lên Hub → tự chạy 1 lượt ảnh nếu cấu hình tay dùng được và chưa có lượt nào. */
+const startManualSourceRound = async () => {
+  if (sourceRound) return;
+  const cfg = await readLocalKey(HUB_SETTINGS_KEY);
+  if (!isHubConfigured(cfg) || !(await hasHubPermission(cfg))) return;
+  startSourceRound({ profile: "manual", cfg, budgetMs: MANUAL_SOURCE_BUDGET_MS });
+};
+
 const notifyPanel = async (tabId, patch) => {
   try { await timed(chrome.tabs.sendMessage(tabId, { type: "HARVEST_PANEL_UPDATE", state: patch }), PANEL_PING_TIMEOUT_MS); } catch (_) {}
 };
@@ -1129,6 +1181,11 @@ const runCapture = async ({ tabId, link, ctx, token }) => {
       notifyPanel(tabId, { busy: "push" });
     }
     result = await pushCaptured(step, ctx, pushDeps);
+    // GĐ9: SP đã lên Hub (hoặc nằm bền trong hàng đợi gửi) → xếp việc ảnh gốc. Không bao giờ làm hỏng kết quả lấy dữ liệu.
+    if ((result?.hub?.status === "saved" || result?.hub?.status === "queued") && typeof result.json === "string") {
+      await enqueueSourceImages(ctx ? "auto" : "manual", result);
+      if (!ctx) startManualSourceRound().catch(() => {});
+    }
   } catch (e) {
     result = harvestResult({ message: e?.message || String(e), tabId, pageUrl: link });
   } finally {
@@ -1312,6 +1369,33 @@ globalThis.__launcherPanelButtonRect = async (payload) => {
   return res?.ready ? readyAnswer(ctx.token, tabId, res, res.href) : { ready: false, reason: res?.reason || "Hộp không trả lời." };
 };
 
+/**
+ * GĐ9 — app (đầu khoảng nghỉ giữa 2 SP): chạy NỀN một lượt ảnh gốc profile "auto" với cấu hình Hub app truyền ({ hub, budgetMs,
+ * clearHubFull }). Trả NGAY { started:true, roundId } hoặc { started:false, reason[, roundId của lượt đang chạy] }. Có token — KHÔNG
+ * ghi payload ra log.
+ */
+globalThis.__launcherStartSourceImages = async (payload) => {
+  const cfg = payload?.hub || null;
+  const budgetMs = Math.min(Math.max(0, Number(payload?.budgetMs) || 0), MAX_SOURCE_BUDGET_MS);
+  // Bỏ mốc "Hub hết chỗ" NGAY, kể cả khi đang có lượt khác chạy (app chỉ gửi cờ này một lần sau mỗi lần bấm Chạy).
+  let hubFullCleared = false;
+  if (payload?.clearHubFull === true) { try { await sourceImages.clearHubFull(); hubFullCleared = true; } catch (_) {} }
+  const answer = (r) => ({ ...r, hubFullCleared });
+  if (sourceRound) return answer(startSourceRound({ profile: "auto", cfg, budgetMs }));
+  if (budgetMs < MIN_SOURCE_BUDGET_MS) return answer({ started: false, reason: `Ngân sách lượt ảnh quá ngắn (${budgetMs} ms).` });
+  if (isHubConfigured(cfg)) {
+    // Như prepareHarvestClick: lượt sau / hàng đợi profile "auto" dùng lại cấu hình này.
+    try { await timed(chrome.storage.local.set({ [HUB_AUTO_KEY]: cfg })); } catch (_) {}
+    if (!(await hasHubPermission(cfg))) {
+      return answer({ started: false, reason: `Extension chưa được cấp quyền truy cập ${normalizeHubUrl(cfg.url)}.` });
+    }
+  }
+  return answer(startSourceRound({ profile: "auto", cfg, budgetMs }));
+};
+
+/** GĐ9 — trạng thái lượt ảnh: { running, round (lượt đang chạy, số tới lúc hỏi / lượt gần nhất), queue:{jobs,ids}, hubFullUntil }. */
+globalThis.__launcherSourceImagesStatus = async () => sourceImages.status();
+
 // Tin từ hộp nổi / popup / trang Cài đặt (KHÔNG phải lệnh của launcher).
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message) return undefined;
@@ -1328,6 +1412,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (message.op === "stats") return reply(queueStats());
     if (message.op === "list") return reply(hubQueue.list());
     if (message.op === "retry") return reply((async () => { const n = await hubQueue.requeueErrors(); const out = await flushQueue(true); return { requeued: n, ...out }; })());
+    return undefined;
+  }
+  if (message.type === "SOURCE_IMAGES") {
+    if (message.op === "status") return reply(sourceImages.status());
     return undefined;
   }
   if (message.type === "HUB_TEST") {
@@ -1381,6 +1469,7 @@ globalThis.__launcherHideOverlay = async ({ tabId }) => {
 globalThis.__launcherAbortStep = async () => {
   abortRequested = true;
   autoContexts.clear(); // lượt bấm chưa tới thì thôi — cú bấm sau đó (nếu có) là bấm tay
+  sourceImages.abort(); // GĐ9: lượt ảnh gốc đang chạy dừng ngay (việc dở giữ cho lượt sau)
   return { ok: true };
 };
 
@@ -1466,6 +1555,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
             typeof globalThis.__launcherExecuteHarvestStep === "function" &&
             typeof globalThis.__launcherApplyFormConfig === "function",
           hasHarvestClick: typeof globalThis.__launcherPrepareHarvestClick === "function",
+          hasSourceImages: typeof globalThis.__launcherStartSourceImages === "function",
         },
       };
     }
@@ -1475,6 +1565,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       prepareHarvestClick: globalThis.__launcherPrepareHarvestClick,
       getHarvestClickResult: globalThis.__launcherGetHarvestClickResult,
       panelButtonRect: globalThis.__launcherPanelButtonRect,
+      startSourceImages: globalThis.__launcherStartSourceImages,
+      sourceImagesStatus: globalThis.__launcherSourceImagesStatus,
       checkBeforeNextLink: globalThis.__launcherCheckBeforeNextLink,
       setDisplayState: globalThis.__launcherSetDisplayState,
       getRunnerState: globalThis.__launcherGetRunnerState,
