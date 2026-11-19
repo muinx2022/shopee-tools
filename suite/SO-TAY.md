@@ -564,6 +564,60 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `DELETE /files/{*name}` trong `suite/server/Shopee.Hub.Web/Api/ClientApiEndpoints.cs`
 - **Đã deploy**: backup `/opt/shopee-hub/Shopee.Hub.Web.dll.bak-20261104-101953`, health `{"ok":true,"pg":true}`, `DELETE /files/videos/no-such-probe.mp4` không token trả 401 (route có, chưa mở). App client vẫn phải phát hành thì máy mới gọi được.
 
+### P-20261106-1 · [ĐÓNG (ee08de4)] · VỪA — Nút Đẩy video: quét thư mục chạy đồng bộ trên UI thread
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/HubVideoBulkPush.cs` (`ScanAsync` gọi `ListLocal` trước `await` đầu tiên) và `ShellViewModel.cs` (`Directory.Exists` trực tiếp)
+- **Bằng chứng**: lệnh chạy từ UI, `ScanAsync` đồng bộ tới `await ManifestAsync`, nên liệt kê thư mục và 2 lần stat mỗi file nằm trên UI thread. Thư mục trên ổ mạng hoặc nghìn file thì cửa sổ treo trước khi quét bắt đầu.
+- **Đã sửa**: `Task.Run(..., ct)` cho `ListLocal` và `Directory.Exists`; kiểm ngày trước kích thước trên một `FileInfo`.
+
+### P-20261106-2 · [ĐÓNG (ee08de4)] · VỪA — Nút Đẩy video đọc file với `FileShare.Read`, chặn `VideoDownloader` xóa file cũ
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `HubVideoBulkPush.cs` (`Sha256Hex` dùng `File.OpenRead`, `PushOneAsync` dùng `File.ReadAllBytesAsync`) đối chiếu `workspace/src/Shopee.Core/Scrape/VideoDownloader.cs:64` (`File.Delete(dest)` rồi `File.Move`)
+- **Bằng chứng**: scrape tải lại đúng SKU lúc nút đang hash hoặc đọc file đó thì `File.Delete` ném IOException, lần cào báo "không tải được video" và để lại `.part`. Sau sửa, test `Sha256Hex_DocDuocFileDangMoDeGhi` và `PushAllAsync_DocDuocFileDangMoDeGhi` đỏ khi đổi ngược về `File.OpenRead` / `ReadAllBytesAsync`.
+- **Đã sửa**: mở bằng `FileStream` với `FileShare.ReadWrite | FileShare.Delete`.
+
+### P-20261106-3 · [ĐÓNG (ee08de4)] · NHỎ — Hộp thoại PushVideosDialog: nhánh `WindowHost` không modal làm ViewModel đọc `Choice` sớm
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `workspace/src/Shopee.Workspace/Services/WindowHost.cs:20-21` (không có cửa sổ chính hiển thị thì `Show()` rồi trả `null` ngay) và `ShellViewModel.cs` (đọc `dialog.Choice`)
+- **Bằng chứng**: đọc code, chưa chạy UI. Nhánh này hiếm (cửa sổ chính chưa hiện hoặc đang tắt). Khi xảy ra, ViewModel đọc `Choice` còn là `Cancel`, hộp thoại vẫn trên màn hình và bấm nút không đẩy gì. `ShowInTaskbar=False` còn làm hộp khó tìm khi cửa sổ chính thu nhỏ.
+- **Đã sửa**: `PushVideosDialog.WaitClosedAsync()` (ViewModel chờ đóng rồi mới đọc `Choice`), `ShowInTaskbar="True"`.
+
+### P-20261106-4 · [MỞ] · NHỎ — Đẩy bù theo ngày sửa file local có thể kéo dài vòng đời video quá 30 ngày kể từ lúc cào gốc
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/HubVideoBulkPush.cs` (`ListLocal`, điều kiện `MaxAge`) và `workspace/src/Shopee.Core/Scrape/SkuVideoSync.cs` (`TryEnsureLocalAsync` ghi `.part` rồi `Move`)
+- **Bằng chứng**: trên máy update, ngày sửa file là lúc kéo từ hub. Kéo ở ngày 28 của video, hub xóa ở ngày 30; bấm nút ở ngày 31 thì bản local "3 ngày tuổi" bị đẩy ngược lên hub và sống thêm 30 ngày. Đúng chữ plan ("sửa trong 30 ngày"), nên đây là hệ quả cần user biết, không phải lỗi code.
+- **Vì sao không sửa ngay**: do plan chốt luật theo ngày sửa file; đổi luật là quyết định của user.
+
+### P-20261106-5 · [MỞ] · NHỎ — Scrape có thể bắt đầu giữa lúc lô Đẩy video đang chạy
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `workspace/src/Shopee.Workspace/ViewModels/ShellViewModel.cs:304` (guard `_scrape.IsBusy || ScrapeMulti.IsRunning || AutoRun.IsRunning` chỉ chạy lúc bấm nút); chỗ bắt đầu scrape nằm ở `ScrapeMultiViewModel.cs` và `WorkspaceViewModel.cs`, không đọc `_isPushingVideos`
+- **Bằng chứng**: đọc code. Sau P-20261106-2 hai việc không còn làm hỏng file nhau, nhưng chạy song song: lệnh "xóa toàn bộ video trên hub" lúc bắt đầu scrape có thể chen giữa lô, kết thúc báo "đã đẩy a/N" trong khi hub chỉ còn các file đẩy sau lệnh xóa.
+- **Vì sao không sửa ngay**: chặn hẳn phải sửa phía Scrape, ngoài phạm vi plan.
+
+### P-20261106-6 · [MỞ] · NHỎ — Nút Đẩy video loại âm thầm file rỗng, quá 80MB hoặc tên không qua `IsVideoName`
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/HubVideoBulkPush.cs` (`ListLocal`: `IsVideoName`, `IsPushableSize`)
+- **Bằng chứng**: các file này không vào X, không vào N, không có dòng log, nên "Hub đã đủ" có thể sai với người xem. Scrape cũng không đẩy các file đó (cùng luật 80MB), nên nhất quán với vòng scrape; chỉ thiếu thông báo.
+- **Vì sao không sửa ngay**: chưa chắc cần; thêm báo số file bị bỏ là đổi thông điệp của plan.
+
+### P-20261106-7 · [MỞ] · NHỎ — NGHI NGỜ: file chỉ khác hoa-thường với tên có trên hub luôn nằm trong danh sách "thiếu" và luôn lỗi
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `HubVideoBulkPush.cs` (`SelectMissing` so tên bằng `StringComparer.Ordinal`) và `suite/server/Shopee.Hub.Web/Data/HubDatabase.Files.cs` (`PutFile`, guard `FindCaseVariantLocked`)
+- **Bằng chứng**: dựng từ đọc code, chưa chạy. Local `ABC.mp4`, hub đã có `videos/abc.mp4`: `SelectMissing` không thấy key nên đưa vào "thiếu", PUT bị hub từ chối vì trùng tên khác hoa-thường. Chế độ "thiếu/khác" không bao giờ về 0.
+- **Vì sao không sửa ngay**: cần xác nhận hành vi thật của hub trước.
+
+### P-20261106-8 · [MỞ] · VỪA — NGHI NGỜ: `HubVideoMaintenance.Gate` không có thời hạn chờ, quét xóa lúc mạng chập chờn làm mọi lần đẩy video xếp hàng
+- **Thấy lúc**: phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md` (ngoài phạm vi bản vá)
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/HubVideoMaintenance.cs:58-86` (`RunExpiredSweepAsync` và `RunDeleteAllAsync` giữ khóa suốt vòng xóa)
+- **Bằng chứng**: `DeleteFileAsync` dùng `_http` timeout 8s mỗi file. Hub chập chờn, N file cần xóa thì khóa giữ tới N×8s và mọi PUT video (của scrape lẫn nút Đẩy video) chờ khóa không có timeout. Chưa dựng bằng chạy thật.
+- **Vì sao không sửa ngay**: có từ trước bản vá, ngoài phạm vi.
+
+### P-20261106-9 · [MỞ] · NHỎ — Mã trùng và dòng thừa quanh nút Đẩy video
+- **Thấy lúc**: nghiệm thu và phản biện plan `workspace/plans/2026-11-06-nut-day-video-len-hub.md`
+- **Ở đâu**: `LauncherRunnerLoop.cs:803` (`ShortHubReason`) trùng `ShortReason` trong `HubVideoBulkPush.cs`; `HubConfigSync.cs:209` (`LocalSha256`) trùng `HubVideoBulkPush.Sha256Hex`; `HubVideoBulkPush.cs:38` (kiểm đuôi `.mp4`) thừa vì `HubVideoRetention.IsVideoName` đã loại `.MP4`
+- **Bằng chứng**: xóa dòng kiểm đuôi ở `HubVideoBulkPush.cs:38` thì 13/13 test lúc đó vẫn xanh (phản biện thử phá), nên test ca `G.MP4` không đo riêng dòng này. Hai hàm trùng cùng 4 dòng, sửa một bên dễ lệch bên kia.
+- **Vì sao không sửa ngay**: plan cấm đổi `HubConfigSync` và vòng scrape; dọn là việc riêng.
+
 ### P-20261115-1 · [MỞ] · NHỎ — Hub trả nguyên stack trace khi lỗi 500
 - **Thấy lúc**: phản biện GĐ1 plan `workspace/plans/2026-11-15-app-harvest-luu-du-lieu-shopee-len-hub.md`
 - **Ở đâu**: `server/Shopee.Hub.Web/Program.cs` (không có `UseExceptionHandler`)
@@ -744,6 +798,24 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Bằng chứng**: **nghi ngờ** — đọc code GĐ5, chưa dựng ca chạy song song.
 - **Vì sao không sửa ngay**: cần quyết định chính sách dùng chung tài khoản.
 
+### P-20261117-15 · [MỞ] · VỪA — `harvested_product_sources.row_no` là chỉ số dòng nén và bị cũ sau khi chèn/xoá dòng workbook
+- **Thấy lúc**: phản biện GĐ1 plan app đăng SP (`workspace/plans/2026-11-17-app-dang-sp-shopee-mass-upload.md`)
+- **Ở đâu**: `workspace/src/Shopee.Core/Scrape/ScrapeWorkbook.cs:106-131` (`ScrapeLinkItem(p, …)` với `p` = vị trí trong danh sách nén); `suite/server/Shopee.Hub.Web/Data/ProductDb.cs` (migration 5)
+- **Bằng chứng**: đọc code — Harvest không gửi lại SP đã xong (`HarvestDoneRebuild`), nên `row_no` của liên kết chỉ đổi khi SP được cào lại; xoá 1 dòng phía trên → mọi liên kết phía dưới lệch 1. Chưa dựng ca chạy thật.
+- **Vì sao không sửa ngay**: thuộc thiết kế Harvest; app đăng SP né bằng cách đọc workbook hiện tại rồi tra Hub theo item_id (không tin `row_no`).
+
+### P-20261117-16 · [MỞ] · VỪA — Ổ VPS production đã dùng 84% (còn 19G/117G), dùng chung mọi dự án, không có cảnh báo dung lượng
+- **Thấy lúc**: phản biện GĐ1 vòng 2 plan app đăng SP
+- **Ở đâu**: `vps-muinx:/dev/sda2` (Postgres Hub + container các dự án khác)
+- **Bằng chứng**: `df -h` (chỉ đọc) ngày 2026-11-17: 117G, dùng 93G, trống 19G. Raw Harvest ~80 KB/SP và kho ảnh `/api/media` sẽ ăn thêm.
+- **Vì sao không sửa ngay**: hạ tầng ngoài phạm vi; kho ảnh đã có trần + `MinFreeMb`, deploy đặt `MaxTotalMb` ~5000.
+
+### P-20261117-17 · [MỞ] · NHẸ — Hub chạy trên Windows: GET/HEAD `/api/media` đua với DELETE/sweep có thể ra 500 thay vì 404
+- **Thấy lúc**: phản biện GĐ1 vòng 2
+- **Ở đâu**: `suite/server/Shopee.Hub.Web/Api/PublicMediaEndpoints.cs:68`
+- **Bằng chứng**: **nghi ngờ** — suy từ hành vi `Results.File` khi file vừa bị xoá; chưa dựng được. Production chạy Linux (xoá file đang mở không ảnh hưởng).
+- **Vì sao không sửa ngay**: chỉ ảnh hưởng Hub dev trên Windows.
+
 ### P-20261118-1 · [MỞ] · VỪA — Harvest: sheet có dòng đã có / chưa có xen kẽ bị chia thành hàng trăm khối 1 dòng (mỗi khối mở Brave + giữ tổng kết 5 s)
 - **Thấy lúc**: GĐ6 plan harvest (nghiệm thu / phản biện)
 - **Ở đâu**: `workspace/src/Shopee.Module.MultiBrave/ScrapeRunner.cs:749-762`
@@ -785,6 +857,24 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/tests/Shopee.Workspace.Tests/HarvestAppTests.cs:374-390`
 - **Bằng chứng**: nghiệm thu GĐ6 — đột biến bỏ hạn N ngày chỉ bị bắt nhờ `Assert.Contains` chuỗi mã nguồn.
 - **Vì sao không sửa ngay**: cần test hành vi cho job Harvest.
+
+### P-20261118-8 · [MỞ] · NHẸ — `KiotProxyClient.FetchNewAsync` cứng `region=random`, bỏ qua cấu hình vùng
+- **Thấy lúc**: GĐ4 plan app đăng SP (`workspace/plans/2026-11-17-app-dang-sp-shopee-mass-upload.md`)
+- **Ở đâu**: `workspace/src/Shopee.Core/Proxy/KiotProxyClient.cs:30`
+- **Bằng chứng**: URL ghi thẳng `&region=random`, trong khi `GetNewProxyAsync` (dòng ~120) có nhận tham số region; `ProxyPool` gọi `FetchNewAsync`.
+- **Vì sao không sửa ngay**: app đăng SP dùng client riêng (`SellerKiotApi`); sửa đổi hành vi Scrape/Harvest.
+
+### P-20261118-9 · [MỞ] · NHẸ — `ProxyPool` dùng tạm IP cũ khi `/new` lỗi
+- **Thấy lúc**: GĐ4 plan app đăng SP
+- **Ở đâu**: `workspace/src/Shopee.Core/Proxy/ProxyPool.cs:129-131`
+- **Bằng chứng**: `return soonest.CurrentProxy;` kèm log "dùng tạm IP cũ".
+- **Vì sao không sửa ngay**: hành vi có chủ ý của Scrape; chỉ ghi để không ai dùng `ProxyPool` cho luồng seller.
+
+### P-20261118-10 · [MỞ] · VỪA — `WindowsProcessLifetimeScope` có thể mở tiến trình lần hai NGOÀI Job Object khi tiến trình đầu thoát quá nhanh
+- **Thấy lúc**: phản biện GĐ4 plan app đăng SP
+- **Ở đâu**: `workspace/src/Shopee.Core/Platform/Windows/WindowsProcessLifetimeScope.cs:42-49`, `:123-128`
+- **Bằng chứng**: **nghi ngờ** — đọc code: `GetProcessById` ném khi tiến trình đã thoát (vd Brave chuyển lệnh sang bản đang chạy) → rơi xuống nhánh mở lại không gắn Job Object. Chưa dựng được.
+- **Vì sao không sửa ngay**: code dùng chung Scrape/Harvest/Update; app đăng SP đã kiểm lại dòng lệnh tiến trình Brave sau khi mở.
 
 ### P-20261118-8 · [MỞ] · VỪA — Kênh `pdp-hook` → `pdp-store` dùng tên event cố định trên `document`: script bất kỳ trên shopee.vn giả được "get_pc của SP X", và từ GĐ7 ext đẩy thẳng dữ liệu đó lên Hub khi bấm tay
 - **Thấy lúc**: GĐ7 plan harvest (nghiệm thu / phản biện)
@@ -833,3 +923,33 @@ Sổ đầy phỏng đoán thì mục thật bị loãng, và loãng đủ lâu 
 - **Ở đâu**: `workspace/src/Shopee.Core/Coordination/HttpCoordinationHub.cs:368`
 - **Bằng chứng**: đọc mã — trước GĐ7.1 chỉ Harvest đặt.
 - **Vì sao không sửa ngay**: dọn sau.
+
+### P-20261118-16 · [MỞ] · NHẸ — Chú thích check đơn nói Brave nối CDP có `navigator.webdriver=false`, đo trên Brave 157 ra `true`
+- **Thấy lúc**: phản biện GĐ5b app đăng SP (2026-11-18)
+- **Ở đâu**: `suite/orders/XuLyDonShopee.Core/Services/LoginBrowserBootstrap.cs:31`, `ShopeeLoginService.cs:90`
+- **Bằng chứng**: Brave 157 mở `--remote-debugging-port` + `ConnectOverCDPAsync`, `page.EvaluateAsync("String(navigator.webdriver)")` → `true`.
+- **Vì sao không sửa ngay**: ngoài phạm vi app đăng SP; Shopee hiện chưa chặn theo cờ này. Cần sửa chú thích hoặc tìm cách khác nếu Shopee siết.
+
+### P-20261118-17 · [MỞ] · NHẸ — **Nghi ngờ**: Brave của app đăng SP mở mDNS `0.0.0.0:5353` (multicast LAN)
+- **Thấy lúc**: phản biện GĐ5b app đăng SP (2026-11-18)
+- **Ở đâu**: `workspace/src/Shopee.Core/MassUpload/Seller/SellerBrowserArgs.cs` (không có cờ tắt mDNS)
+- **Bằng chứng**: `netstat -ano` thấy `UDP 0.0.0.0:5353` thuộc PID Brave chính ở chế độ Login; chưa đo chế độ thường. Chỉ trong LAN, không ra internet.
+- **Vì sao không sửa ngay**: chưa chứng minh là rò IP ra ngoài; cần đo thêm.
+
+### P-20261118-18 · [MỞ] · VỪA — **Nghi ngờ**: app check đơn nhận cookie giữ chỗ `-` là đã đăng nhập
+- **Thấy lúc**: phản biện vòng 2 GĐ5b app đăng SP (2026-11-18)
+- **Ở đâu**: `suite/orders/XuLyDonShopee.Core/Services/ShopeeLoginCookies.cs:17-19`
+- **Bằng chứng**: predicate chỉ là `!string.IsNullOrEmpty(c.Value)`; `workspace/src/Shopee.Core/Accounts/ShopeeAuth.cs:116-121` và plan 2026-07-30 loại `-` và giá trị ngắn. Shopee đặt `SPC_U=-`/`SPC_EC=-` khi chưa đăng nhập (đã tái hiện trên Brave thật ở app đăng SP).
+- **Vì sao không sửa ngay**: ngoài phạm vi app đăng SP; chưa dựng ca trên luồng check đơn thật.
+
+### P-20261118-19 · [MỞ] · NHẸ — **Nghi ngờ**: `BigSellerStore.Load` nuốt lỗi đọc mà vẫn cập nhật `_lastWriteUtc` → một lần đọc trượt làm store rỗng tới khi file đổi lần sau
+- **Thấy lúc**: phản biện GĐ5c app đăng SP (2026-11-18)
+- **Ở đâu**: `workspace/src/Shopee.Core/BigSeller/BigSellerStore.cs:76-97`
+- **Bằng chứng**: đọc mã; chưa dựng ca đua thật. Ảnh hưởng mọi app dùng store (Scrape/Update/Harvest/Upload).
+- **Vì sao không sửa ngay**: Core dùng chung, ngoài phạm vi GĐ5c; app Upload tự đọc lại một lần để né.
+
+### P-20261119-1 · [MỞ] · NHẸ — `LoginRateLimit.IpOf` tin `CF-Connecting-IP` từ mọi nguồn
+- **Thấy lúc**: GĐ9 Hub app đăng SP (2026-11-19)
+- **Ở đâu**: `suite/server/Shopee.Hub.Web/Auth/LoginRateLimit.cs:52-58`
+- **Bằng chứng**: hàm không kiểm `RemoteIpAddress` là loopback trước khi tin header. Đã kiểm VPS: `ASPNETCORE_URLS=http://127.0.0.1:8088`, cổng chỉ nghe loopback ⇒ chỉ cloudflared gọi được, rủi ro thực tế thấp.
+- **Vì sao không sửa ngay**: ngoài phạm vi; route `/api/v/…` mới đã dùng luật chặt (chỉ tin từ loopback).
