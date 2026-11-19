@@ -14,6 +14,23 @@
             <Setter Property="Padding" Value="8,3" />
             <Setter Property="HorizontalContentAlignment" Value="Right" />
         </Style>
+        <!-- Ô "Từ dòng / Đến dòng" trong bảng sheet: cùng kiểu ô số phía trên (viền luôn hiện), đủ 6 chữ số. -->
+        <Style x:Key="rowBox" TargetType="{x:Type TextBox}" BasedOn="{StaticResource numBox}">
+            <Setter Property="Width" Value="80" />
+            <Setter Property="Margin" Value="0,3" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="HorizontalAlignment" Value="Left" />
+            <EventSetter Event="PreviewKeyDown" Handler="RowBox_PreviewKeyDown" />
+            <EventSetter Event="PreviewTextInput" Handler="RowBox_PreviewTextInput" />
+            <EventSetter Event="GotKeyboardFocus" Handler="RowBox_GotKeyboardFocus" />
+        </Style>
+        <!-- Ô DataGrid chứa ô nhập: không tự nhận focus / Tab (focus đi thẳng vào ô nhập, Tab không dừng ở ô DataGrid). -->
+        <Style x:Key="rowBoxCell" TargetType="{x:Type DataGridCell}" BasedOn="{StaticResource {x:Type DataGridCell}}">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="IsTabStop" Value="False" />
+            <!-- Padding gốc 10,7 → ô 92 chỉ còn 72 cho ô nhập 80 (bị xén mép phải). -->
+            <Setter Property="Padding" Value="6,2" />
+        </Style>
         <Style x:Key="inlineLabel" TargetType="{x:Type TextBlock}">
             <Setter Property="VerticalAlignment" Value="Center" />
             <Setter Property="FontSize" Value="12" />
@@ -214,17 +231,32 @@
                         </DataGridTemplateColumn.CellTemplate>
                     </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Sheet" Binding="{Binding Name}" Width="2*" MinWidth="110" IsReadOnly="True" />
-                    <!-- Dải dòng Excel THẬT (như trong Excel) — sửa trực tiếp; số đếm + lượt Chạy chỉ tính trong dải. -->
-                    <DataGridTextColumn Binding="{Binding FromRow}" Width="76">
-                        <DataGridTextColumn.Header>
+                    <!-- Dải dòng Excel THẬT (như trong Excel): ô nhập LUÔN hiện (bấm một lần là gõ, không phải double-click / F2). Lưu khi
+                         rời ô hoặc Enter (code-behind: Enter / Tab không làm DataGrid nhảy dòng); số đếm + lượt Chạy chỉ tính trong dải. -->
+                    <DataGridTemplateColumn Width="92" CellStyle="{StaticResource rowBoxCell}">
+                        <DataGridTemplateColumn.Header>
                             <TextBlock Text="Từ dòng" ToolTip="Số dòng Excel bắt đầu lấy (như trong Excel). Nhỏ hơn dòng dữ liệu đầu thì tự về dòng dữ liệu đầu (2 nếu dòng 1 là tiêu đề)." />
-                        </DataGridTextColumn.Header>
-                    </DataGridTextColumn>
-                    <DataGridTextColumn Binding="{Binding ToRow}" Width="80">
-                        <DataGridTextColumn.Header>
+                        </DataGridTemplateColumn.Header>
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBox Style="{StaticResource rowBox}" Text="{Binding FromRow, UpdateSourceTrigger=LostFocus}"
+                                         IsEnabled="{Binding DataContext.IsIdle, ElementName=Root}"
+                                         ToolTip="Từ dòng (số dòng Excel). Enter hoặc rời ô để áp." />
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTemplateColumn Width="92" CellStyle="{StaticResource rowBoxCell}">
+                        <DataGridTemplateColumn.Header>
                             <TextBlock Text="Đến dòng" ToolTip="Số dòng Excel cuối cùng lấy; 0 = tới hết sheet. Nhỏ hơn Từ dòng thì không nhận, giữ dải cũ." />
-                        </DataGridTextColumn.Header>
-                    </DataGridTextColumn>
+                        </DataGridTemplateColumn.Header>
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBox Style="{StaticResource rowBox}" Text="{Binding ToRow, UpdateSourceTrigger=LostFocus}"
+                                         IsEnabled="{Binding DataContext.IsIdle, ElementName=Root}"
+                                         ToolTip="Đến dòng (số dòng Excel); 0 = tới hết sheet. Enter hoặc rời ô để áp." />
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
                     <DataGridTextColumn Header="Tổng link" Binding="{Binding TotalLinks}" Width="80" IsReadOnly="True" />
                     <DataGridTextColumn Header="Đã có" Binding="{Binding HaveCount}" Width="80" IsReadOnly="True" />
                     <DataGridTextColumn Header="Còn phải lấy" Binding="{Binding TodoCount}" Width="100" IsReadOnly="True" />

@@ -792,6 +792,119 @@ public sealed class HarvestAppTests
         enc.Save(fs);
     }
 
+    /// <summary>Lỗi user báo (cửa sổ 1500 px @ 150% = 1000 DIP, dữ liệu thật: tên file dài, sheet có ghi chú dài): màn bị dựng RỘNG
+    /// hơn cửa sổ — mô tả không xuống dòng, dải cấu hình không xuống dòng, phần "Hub: đã nhận…" bên phải bị cắt. Ở 1000 DIP: màn
+    /// không đòi rộng hơn cửa sổ, mọi chữ / ô / nút nằm trong bề rộng.</summary>
+    [Fact]
+    public async Task ManHarvest_1000Dip_DuLieuThat_KhongTranNgang()
+    {
+        var dir = NewTempDir();
+        try
+        {
+            var longDir = Directory.CreateDirectory(Path.Combine(dir, "Thư mục rất dài của người dùng - danh sách sản phẩm Shopee resell")).FullName;
+            var sheets = Enumerable.Range(1, 12).Select(i => ($"Shop tên khá dài số {i}", new[]
+            {
+                $"https://shopee.vn/a-i.77.{i}", "hết hàng — ghi chú dài của người nhập liệu", "https://shopee.vn/x", $"https://shopee.vn/b-i.77.{i + 100}",
+            })).ToArray();
+            var file = Workbook(longDir, "Sản phẩm shopee resell - 08.10.2026 bản cập nhật cuối cùng.xlsx", sheets);
+            var settings = new HarvestSettingsStore(Path.Combine(dir, "harvest-settings.json"));
+            settings.Current.WorkbookPath = file;
+            settings.Current.RestMinSeconds = 60;
+            settings.Current.RestMaxSeconds = 120;
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
+            var vm = new Modules.Harvest.HarvestViewModel(new Modules.Scrape.ScrapeViewModel(), settings,
+                hub: new FakeHubPort(), suiteHubConfigPath: Path.Combine(dir, "khong-co.json"));
+            await vm.RefreshCommand.ExecuteAsync(null);
+            Assert.All(vm.Sheets, s => Assert.NotEqual("", s.Warning));             // ca có ghi chú dài
+            OnSta(() =>
+            {
+                WorkspaceAppConfig.Initialize(WorkspaceRole.Harvest);
+                const double w = 1000, h = 700;
+                var view = new Modules.Harvest.HarvestView { DataContext = vm };
+                LayoutLikeWindow(view, w, h);
+                var wide = Descendants<System.Windows.FrameworkElement>(view)
+                    .Where(e => Shown(e, view) && e.ActualWidth > 0 && e is not System.Windows.Controls.ScrollContentPresenter)
+                    .Select(e => (e, r: BoundsIn(e, view)))
+                    .Where(x => x.r.Right > w + 0.5 && !InsideScroller(x.e, view))
+                    .Select(x => $"{x.e.GetType().Name}({(x.e as System.Windows.Controls.TextBlock)?.Text ?? x.e.Name}) phải={x.r.Right:0}")
+                    .Take(12).ToList();
+                Assert.True(view.DesiredSize.Width <= w + 0.5 && wide.Count == 0,
+                    $"màn đòi rộng {view.DesiredSize.Width:0} > {w}: " + string.Join(" | ", wide));
+
+                // "Từ dòng / Đến dòng" là ô nhập LUÔN hiện (TextBox có viền), không phải chữ phải double-click; đủ 6 chữ số.
+                var rowBox = view.FindResource("rowBox");
+                var boxes = Descendants<System.Windows.Controls.TextBox>(view).Where(t => t.Style == rowBox && Shown(t, view)).ToList();
+                var shownRows = Descendants<System.Windows.Controls.DataGridRow>(view).Count(r => Shown(r, view) && r.DataContext is Modules.Harvest.HarvestSheetRowViewModel);
+                Assert.True(shownRows > 0);
+                Assert.Equal(2 * shownRows, boxes.Count);
+                Assert.All(boxes, b => Assert.True(b.BorderThickness.Left > 0 && b.IsEnabled));
+                foreach (var b in boxes)   // ô nhập nằm trọn trong ô DataGrid (không bị xén viền)
+                {
+                    // So với khe nội dung của ô (ContentPresenter, đã trừ Padding) — ô Border cắt phần thò ra khỏi khe.
+                    var slot = (System.Windows.FrameworkElement)System.Windows.Media.VisualTreeHelper.GetParent(b);
+                    var r = BoundsIn(b, slot);
+                    Assert.True(r.Left >= -0.5 && r.Right <= slot.ActualWidth + 0.5, $"ô nhập bị xén: {r.Right:0} > {slot.ActualWidth:0}");
+                }
+                SaveRender(view, w, h, "harvest-1000dip-dulieuthat.png");
+                var fromBox = boxes[0];
+                var first = Assert.IsType<Modules.Harvest.HarvestSheetRowViewModel>(fromBox.DataContext);
+                fromBox.Text = "123456";
+                fromBox.UpdateLayout();
+                Assert.True(fromBox.ExtentWidth <= fromBox.ViewportWidth + 0.5, "ô không đủ 6 chữ số");
+                // Enter / rời ô: áp vào VM theo luật kẹp; nhập nhỏ hơn dòng dữ liệu đầu → ô hiện ngay giá trị đã kẹp.
+                Modules.Harvest.HarvestView.CommitRowBox(fromBox);
+                Assert.Equal(123456, first.FromRow);
+                fromBox.Text = "1";
+                Modules.Harvest.HarvestView.CommitRowBox(fromBox);
+                Assert.Equal((2, "2"), (first.FromRow, fromBox.Text));
+                fromBox.Text = "";                                                    // xoá trắng → giữ giá trị đang áp
+                Modules.Harvest.HarvestView.CommitRowBox(fromBox);
+                Assert.Equal("2", fromBox.Text);
+                view.UpdateLayout();
+                var shown = string.Join(" | ", boxes.Select(b => $"{(b.DataContext as Modules.Harvest.HarvestSheetRowViewModel)?.Name}:{b.Text}"));
+                Assert.Same(vm.Sheets[0], first);
+                Assert.All(boxes, b => Assert.True(b.Text is "2" or "0", shown));
+            });
+        }
+        finally
+        {
+            WorkspaceAppConfig.Initialize(WorkspaceRole.Full);
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    /// <summary>Dựng màn như trong cửa sổ thật: lượt đầu DataGrid chưa biết bề rộng khung nhìn nên cột * (Sheet, Ghi chú) = 0; dựng lại
+    /// vài lượt (mọi phần tử đánh dấu đo lại) để DataGrid chia bề rộng cột * như khi cửa sổ hiện — không cần bơm Dispatcher.</summary>
+    private static void LayoutLikeWindow(System.Windows.FrameworkElement view, double w, double h)
+    {
+        for (var pass = 0; pass < 3; pass++)
+        {
+            foreach (var e in Descendants<System.Windows.UIElement>(view).ToList()) e.InvalidateMeasure();
+            view.InvalidateMeasure();
+            view.Measure(new System.Windows.Size(w, h));
+            view.Arrange(new System.Windows.Rect(0, 0, w, h));
+            view.UpdateLayout();
+        }
+    }
+
+    /// <summary>Phần tử đang hiện trên màn dựng ngoài cửa sổ (<c>IsVisible</c> luôn false khi không có cửa sổ): nó và mọi cha tới
+    /// <paramref name="root"/> đều <c>Visibility.Visible</c>.</summary>
+    private static bool Shown(System.Windows.UIElement e, System.Windows.DependencyObject root)
+    {
+        for (System.Windows.DependencyObject? p = e; p is not null && !ReferenceEquals(p, root); p = System.Windows.Media.VisualTreeHelper.GetParent(p))
+            if (p is System.Windows.UIElement u && u.Visibility != System.Windows.Visibility.Visible) return false;
+        return true;
+    }
+
+    /// <summary>Phần tử nằm trong vùng cuộn (DataGrid / ô log) — tràn ở đó là cuộn ngang hợp lệ, không phải màn tràn.</summary>
+    private static bool InsideScroller(System.Windows.DependencyObject e, System.Windows.DependencyObject root)
+    {
+        for (var p = System.Windows.Media.VisualTreeHelper.GetParent(e); p is not null && !ReferenceEquals(p, root);
+             p = System.Windows.Media.VisualTreeHelper.GetParent(p))
+            if (p is System.Windows.Controls.ScrollViewer) return true;
+        return false;
+    }
+
     /// <summary>GĐ7.1 (lỗi user báo): dải ô số đè lên hàng nút, chữ trong ô bị xén. Dựng màn ở 2 bề rộng × 100% / 125% (bề rộng DIP
     /// tương ứng cửa sổ ~1100 px và ~1900 px): chữ trong mọi ô số không bị xén (ExtentHeight ≤ ViewportHeight), không ô số nào chồng
     /// lên nút nào. Đặt biến môi trường <c>HARVEST_RENDER_DIR</c> thì lưu ảnh PNG để xem tay. VM dựng + quét file TRƯỚC (async), view
