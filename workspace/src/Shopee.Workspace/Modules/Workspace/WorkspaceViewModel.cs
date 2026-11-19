@@ -13,6 +13,7 @@ using Shopee.Workspace.Modules.Scrape;
 using Shopee.Workspace.Modules.UpdateProduct;
 using Shopee.Workspace.Services;
 using Shopee.Core.Coordination;
+using UpdateProduct;
 
 namespace Shopee.Workspace.Modules.Workspace;
 
@@ -484,7 +485,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
 
     // ── Update theo shop (Import / Update / Tên SP) — cũng fire-and-forget (lý do như trên) ──
     [RelayCommand] private void ImportShop(WorkspaceShopViewModel? shop) => RunUpdateShop(shop, t => Update.RunImportSingleAsync(t));
-    [RelayCommand] private void UpdateShop(WorkspaceShopViewModel? shop) => RunUpdateShop(shop, t => Update.RunUpdateSingleAsync(t));
+    [RelayCommand] private void UpdateShop(WorkspaceShopViewModel? shop) => RunUpdateShop(shop, t => RunWithVideoPreDownloadAsync(shop!, s => Update.RunUpdateSingleAsync(s)));
     [RelayCommand] private void RewriteShop(WorkspaceShopViewModel? shop) => RunUpdateShop(shop, t => Update.RunNameRewriteSingleAsync(t));
 
     private void RunUpdateShop(WorkspaceShopViewModel? shop, Func<UpdateRunTargetViewModel, Task> run)
@@ -512,7 +513,7 @@ public sealed partial class WorkspaceViewModel : ObservableObject
     }
 
     [RelayCommand] private void ImportToggle(WorkspaceShopViewModel? shop) => ToggleUpdateOp(shop, shop?.IsImporting ?? false, t => Update.RunImportSingleAsync(t));
-    [RelayCommand] private void UpdateToggle(WorkspaceShopViewModel? shop) => ToggleUpdateOp(shop, shop?.IsUpdatingShop ?? false, t => Update.RunUpdateSingleAsync(t));
+    [RelayCommand] private void UpdateToggle(WorkspaceShopViewModel? shop) => ToggleUpdateOp(shop, shop?.IsUpdatingShop ?? false, t => RunWithVideoPreDownloadAsync(shop!, s => Update.RunUpdateSingleAsync(s)));
     [RelayCommand] private void RewriteToggle(WorkspaceShopViewModel? shop) => ToggleUpdateOp(shop, shop?.IsRewriting ?? false, t => Update.RunNameRewriteSingleAsync(t));
 
     private void ToggleUpdateOp(WorkspaceShopViewModel? shop, bool runningThisOp, Func<UpdateRunTargetViewModel, Task> run)
@@ -521,6 +522,29 @@ public sealed partial class WorkspaceViewModel : ObservableObject
         if (runningThisOp) { Update.StopSingle(shop.Parent.Account.Id); return; }
         shop.Parent.UpdateTarget.SelectedShop = shop.Shop;
         _ = run(shop.Parent.UpdateTarget);
+    }
+
+    internal async Task RunWithVideoPreDownloadAsync(
+        WorkspaceShopViewModel shop,
+        Func<UpdateRunTargetViewModel, Task> run,
+        bool autoStartDownload = true,
+        CancellationToken externalCt = default)
+    {
+        var t = shop.Parent.UpdateTarget;
+        var wf = Update.TryBuildWfForPreCheck(t);
+        if (wf == null || externalCt.IsCancellationRequested)
+        {
+            if (!externalCt.IsCancellationRequested)
+                await run(t);
+            return;
+        }
+
+        var videoFolder = string.IsNullOrWhiteSpace(wf.VideoFolder) ? @"D:\videos" : wf.VideoFolder;
+        var dlg = new VideoPreDownloadDialog(
+            CoordinationRuntime.Client, wf, videoFolder, autoStartDownload, externalCt);
+        await WindowHost.ShowDialogAsync(dlg);
+        if (!dlg.ShouldProceed || externalCt.IsCancellationRequested) return;
+        await run(t);
     }
 
     // (Map field ↔ cột Excel làm bên tab "Cấu hình BigSeller" khi cài đặt shop — không lặp ở workspace.)
@@ -774,7 +798,11 @@ public sealed partial class WorkspaceViewModel : ObservableObject
                     break;
                 case AssignmentOps.Update:
                     item.Acct.UpdateTarget.SelectedShop = item.Shop;
-                    _ = Update.RunUpdateSingleAsync(item.Acct.UpdateTarget, silent: true);
+                    var shopVm = item.Acct.Shops.FirstOrDefault(s => s.Shop.Id == item.Shop.Id);
+                    if (shopVm != null)
+                        _ = RunWithVideoPreDownloadAsync(shopVm, s => Update.RunUpdateSingleAsync(s, silent: true));
+                    else
+                        _ = Update.RunUpdateSingleAsync(item.Acct.UpdateTarget, silent: true);
                     break;
             }
         }

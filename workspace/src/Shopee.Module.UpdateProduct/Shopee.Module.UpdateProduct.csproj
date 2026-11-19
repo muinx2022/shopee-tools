@@ -15,5 +15,6 @@
   <ItemGroup>
     <!-- Cho phép bộ test đọc thành viên `internal` của module (UpdateTargetTracker, BigSellerSaveSuccessHelper…). -->
     <InternalsVisibleTo Include="Shopee.Workspace.Tests" />
+    <InternalsVisibleTo Include="ShopeeWorkspace" />
   </ItemGroup>
 </Project>

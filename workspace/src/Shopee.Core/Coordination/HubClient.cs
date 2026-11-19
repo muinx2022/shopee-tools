@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -827,6 +828,39 @@ public sealed class HubClient : IDisposable
         if (r.StatusCode == HttpStatusCode.NotFound) return null;
         r.EnsureSuccessStatusCode();
         return await r.Content.ReadAsByteArrayAsync(ct);
+    }
+
+    /// <summary>
+    /// Tải file từ Hub thẳng xuống <paramref name="destPath"/> qua Stream (không buffer trong RAM).
+    /// 404 → trả false. Thành công → ghi atomic qua .part rồi Move, trả true.
+    /// Mọi lỗi mạng / HTTP khác → ném exception cho caller xử lý.
+    /// </summary>
+    public async Task<bool> DownloadToFileAsync(
+        string name, string destPath, CancellationToken ct = default)
+    {
+        using var r = await _bulkHttp.GetAsync(
+            HubRoutes.Files + EncodePath(name),
+            HttpCompletionOption.ResponseHeadersRead, ct);
+        if (r.StatusCode == HttpStatusCode.NotFound) return false;
+        r.EnsureSuccessStatusCode();
+
+        var part = destPath + "." + Guid.NewGuid().ToString("N") + ".part";
+        var dir = Path.GetDirectoryName(destPath);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+        try
+        {
+            await using (var src = await r.Content.ReadAsStreamAsync(ct))
+            await using (var dst = new FileStream(part, FileMode.Create, FileAccess.Write,
+                             FileShare.None, 81920, useAsync: true))
+                await src.CopyToAsync(dst, ct);
+            File.Move(part, destPath, overwrite: true);
+            return true;
+        }
+        catch
+        {
+            try { File.Delete(part); } catch { }
+            throw;
+        }
     }
 
     public async Task<FilePutResponse> UploadAsync(string name, byte[] data, int? ifMatch, CancellationToken ct = default)

@@ -18,6 +18,12 @@ public partial class App : Application
     /// <summary>Hook đóng app chạy ĐÚNG MỘT LẦN (Closing của cửa sổ chính, Exit và SessionEnding đều gọi).</summary>
     private int _shutdownHooksRan;
 
+    /// <summary>Đang trong <see cref="HandleUiCallbackException"/> phía Notify. Lỗi của chính hộp thoại không mở hộp thoại thứ hai.</summary>
+    private static int _uiErrorDepth;
+
+    /// <summary>Shutdown do luồng vẽ chết — đúng một lần. Lần sau bỏ qua, không popup.</summary>
+    private static int _uiShutdownOnce;
+
     /// <summary>Quét video hub quá 30 ngày: một lần ngay sau init, rồi mỗi 6 giờ khi app còn mở.</summary>
     private System.Threading.Timer? _hubVideoSweep;
 
@@ -75,7 +81,8 @@ public partial class App : Application
         }
 
         // Software rendering (debug)
-        if (Environment.GetEnvironmentVariable("SHOPEESUITE_SOFTWARE_RENDER") == "1")
+        // Mặc định bật Software rendering để tránh UCEERR_RENDERTHREADFAILURE (0x88980406) khi GPU/DWM reset
+        if (Environment.GetEnvironmentVariable("SHOPEESUITE_SOFTWARE_RENDER") != "0")
             System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
 
         HookBindingTrace();
@@ -84,7 +91,16 @@ public partial class App : Application
 
         UiThread.OnError = HandleUiCallbackException;
         DispatcherUnhandledException += OnDispatcherUnhandledException;
-        AppDomain.CurrentDomain.UnhandledException += (_, args) => TryLog("AppDomain", args.ExceptionObject as Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, args) =>
+        {
+            var ex = args.ExceptionObject as Exception;
+            TryLog("AppDomain", ex);
+            if (UiErrorPolicy.Decide(ex, inHandler: true) == UiErrorAction.Shutdown)
+            {
+                try { (Current as App)?.RunShutdownHooks(); } catch { }
+                Environment.Exit(0);
+            }
+        };
         TaskScheduler.UnobservedTaskException += (_, args) => { TryLog("UnobservedTask", args.Exception); args.SetObserved(); };
 
 
@@ -127,8 +143,9 @@ public partial class App : Application
         {
             try
             {
+                // Chờ 10 phút sau khi mở app mới quét video quá hạn để app khởi động nhẹ và không tranh mạng
                 _hubVideoSweep = new System.Threading.Timer(
-                    _ => SweepHubVideos(), null, TimeSpan.Zero, TimeSpan.FromHours(6));
+                    _ => SweepHubVideos(), null, TimeSpan.FromMinutes(10), TimeSpan.FromHours(6));
             }
             catch (Exception ex) { TryLog("HubVideoSweep", ex); }
 
@@ -162,6 +179,7 @@ public partial class App : Application
         if (!WorkspaceAppConfig.IsHarvest)
         {
             try { Shopee.Core.BigSeller.BigSellerStore.Shared.Save(); } catch { }
+            try { Shopee.Core.Scrape.VideoNotFoundStore.Shared.Save(); } catch { }
         }
         if (WorkspaceAppConfig.ShowImportUpdate)
         {
@@ -199,27 +217,35 @@ public partial class App : Application
 
     private void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
-        HandleUiCallbackException(e.Exception);
+        // Handled trước khi quyết định: WPF không tự bật hộp thoại mặc định trong lúc ta đóng.
         e.Handled = true;
+        HandleUiCallbackException(e.Exception);
     }
 
     private static void HandleUiCallbackException(Exception ex)
     {
-        TryLog("UiThread", ex);
-        if (IsBenignTeardown(ex)) return;
-        Dialogs.Notify(ex.Message, "Lỗi", DialogIcon.Error);
-    }
-
-    private static bool IsBenignTeardown(Exception? ex)
-    {
-        for (var cur = ex; cur is not null; cur = cur.InnerException)
+        var inHandler = System.Threading.Volatile.Read(ref _uiErrorDepth) != 0
+            || System.Threading.Volatile.Read(ref _uiShutdownOnce) != 0;
+        switch (UiErrorPolicy.Decide(ex, inHandler))
         {
-            if (cur is ObjectDisposedException or OperationCanceledException)
-                return true;
-            if ((cur.Message ?? "").Contains("CancellationTokenSource has been disposed", StringComparison.OrdinalIgnoreCase))
-                return true;
+            case UiErrorAction.Shutdown:
+                // Đúng một lần. Lần 0x88980406 sau (đang đóng) rơi vào đây rồi bỏ qua: không log thêm, không Shutdown, không popup.
+                if (System.Threading.Interlocked.Exchange(ref _uiShutdownOnce, 1) != 0) return;
+                TryLog("UiThread", ex);
+                try { (Current as App)?.RunShutdownHooks(); } catch { }
+                Environment.Exit(0);
+                return;
+            case UiErrorAction.Ignore:
+                TryLog("UiThread", ex);
+                return;
+            default:
+                TryLog("UiThread", ex);
+                // Bật TRƯỚC Notify, tắt trong finally — ShowDialog ném Win32 thì không mở hộp thoại thứ hai.
+                System.Threading.Interlocked.Increment(ref _uiErrorDepth);
+                try { Dialogs.Notify(ex.Message, "Lỗi", DialogIcon.Error); }
+                finally { System.Threading.Interlocked.Decrement(ref _uiErrorDepth); }
+                return;
         }
-        return false;
     }
 
     private static void SweepHubVideos()

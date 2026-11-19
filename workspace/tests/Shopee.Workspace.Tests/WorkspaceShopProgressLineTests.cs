@@ -3,42 +3,46 @@ using Shopee.Workspace.Modules.Workspace;
 namespace Shopee.Workspace.Tests;
 
 /// <summary>
-/// <see cref="WorkspaceShopViewModel.ChooseProgressText"/>: chữ cột TIẾN ĐỘ khi Update chạm listing limit.
+/// <see cref="WorkspaceShopViewModel.ChooseProgressText"/>: cột TIẾN ĐỘ ghi Import và Update dạng đã / tổng.
 /// </summary>
 public sealed class WorkspaceShopProgressLineTests
 {
-    private const string Cu = "Đã cập nhật 2667 dòng";
-    private const string GioiHan = "Đã đạt giới hạn SP của shop";
-
     [Fact]
     public void ProgressLine_LiveThang()
     {
         const string live = "Đang update dòng 12 sheet Ảnh";
-        Assert.Equal(live, WorkspaceShopViewModel.ChooseProgressText(live, listingLimit: true, updateDone: true, Cu));
-        Assert.Equal(live, WorkspaceShopViewModel.ChooseProgressText(live, listingLimit: false, updateDone: false, ""));
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void ProgressLine_CoCo_DungCauGioiHan_KeCaChuaXongVaKeCaDaCoSoDong(bool updateDone)
-    {
-        Assert.Equal(GioiHan, WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: true, updateDone, Cu));
-        Assert.Equal(GioiHan, WorkspaceShopViewModel.ChooseProgressText("", listingLimit: true, updateDone, "Đã cập nhật 0 dòng"));
-        Assert.Equal(WorkspaceShopViewModel.ListingLimitProgressText, GioiHan);
+        Assert.Equal(live, WorkspaceShopViewModel.ChooseProgressText(live, listingLimit: true, 10, 20, 5, 30));
+        Assert.Equal(live, WorkspaceShopViewModel.ChooseProgressText(live, listingLimit: false, 0, 0, 0, 0));
     }
 
     [Fact]
-    public void ProgressLine_KhongCo_DaXong_TraChuCu()
+    public void ProgressLine_CoSo_GhiHaiDong_KeCaChuaXong()
     {
-        Assert.Equal(Cu, WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: false, updateDone: true, Cu));
-        Assert.Equal("Đã cập nhật 0 dòng", WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: false, updateDone: true, "Đã cập nhật 0 dòng"));
+        var text = WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: false, 3693, 3703, 3180, 3703);
+        Assert.Equal("Import: 3693 / 3703\nUpdate: 3180 / 3703", text);
     }
 
     [Fact]
-    public void ProgressLine_KhongCo_ChuaXong_Rong()
+    public void ProgressLine_ChamGioiHan_VanGiuSo_RoiThemCauGioiHan()
     {
-        Assert.Equal("", WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: false, updateDone: false, Cu));
-        Assert.Equal("", WorkspaceShopViewModel.ChooseProgressText("", listingLimit: false, updateDone: false, ""));
+        var text = WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: true, 0, 3703, 2667, 3703);
+        Assert.Equal(
+            "Import: 0 / 3703\nUpdate: 2667 / 3703\n" + WorkspaceShopViewModel.ListingLimitProgressText,
+            text);
+    }
+
+    [Fact]
+    public void ProgressLine_ChuaCoSo_KhongCoGioiHan_Rong()
+    {
+        Assert.Equal("", WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: false, 0, 0, 0, 0));
+        Assert.Equal("", WorkspaceShopViewModel.ChooseProgressText("", listingLimit: false, 0, 0, 0, 0));
+    }
+
+    [Fact]
+    public void ProgressLine_ChuaCoSo_CoGioiHan_ChiCauGioiHan()
+    {
+        Assert.Equal(
+            WorkspaceShopViewModel.ListingLimitProgressText,
+            WorkspaceShopViewModel.ChooseProgressText(null, listingLimit: true, 0, 0, 0, 0));
     }
 }

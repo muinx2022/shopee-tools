@@ -226,24 +226,21 @@ internal sealed partial class BigSellerProductUpdateRunner
     private async Task PullScrapedVideoIfMissingAsync(string sku, CancellationToken ct)
     {
         var client = CoordinationRuntime.Client;
-        var gotBytes = false;
+        if (client is null) return;
         var hubFail = false;
         string? saved = null;
         try
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeoutCts.CancelAfter(SkuVideoSync.TransferTimeout);
-            saved = await SkuVideoSync.TryEnsureLocalAsync(
+            saved = await SkuVideoSync.TryEnsureLocalFileAsync(
                 _settings.VideoFolder,
                 sku,
-                async (name, token) =>
+                async (name, dest, token) =>
                 {
-                    if (client is null) return null;
                     try
                     {
-                        var data = await client.DownloadAsync(name, token).ConfigureAwait(false);
-                        if (data is { Length: > 0 }) gotBytes = true;
-                        return data;
+                        return await client.DownloadToFileAsync(name, dest, token).ConfigureAwait(false);
                     }
                     catch (OperationCanceledException)
                     {
@@ -252,7 +249,7 @@ internal sealed partial class BigSellerProductUpdateRunner
                     catch
                     {
                         hubFail = true;
-                        return null;
+                        return false;
                     }
                 },
                 timeoutCts.Token).ConfigureAwait(false);
@@ -264,10 +261,8 @@ internal sealed partial class BigSellerProductUpdateRunner
             saved = null;
         }
 
-        if (gotBytes && saved is not null)
+        if (saved is not null)
             _log($"Kéo video {Path.GetFileName(saved)} từ hub");
-        else if (gotBytes)
-            _log($"Không lưu được video {sku} từ hub");
         else if (hubFail)
             _log($"Không kéo được video {sku} từ hub");
     }

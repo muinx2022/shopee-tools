@@ -23,6 +23,13 @@ public static class SuitePaths
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "ShopeeBackend", "Data", "shopee_data.db");
 
+    /// <summary>
+    /// true khi <see cref="Root"/> đã bị <c>data-dir.txt</c> chuyển sang thư mục khác (test, bản chạy cách ly).
+    /// Khi đó <see cref="RootFile"/> KHÔNG đọc dự phòng %AppData%\ShopeeSuite để khỏi lẫn cấu hình thật của máy.
+    /// KHÔNG gán giá trị khởi tạo: <see cref="ResolveAppDataBase"/> đặt cờ này lúc khởi tạo <see cref="Root"/>.
+    /// </summary>
+    public static bool IsDataDirOverridden { get; private set; }
+
     /// <summary>Đọc gốc dữ liệu từ <c>data-dir.txt</c> cạnh .exe; không có/hỏng → %AppData%.</summary>
     private static string ResolveAppDataBase()
     {
@@ -36,7 +43,9 @@ public static class SuitePaths
                 {
                     if (!Path.IsPathRooted(custom))
                         custom = Path.Combine(AppContext.BaseDirectory, custom);
-                    return Path.GetFullPath(custom);
+                    var full = Path.GetFullPath(custom);
+                    IsDataDirOverridden = true;
+                    return full;
                 }
             }
         }
@@ -56,7 +65,23 @@ public static class SuitePaths
     /// Đường dẫn một file cục bộ-theo-máy NGAY DƯỚI Root (KHÔNG đồng bộ): machine.json, hub-client.json.
     /// Khác ModuleDir ở chỗ không tạo thư mục con; người gọi tự bảo đảm Root tồn tại khi ghi.
     /// </summary>
-    public static string RootFile(string name) => Path.Combine(Root, name);
+    public static string RootFile(string name) => ResolveRootFile(
+        Root, name, IsDataDirOverridden,
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "ShopeeSuite"));
+
+    /// <summary>
+    /// Luật chọn đường dẫn của <see cref="RootFile"/>, tách riêng để test: file dưới <paramref name="root"/> có thì
+    /// dùng; chưa có và gốc KHÔNG bị data-dir.txt ghi đè thì dự phòng <paramref name="suiteDir"/>\name nếu file đó có.
+    /// Bị ghi đè → luôn trả root\name, không bao giờ đọc kho ShopeeSuite thật của máy.
+    /// </summary>
+    internal static string ResolveRootFile(string root, string name, bool dataDirOverridden, string suiteDir)
+    {
+        var primary = Path.Combine(root, name);
+        if (dataDirOverridden || File.Exists(primary)) return primary;
+        var suitePath = Path.Combine(suiteDir, name);
+        if (File.Exists(suitePath)) return suitePath;
+        return primary;
+    }
 
     /// <summary>Thư mục cache các file dùng chung tải từ Hub về máy này (workbook, cookie…).</summary>
     public static string HubCacheDir => ModuleDir("hub-cache");

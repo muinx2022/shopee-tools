@@ -64,7 +64,7 @@ public sealed class UpdateProductRunner
     public void Pause() => _pause.Pause();
     public void Resume() => _pause.Resume();
 
-    private BigSellerWorkflowSettings BuildWorkflow(UpdateProductContext ctx)
+    internal static BigSellerWorkflowSettings BuildWorkflow(UpdateProductContext ctx)
     {
         var file = new UpdateProductSettingsFile
         {
@@ -222,6 +222,7 @@ public sealed class UpdateProductRunner
             ListingLimitReached = true;
             try { shopLimitCts.Cancel(); } catch { }
         });
+        OpProgressStore.Shared.SetTargetCount(wf.AccountId, wf.ProgressKey, AssignmentOps.Update, targetTracker.TargetCount);
         Log?.Invoke($"Shop \"{wf.ShopName}\": tiến độ đã update {targetTracker.CompletedCount}/{targetTracker.TargetCount} SP mục tiêu (sheet {records.Records.Count} dòng).");
         if (targetTracker.IsAllCompleted)
         {
