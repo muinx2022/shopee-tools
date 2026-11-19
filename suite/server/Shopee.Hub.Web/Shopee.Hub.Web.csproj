@@ -42,6 +42,7 @@
     <Compile Include="..\..\suite\Shopee.Core\Coordination\KmHoSoGop.cs" Link="Shared\Coordination\KmHoSoGop.cs" />
     <Compile Include="..\..\suite\Shopee.Core\Coordination\ProductDtos.cs" Link="Shared\Coordination\ProductDtos.cs" />
     <Compile Include="..\..\suite\Shopee.Core\Coordination\HarvestedProductDtos.cs" Link="Shared\Coordination\HarvestedProductDtos.cs" />
+    <Compile Include="..\..\suite\Shopee.Core\Coordination\SourceImageDtos.cs" Link="Shared\Coordination\SourceImageDtos.cs" />
     <Compile Include="..\..\suite\Shopee.Core\Coordination\OrderDtos.cs" Link="Shared\Coordination\OrderDtos.cs" />
     <!-- DTO ĐỌC đơn về client (GET /api/orders + /api/shops) — màn "Đơn toàn hệ thống" đọc THẲNG từ hub. -->
     <Compile Include="..\..\suite\Shopee.Core\Coordination\HubOrderDtos.cs" Link="Shared\Coordination\HubOrderDtos.cs" />

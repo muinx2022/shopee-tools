@@ -15,6 +15,12 @@ public static class HarvestedProductLimits
     public const int MaxKeyLength = 256;
     /// <summary>Độ dài tối đa của <see cref="HarvestedProductItem.Url"/> / <see cref="HarvestedProductItem.SourceUrl"/>.</summary>
     public const int MaxUrlLength = 2048;
+    /// <summary>Số dòng tối đa mỗi trang của <see cref="HubRoutes.HarvestedProductsRows"/> — mỗi dòng kèm <c>raw</c>
+    /// ~60–80 KB, 50 dòng ≈ 4 MB/trang.</summary>
+    public const int MaxRowsPage = 50;
+    /// <summary>Số itemId tối đa mỗi lần gọi <see cref="HubRoutes.HarvestedProductsByItems"/> (đếm cả id trùng) — quá
+    /// thì Hub trả 400 <c>too-many-ids</c>; client tự chia lô.</summary>
+    public const int MaxByItems = 50;
 
 }
 
@@ -74,3 +80,49 @@ public sealed record HarvestedKnownResponse(List<HarvestedKnownItem> Items);
 /// <summary><see cref="Rows"/> = số dòng nguồn (account, sheet, row_no) đã nối SP; <see cref="Products"/> = số SP
 /// khác nhau.</summary>
 public sealed record HarvestedProductStats(long Rows, long Products);
+
+// ── Đọc SP đã harvest theo dòng nguồn (bước đăng SP lên Shopee) ──
+
+/// <summary>1 liên kết dòng nguồn → SP đã có dữ liệu. <see cref="RowNo"/> = CHỈ SỐ DÒNG NÉN theo Harvest lúc thấy SP,
+/// CÓ THỂ CŨ sau khi chèn/xoá dòng (Harvest không gửi lại SP đã xong) — KHÔNG dùng để đăng SP (bước đăng tra theo itemId
+/// qua <see cref="HubRoutes.HarvestedProductsByItems"/>). <see cref="Url"/> = link GỐC của dòng
+/// (<c>harvested_product_sources.url</c>); <see cref="LinkedAt"/> = lần cuối liên kết được ghi
+/// (<c>harvested_product_sources.harvested_at</c>); <see cref="HarvestedAt"/> = mốc của bản <see cref="Raw"/> đang giữ
+/// (<c>harvested_products.harvested_at</c>, đồng hồ Hub); <see cref="Raw"/> = JSON <c>get_pc</c> dạng LỒNG (không phải
+/// chuỗi). Từ migration 5 khoá liên kết là (account, sheet, itemId) nên MỘT rowNo có thể ra nhiều dòng (SP cũ từng ở
+/// dòng đó vẫn giữ liên kết).</summary>
+public sealed record HarvestedSourceRow(int RowNo, string? Url, long ItemId, long ShopId, DateTimeOffset HarvestedAt,
+    DateTimeOffset LinkedAt, JsonElement Raw);
+
+/// <summary>Con trỏ trang: lấy các dòng có (rowNo, itemId) LỚN HƠN (<see cref="AfterRow"/>, <see cref="AfterItemId"/>).</summary>
+public sealed record HarvestedRowsCursor(int AfterRow, long AfterItemId);
+
+/// <summary>1 trang của <see cref="HubRoutes.HarvestedProductsRows"/>. <see cref="Next"/> null = hết dữ liệu.</summary>
+public sealed record HarvestedRowsPage(List<HarvestedSourceRow> Rows, HarvestedRowsCursor? Next);
+
+/// <summary>Body của <see cref="HubRoutes.HarvestedProductsByItems"/>: ≤ <see cref="HarvestedProductLimits.MaxByItems"/>
+/// itemId. Thiếu <see cref="ItemIds"/> → 400; mảng rỗng → 200 với danh sách rỗng; id trùng được khử.</summary>
+public sealed record HarvestedByItemsRequest(List<long>? ItemIds);
+
+/// <summary>1 SP đã harvest: <see cref="HarvestedAt"/> = mốc của bản <see cref="Raw"/> (đồng hồ Hub);
+/// <see cref="Raw"/> = JSON <c>get_pc</c> dạng LỒNG.</summary>
+public sealed record HarvestedItemData(long ItemId, long ShopId, DateTimeOffset HarvestedAt, JsonElement Raw);
+
+/// <summary>Kết quả của <see cref="HubRoutes.HarvestedProductsByItems"/>: các SP CÓ dữ liệu, theo thứ tự id gửi lên
+/// (đã khử trùng); id chưa có dữ liệu thì không có mặt.</summary>
+public sealed record HarvestedByItemsResponse(List<HarvestedItemData> Items);
+
+// ── Kho ảnh công khai có hạn (<see cref="HubRoutes.PublicMedia"/>) ──
+
+/// <summary>Giới hạn của <see cref="HubRoutes.PublicMedia"/>.</summary>
+public static class PublicMediaLimits
+{
+    /// <summary>Cỡ tối đa 1 ảnh (byte) — quá thì Hub trả 413 <c>too-large</c>.</summary>
+    public const int MaxBytes = 2 * 1024 * 1024;
+}
+
+/// <summary>Kết quả upload 1 ảnh. <see cref="Path"/> = đường dẫn GET công khai (tương đối gốc Hub);
+/// <see cref="Url"/> = URL TUYỆT ĐỐI công khai (Hub chưa cấu hình base URL công khai thì từ chối upload 503
+/// <c>public-base-url-missing</c>, nên 200 luôn có Url — client thiếu Url thì coi là lỗi, không tự ghép);
+/// <see cref="ExpiresAt"/> = mốc ảnh hết hạn (UTC) — sau mốc này GET trả 404.</summary>
+public sealed record PublicMediaUploadResponse(string Path, string? Url, DateTimeOffset ExpiresAt);

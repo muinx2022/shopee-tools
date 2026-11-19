@@ -262,5 +262,35 @@ public static class ProductApiEndpoints
         // ── Đọc: đếm dòng nguồn đã có dữ liệu + số SP khác nhau (thiếu tham số = không lọc chiều đó) ──
         api.MapGet(HubRoutes.HarvestedProductsStats, (string? account, string? sheet, IServiceProvider sp, CancellationToken ct) =>
             WithPgHarvest(sp, async pdb => Results.Json(await pdb.GetHarvestedStatsAsync(account ?? "", sheet ?? "", ct))));
+
+        // ── Đọc: SP theo danh sách itemId (≤ MaxByItems, đếm cả id trùng) — đường bước đăng SP dùng. ──
+        //    Thiếu itemIds → 400; mảng rỗng → 200 rỗng (vô hại, khỏi bắt client xử lý thêm một mã lỗi).
+        api.MapPost(HubRoutes.HarvestedProductsByItems, (HarvestedByItemsRequest? r, IServiceProvider sp, CancellationToken ct) =>
+            WithPgHarvest(sp, async pdb =>
+            {
+                if (r?.ItemIds is null) return Results.BadRequest(new { error = "item-ids-required" });
+                if (r.ItemIds.Count > HarvestedProductLimits.MaxByItems)
+                    return Results.BadRequest(new { error = "too-many-ids", max = HarvestedProductLimits.MaxByItems });
+                var ids = r.ItemIds.Distinct().ToList();
+                return Results.Json(new HarvestedByItemsResponse(await pdb.GetHarvestedByItemsAsync(ids, ct)));
+            }));
+
+        // ── Đọc: 1 trang liên kết dòng nguồn → SP (kèm raw). CHỈ TRA CỨU: from/to/rowNo là chỉ số dòng NÉN theo Harvest, có
+        //    thể cũ sau chèn/xoá dòng — bước đăng SP KHÔNG dùng route này (dùng by-items). account + sheet BẮT BUỘC (khác
+        //    stats): thiếu mà coi là "không lọc" thì lộ dữ liệu mọi shop. from thiếu = 1, to thiếu = hết sheet. limit kẹp
+        //    [1..MaxRowsPage]. ──
+        api.MapGet(HubRoutes.HarvestedProductsRows, (string? account, string? sheet, int? from, int? to,
+            int? afterRow, long? afterItemId, int? limit, IServiceProvider sp, CancellationToken ct) =>
+            WithPgHarvest(sp, async pdb =>
+            {
+                if (string.IsNullOrEmpty(account) || string.IsNullOrEmpty(sheet))
+                    return Results.BadRequest(new { error = "account-sheet-required" });
+                var fromRow = Math.Max(1, from ?? 1);
+                var toRow = to ?? int.MaxValue;
+                if (toRow < fromRow) return Results.BadRequest(new { error = "bad-range" });
+                var n = Math.Clamp(limit ?? HarvestedProductLimits.MaxRowsPage, 1, HarvestedProductLimits.MaxRowsPage);
+                return Results.Json(await pdb.GetHarvestedRowsAsync(account, sheet, fromRow, toRow,
+                    afterRow ?? 0, afterItemId ?? 0, n, ct));
+            }));
     }
 }

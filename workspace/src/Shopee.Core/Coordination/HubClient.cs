@@ -479,6 +479,271 @@ public sealed class HubClient : IDisposable
         return (r.StatusCode, null, code);
     }
 
+    // ── Kho dữ liệu SP Harvest: ĐỌC theo itemId (đường bước đăng SP lên Shopee dùng) ──
+    /// <summary>Đọc SP đã harvest theo danh sách itemId qua <see cref="HubRoutes.HarvestedProductsByItems"/>: tự khử trùng,
+    /// chia lô <see cref="HarvestedProductLimits.MaxByItems"/>, gộp kết quả (theo thứ tự id đầu vào, đã khử trùng). id chưa
+    /// có dữ liệu thì không có trong kết quả — caller tự đánh "chưa harvest". Dùng _bulkHttp (mỗi lô ~4 MB raw). Lỗi:
+    /// non-2xx → HttpRequestException (StatusCode phân biệt 503 pg-not-ready / 400 với mất mạng); body không đọc được →
+    /// InvalidOperationException. Một lô hỏng là ném cả lời gọi (không trả kết quả thiếu âm thầm).</summary>
+    public async Task<List<HarvestedItemData>> GetHarvestedByItemsAsync(IEnumerable<long> itemIds, CancellationToken ct = default)
+    {
+        var all = new List<HarvestedItemData>();
+        foreach (var lo in itemIds.Distinct().Chunk(HarvestedProductLimits.MaxByItems))
+        {
+            using var r = await _bulkHttp.PostAsJsonAsync(HubRoutes.HarvestedProductsByItems, new HarvestedByItemsRequest([.. lo]), ct);
+            r.EnsureSuccessStatusCode();
+            var body = await r.Content.ReadFromJsonAsync<HarvestedByItemsResponse>(ct)
+                       ?? throw new InvalidOperationException("Hub trả body rỗng cho by-items.");
+            all.AddRange(body.Items ?? []);
+        }
+        return all;
+    }
+
+    // ── Kho dữ liệu SP Harvest: ĐỌC theo dòng nguồn — CHỈ TRA CỨU ──
+    /// <summary>Đọc HẾT các liên kết trong dải [<paramref name="fromRow"/>..<paramref name="toRow"/>] của (account,
+    /// sheet) đã có SP, lặp qua các trang của <see cref="HubRoutes.HarvestedProductsRows"/> (mỗi trang ≤
+    /// <see cref="HarvestedProductLimits.MaxRowsPage"/> dòng, ~4 MB). from/to/RowNo là CHỈ SỐ DÒNG NÉN theo Harvest, có
+    /// thể CŨ sau chèn/xoá dòng — KHÔNG dùng để đăng SP (dùng <see cref="GetHarvestedByItemsAsync"/>). Khử trùng theo
+    /// (RowNo, ItemId) phòng trang chồng nhau. <paramref name="toRow"/> null = tới hết sheet. Dùng _bulkHttp. Lỗi:
+    /// non-2xx → HttpRequestException; Hub trả con trỏ không tiến → InvalidOperationException (không lặp vô hạn).</summary>
+    public async Task<List<HarvestedSourceRow>> GetHarvestedRowsAsync(string account, string sheet, int fromRow, int? toRow,
+        CancellationToken ct = default)
+    {
+        var all = new List<HarvestedSourceRow>();
+        var seen = new HashSet<(int, long)>();
+        HarvestedRowsCursor? after = null;
+        while (true)
+        {
+            var url = $"{HubRoutes.HarvestedProductsRows}?account={Uri.EscapeDataString(account)}&sheet={Uri.EscapeDataString(sheet)}"
+                      + $"&from={fromRow.ToString(CultureInfo.InvariantCulture)}";
+            if (toRow is int to) url += $"&to={to.ToString(CultureInfo.InvariantCulture)}";
+            if (after is not null)
+                url += $"&afterRow={after.AfterRow.ToString(CultureInfo.InvariantCulture)}"
+                       + $"&afterItemId={after.AfterItemId.ToString(CultureInfo.InvariantCulture)}";
+            var page = await _bulkHttp.GetFromJsonAsync<HarvestedRowsPage>(url, ct)
+                       ?? throw new InvalidOperationException("Hub trả trang rỗng (null).");
+            foreach (var row in page.Rows ?? [])
+                if (seen.Add((row.RowNo, row.ItemId))) all.Add(row);
+            if (page.Next is null) return all;
+            if (after is not null && (page.Next.AfterRow, page.Next.AfterItemId).CompareTo((after.AfterRow, after.AfterItemId)) <= 0)
+                throw new InvalidOperationException("Hub trả con trỏ trang không tiến.");
+            after = page.Next;
+        }
+    }
+
+    // ── Kho ảnh CÔNG KHAI có hạn: đẩy 1 ảnh (JPG/PNG ≤ 2 MB) để Shopee kéo qua URL không token ──
+    /// <summary>PUT 1 ảnh lên <see cref="HubRoutes.PublicMedia"/>. KHÔNG ném theo mã HTTP (caller phân biệt 507
+    /// <c>media-quota-exceeded</c> / <c>disk-low</c> → dừng lượt, 503 <c>public-base-url-missing</c> → Hub cấu hình thiếu,
+    /// 413 <c>too-large</c>, 415 <c>unsupported-type</c>, 401); chỉ lỗi mạng / timeout mới ném.
+    /// <para>Trả <c>Body</c> khác null CHỈ KHI thành công trọn vẹn: 2xx + body đọc được + <c>Url</c> là URL https công
+    /// khai (host không phải localhost / loopback / IP riêng). KHÔNG tự ghép <see cref="BaseUrl"/> (địa chỉ client dùng
+    /// có thể là LAN/tunnel nội bộ mà Shopee không kéo được). 2xx mà không đạt các điều kiện trên → client tự gán
+    /// <see cref="HttpStatusCode.BadGateway"/> + <c>ErrorCode</c> <c>bad-response</c> (body null/JSON hỏng),
+    /// <c>url-missing</c> hoặc <c>url-not-public</c> — LUÔN có ErrorCode.</para>
+    /// <para>502 cũng có thể đến THẬT từ Cloudflare khi tunnel/origin lỗi (body HTML, không có mã). Phân biệt bằng
+    /// <c>ErrorCode</c>: 502 CÓ mã = cấu hình hỏng, ảnh CÓ THỂ đã được lưu trên Hub (nằm tới khi hết hạn) — KHÔNG thử lại,
+    /// dừng lượt và báo; 502 KHÔNG mã = lỗi tạm thời đường truyền — thử lại được.</para></summary>
+    public async Task<(HttpStatusCode Status, PublicMediaUploadResponse? Body, string? ErrorCode)> UploadPublicMediaAsync(
+        byte[] image, CancellationToken ct = default)
+    {
+        using var content = new ByteArrayContent(image);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        using var r = await _bulkHttp.PutAsync(HubRoutes.PublicMedia, content, ct);
+        if (r.IsSuccessStatusCode)
+        {
+            PublicMediaUploadResponse? body;
+            try { body = await r.Content.ReadFromJsonAsync<PublicMediaUploadResponse>(ct); }
+            catch (JsonException) { body = null; }
+            catch (NotSupportedException) { body = null; }
+            if (body is null) return (HttpStatusCode.BadGateway, null, "bad-response");
+            if (string.IsNullOrWhiteSpace(body.Url)) return (HttpStatusCode.BadGateway, null, "url-missing");
+            if (!IsPublicHttpsUrl(body.Url)) return (HttpStatusCode.BadGateway, null, "url-not-public");
+            return (r.StatusCode, body, null);
+        }
+        string? code = null;
+        try
+        {
+            var text = await r.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String)
+                code = e.GetString();
+        }
+        catch (JsonException) { /* body không phải JSON (proxy/Cloudflare) → không có mã */ }
+        return (r.StatusCode, null, code);
+    }
+
+    /// <summary>URL Shopee kéo được: tuyệt đối, https, host là tên miền có ít nhất một dấu chấm (không phải tên một nhãn
+    /// kiểu <c>hub</c>), không phải <c>localhost</c> / <c>*.localhost</c> (kể cả dấu chấm cuối), không phải IP không định
+    /// tuyến công khai: IPv4 0/8, 10/8, 100.64/10, 127/8, 169.254/16, 172.16/12, 192.168/16; IPv6 <c>::</c>, <c>::1</c>,
+    /// fe80::/10, fc00::/7 (IPv4 nhúng trong IPv6 xét theo IPv4).</summary>
+    internal static bool IsPublicHttpsUrl(string? url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var u) || u.Scheme != Uri.UriSchemeHttps) return false;
+        var host = u.IdnHost.Trim('[', ']').TrimEnd('.');
+        if (host.Length == 0 || host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith(".localhost", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!IPAddress.TryParse(host, out var ip)) return host.Contains('.');
+        if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+        if (IPAddress.IsLoopback(ip)) return false;
+        var b = ip.GetAddressBytes();
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            return !(ip.Equals(IPAddress.IPv6Any) || (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) || (b[0] & 0xFE) == 0xFC);
+        return !(b[0] == 0 || b[0] == 10 || (b[0] == 100 && (b[1] & 0xC0) == 64) || (b[0] == 169 && b[1] == 254)
+                 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168));
+    }
+
+    /// <summary>Xoá 1 ảnh ở kho công khai theo <c>Path</c> Hub trả lúc upload (vd <c>/api/media/…jpg</c>). 200 và 404 đều
+    /// là xong (404 = đã không còn: đã xoá / job dọn đã dọn). Path không thuộc kho ảnh → false, không gọi Hub. Mã khác hoặc
+    /// lỗi mạng → false, không ném (như <see cref="DeleteFileAsync"/>); huỷ của caller thì ném tiếp. Dùng _http.</summary>
+    public async Task<bool> DeletePublicMediaAsync(string path, CancellationToken ct = default)
+    {
+        var prefix = HubRoutes.PublicMedia + "/";
+        if (string.IsNullOrEmpty(path) || !path.StartsWith(prefix, StringComparison.Ordinal)
+            || path.Length == prefix.Length || path.IndexOf('/', prefix.Length) >= 0) return false;
+        try
+        {
+            using var r = await _http.DeleteAsync(prefix + Uri.EscapeDataString(path[prefix.Length..]), ct);
+            return r.StatusCode is HttpStatusCode.OK or HttpStatusCode.NotFound;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return false; }
+        catch (OperationCanceledException) { throw; }
+        catch { return false; }
+    }
+
+    // ── Kho ẢNH GỐC trên Hub (GĐ9): Harvest đẩy ảnh lúc cào, Upload lấy link ảnh đổi MD5 theo shop ──
+    /// <summary>Hỏi <see cref="HubRoutes.SourceImagesMissing"/> những id kho gốc CHƯA có: khử trùng, chia lô
+    /// <see cref="SourceImageLimits.MaxIdsPerCall"/>, gộp theo thứ tự đầu vào. id sai luật
+    /// (<see cref="SourceImageLimits.IsValidId"/>) → ArgumentException TRƯỚC khi gọi Hub (Hub sẽ 400 cả lô). Dùng _http.
+    /// Lỗi: non-2xx → HttpRequestException; body không đọc được → InvalidOperationException; một lô hỏng là ném cả lời
+    /// gọi.</summary>
+    public async Task<List<string>> GetMissingSourceImagesAsync(IEnumerable<string> ids, CancellationToken ct = default)
+    {
+        var all = DistinctValidSourceIds(ids);
+        var missing = new List<string>();
+        foreach (var lo in all.Chunk(SourceImageLimits.MaxIdsPerCall))
+        {
+            using var r = await _http.PostAsJsonAsync(HubRoutes.SourceImagesMissing, new SourceImageIdsRequest([.. lo]), ct);
+            r.EnsureSuccessStatusCode();
+            var body = await r.Content.ReadFromJsonAsync<SourceImageMissingResponse>(ct)
+                       ?? throw new InvalidOperationException("Hub trả body rỗng cho source-images/missing.");
+            missing.AddRange(body.Missing ?? []);
+        }
+        return missing;
+    }
+
+    /// <summary>PUT 1 ảnh gốc (JPEG/PNG ≤ <see cref="SourceImageLimits.MaxBytes"/>) lên
+    /// <see cref="HubRoutes.SourceImages"/>/<paramref name="id"/>. Idempotent: id đã có ảnh dùng được → 200
+    /// <c>Existed=true</c>, Hub không ghi lại; có file hỏng → Hub THAY, <c>Replaced=true</c>. KHÔNG ném theo mã HTTP (caller
+    /// phân biệt 507 <c>source-quota-exceeded</c> / <c>disk-low</c> → dừng đẩy; 413 <c>too-large</c> / 415
+    /// <c>unsupported-type</c> (WebP…) / 400 <c>corrupt-image</c> → bỏ ảnh đó; 401); chỉ lỗi mạng / timeout mới ném. id sai
+    /// luật → ArgumentException. 2xx mà body hỏng → (502, null, <c>bad-response</c>). Dùng _bulkHttp.</summary>
+    public async Task<(HttpStatusCode Status, SourceImagePutResponse? Body, string? ErrorCode)> PutSourceImageAsync(
+        string id, byte[] image, CancellationToken ct = default)
+    {
+        if (!SourceImageLimits.IsValidId(id)) throw new ArgumentException($"mã ảnh sai luật: '{id}'", nameof(id));
+        using var content = new ByteArrayContent(image);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        using var r = await _bulkHttp.PutAsync(HubRoutes.SourceImages + "/" + id, content, ct);
+        if (!r.IsSuccessStatusCode) return (r.StatusCode, null, await ReadErrorCodeAsync(r, ct));
+        SourceImagePutResponse? body;
+        try { body = await r.Content.ReadFromJsonAsync<SourceImagePutResponse>(ct); }
+        catch (JsonException) { body = null; }
+        catch (NotSupportedException) { body = null; }
+        return body is null ? (HttpStatusCode.BadGateway, null, "bad-response") : (r.StatusCode, body, null);
+    }
+
+    /// <summary>Lấy link công khai ảnh ĐỔI MD5 theo shop (<see cref="HubRoutes.SourceImagesLinks"/>): khử trùng, chia lô
+    /// <see cref="SourceImageLimits.MaxIdsPerCall"/>, gộp <c>Items</c> + <c>Missing</c> theo thứ tự đầu vào. Link không hạn
+    /// (Hub đổi MD5 lúc Shopee đến lấy), sống chừng nào ảnh gốc còn đúng bytes đó; <c>Missing</c> = chưa có hoặc ảnh gốc hỏng
+    /// (dự phòng: tải CDN). id sai luật hoặc shopKey rỗng / dài quá
+    /// <see cref="SourceImageLimits.MaxShopKeyLength"/> → ArgumentException. KHÔNG ném theo mã HTTP: lô đầu tiên non-2xx →
+    /// trả (mã, null, mã lỗi Hub, vd 503 <c>public-base-url-missing</c>) và bỏ kết quả các lô trước (gọi lại là ra y hệt,
+    /// Hub không ghi gì). 2xx mà body hỏng → (502, null, <c>bad-response</c>); có URL không phải https công khai
+    /// (<see cref="IsPublicHttpsUrl"/>) → (502, null, <c>url-not-public</c>). Dùng _http.</summary>
+    public async Task<(HttpStatusCode Status, SourceImageLinksResponse? Body, string? ErrorCode)> GetSourceImageLinksAsync(
+        string shopKey, IEnumerable<string> ids, CancellationToken ct = default)
+    {
+        if (string.IsNullOrEmpty(shopKey) || shopKey.Length > SourceImageLimits.MaxShopKeyLength)
+            throw new ArgumentException($"shopKey phải dài 1..{SourceImageLimits.MaxShopKeyLength} ký tự", nameof(shopKey));
+        var all = DistinctValidSourceIds(ids);
+        var items = new List<SourceImageLink>();
+        var missing = new List<string>();
+        foreach (var lo in all.Chunk(SourceImageLimits.MaxIdsPerCall))
+        {
+            using var r = await _http.PostAsJsonAsync(HubRoutes.SourceImagesLinks, new SourceImageLinksRequest(shopKey, [.. lo]), ct);
+            if (!r.IsSuccessStatusCode) return (r.StatusCode, null, await ReadErrorCodeAsync(r, ct));
+            SourceImageLinksResponse? body;
+            try { body = await r.Content.ReadFromJsonAsync<SourceImageLinksResponse>(ct); }
+            catch (JsonException) { body = null; }
+            catch (NotSupportedException) { body = null; }
+            if (body?.Items is null || body.Missing is null) return (HttpStatusCode.BadGateway, null, "bad-response");
+            if (body.Items.Any(i => !IsPublicHttpsUrl(i.Url)))
+                return (HttpStatusCode.BadGateway, null, "url-not-public");
+            items.AddRange(body.Items);
+            missing.AddRange(body.Missing);
+        }
+        return (HttpStatusCode.OK, new SourceImageLinksResponse(items, missing), null);
+    }
+
+    /// <summary>Xoá 1 ảnh gốc (DELETE <see cref="HubRoutes.SourceImages"/>/<paramref name="id"/>). true = đã xoá; false = Hub
+    /// không có ảnh đó (404). id sai luật → ArgumentException; mã khác → HttpRequestException. Link đã phát của ảnh đó hỏng.
+    /// Dùng _http.</summary>
+    public async Task<bool> DeleteSourceImageAsync(string id, CancellationToken ct = default)
+    {
+        if (!SourceImageLimits.IsValidId(id)) throw new ArgumentException($"mã ảnh sai luật: '{id}'", nameof(id));
+        using var r = await _http.DeleteAsync(HubRoutes.SourceImages + "/" + id, ct);
+        if (r.StatusCode == HttpStatusCode.NotFound) return false;
+        r.EnsureSuccessStatusCode();
+        return true;
+    }
+
+    /// <summary>Dung lượng Hub (<see cref="HubRoutes.SourceImagesStats"/>): ổ đĩa, kho gốc, kho ảnh tạm. Lỗi: non-2xx →
+    /// HttpRequestException; body không đọc được → InvalidOperationException. Dùng _http.</summary>
+    public async Task<SourceImageStatsResponse> GetSourceImageStatsAsync(CancellationToken ct = default) =>
+        await _http.GetFromJsonAsync<SourceImageStatsResponse>(HubRoutes.SourceImagesStats, ct)
+        ?? throw new InvalidOperationException("Hub trả body rỗng cho source-images/stats.");
+
+    /// <summary>Xoá SẠCH kho ảnh gốc trên Hub (DELETE <see cref="HubRoutes.SourceImages"/>, tự gửi chuỗi xác nhận
+    /// <see cref="SourceImageLimits.DeleteAllConfirm"/>) — gọi viên phải hỏi người dùng TRƯỚC: link ảnh của các file đã xuất
+    /// mà chưa đẩy lên Shopee sẽ hỏng. Không đụng kho ảnh tạm. <c>Remaining</c> = số Hub đếm lại sau khi xoá (khác 0 = còn
+    /// file không xoá được). Lỗi: non-2xx → HttpRequestException. Dùng _bulkHttp (xoá vài chục nghìn file có thể lâu).</summary>
+    public async Task<SourceImageDeleteAllResponse> DeleteAllSourceImagesAsync(CancellationToken ct = default)
+    {
+        using var req = new HttpRequestMessage(HttpMethod.Delete, HubRoutes.SourceImages)
+        {
+            Content = JsonContent.Create(new SourceImageDeleteAllRequest(SourceImageLimits.DeleteAllConfirm)),
+        };
+        using var r = await _bulkHttp.SendAsync(req, ct);
+        r.EnsureSuccessStatusCode();
+        return await r.Content.ReadFromJsonAsync<SourceImageDeleteAllResponse>(ct)
+               ?? throw new InvalidOperationException("Hub trả body rỗng cho DELETE source-images.");
+    }
+
+    /// <summary>Khử trùng (giữ thứ tự) + kiểm luật id; id sai → ArgumentException.</summary>
+    private static List<string> DistinctValidSourceIds(IEnumerable<string> ids)
+    {
+        var all = ids.Distinct(StringComparer.Ordinal).ToList();
+        var bad = all.FirstOrDefault(i => !SourceImageLimits.IsValidId(i));
+        if (bad is not null || all.Contains(null!)) throw new ArgumentException($"mã ảnh sai luật: '{bad}'", nameof(ids));
+        return all;
+    }
+
+    /// <summary>Trường <c>error</c> trong body JSON của phản hồi lỗi; body không phải JSON (proxy/Cloudflare) → null.</summary>
+    private static async Task<string?> ReadErrorCodeAsync(HttpResponseMessage r, CancellationToken ct)
+    {
+        try
+        {
+            var text = await r.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(text);
+            if (doc.RootElement.ValueKind == JsonValueKind.Object
+                && doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String)
+                return e.GetString();
+        }
+        catch (JsonException) { }
+        return null;
+    }
+
     /// <summary>Dữ liệu thống kê đơn dùng chung từ Hub cho khoảng <c>[fromUtc, toUtcExclusive)</c> — hai MỐC UTC
     /// client tính SẴN từ ngày địa phương người dùng, gửi dạng ISO-8601 "o" (hub không suy diễn múi giờ). Trả null
     /// nếu hub không phản hồi / route chưa có / hub CŨ chỉ hiểu ?from=&amp;to= (BadRequest); client sẽ fallback

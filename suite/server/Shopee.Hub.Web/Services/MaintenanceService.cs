@@ -7,17 +7,19 @@ namespace Shopee.Hub.Web.Services;
 /// nào poll (trên máy Hub WPF cũ, sweep chỉ chạy khi có traffic /fleet hoặc /assignments) → việc 'running'
 /// mồ côi vẫn được đánh 'failed' đúng hạn, nhả khoá tài khoản. (2) Mỗi ngày ~03:00 UTC: snapshot hub.db +
 /// copy thư mục files\ vào backups\yyyyMMdd\ (giữ 7 bản) + wal_checkpoint(TRUNCATE) cho WAL khỏi phình.
+/// (3) Mỗi nhịp: xoá ảnh hết hạn của kho ảnh công khai (<see cref="PublicMediaStore"/>).
 /// </summary>
 public sealed class MaintenanceService : BackgroundService
 {
     private readonly HubDatabase _db;
     private readonly HubOptions _opts;
     private readonly ILogger<MaintenanceService> _log;
+    private readonly PublicMediaStore _media;
     private int _lastBackupDay = -1;
 
-    public MaintenanceService(HubDatabase db, HubOptions opts, ILogger<MaintenanceService> log)
+    public MaintenanceService(HubDatabase db, HubOptions opts, ILogger<MaintenanceService> log, PublicMediaStore media)
     {
-        _db = db; _opts = opts; _log = log;
+        _db = db; _opts = opts; _log = log; _media = media;
     }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
@@ -42,6 +44,13 @@ public sealed class MaintenanceService : BackgroundService
 
             try { CleanupImportTemp(now); }
             catch (Exception ex) { _log.LogWarning(ex, "import temp cleanup failed"); }
+            try
+            {
+                var xoa = await _media.SweepExpiredAsync(ct).ConfigureAwait(false);
+                if (xoa > 0) { _log.LogInformation("media: đã xoá {So} ảnh công khai hết hạn", xoa); }
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex) { _log.LogWarning(ex, "media sweep failed"); }
             if (now.Hour == 3 && now.DayOfYear != _lastBackupDay)
             {
                 _lastBackupDay = now.DayOfYear;

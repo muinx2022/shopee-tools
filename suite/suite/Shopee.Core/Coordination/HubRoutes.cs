@@ -96,6 +96,54 @@ public static class HubRoutes
     public const string HarvestedProductsKnown = "/api/harvested-products/known";
     /// <summary>GET <c>?account=&amp;sheet=</c> → số dòng nguồn đã có dữ liệu + số SP khác nhau.</summary>
     public const string HarvestedProductsStats = "/api/harvested-products/stats";
+    /// <summary>GET <c>?account=&amp;sheet=&amp;from=&amp;to=&amp;afterRow=&amp;afterItemId=&amp;limit=</c> → 1 trang
+    /// <see cref="HarvestedRowsPage"/>: các liên kết trong dải [from..to] của ĐÚNG (account, sheet) (so khớp CHÍNH XÁC,
+    /// phân biệt hoa thường — như batch đã lưu) đã nối SP có dữ liệu, sắp theo (rowNo, itemId). from/to/rowNo là CHỈ SỐ
+    /// DÒNG NÉN theo Harvest, CÓ THỂ CŨ sau chèn/xoá dòng — chỉ để tra cứu/thống kê, KHÔNG dùng để đăng SP (dùng
+    /// <see cref="HarvestedProductsByItems"/>). Mỗi trang tối đa
+    /// <see cref="HarvestedProductLimits.MaxRowsPage"/>. Trang kế: gửi lại <c>afterRow</c>/<c>afterItemId</c> lấy từ
+    /// <c>next</c>; <c>next</c> null = hết. Thiếu account/sheet → 400 <c>account-sheet-required</c>; to &lt; from → 400
+    /// <c>bad-range</c>. Client: <c>HubClient.GetHarvestedRowsAsync</c> (workspace).</summary>
+    public const string HarvestedProductsRows = "/api/harvested-products/rows";
+    /// <summary>POST body <see cref="HarvestedByItemsRequest"/> (≤ <see cref="HarvestedProductLimits.MaxByItems"/> itemId,
+    /// trùng thì khử) → <see cref="HarvestedByItemsResponse"/>: SP có dữ liệu kèm raw (JSON lồng); id chưa có thì không
+    /// trả. Thiếu itemIds → 400 <c>item-ids-required</c>; quá trần → 400 <c>too-many-ids</c>; mảng rỗng → 200 rỗng.
+    /// Đây là đường bước đăng SP dùng. Client: <c>HubClient.GetHarvestedByItemsAsync</c> (workspace).</summary>
+    public const string HarvestedProductsByItems = "/api/harvested-products/by-items";
+
+    // ── Kho ảnh CÔNG KHAI có hạn (bước đăng SP Shopee kéo ảnh qua URL KHÔNG kèm token) ──
+    /// <summary>PUT (auth Client): body = bytes 1 ảnh JPG/PNG ≤ <see cref="PublicMediaLimits.MaxBytes"/> → 200
+    /// <see cref="PublicMediaUploadResponse"/>. GET/HEAD <c>PublicMedia + "/" + tên</c> KHÔNG auth (tên lấy từ
+    /// <c>path</c> trả về); DELETE cùng đường (auth Client) xoá ảnh. Client: <c>HubClient.UploadPublicMediaAsync</c> /
+    /// <c>DeletePublicMediaAsync</c> (workspace).</summary>
+    public const string PublicMedia = "/api/media";
+
+    // ── Kho ẢNH GỐC (GĐ9): ảnh SP Shopee nguyên bytes theo mã ảnh, app Harvest đẩy lên lúc cào. KHÔNG công khai (cần
+    //    token Client), KHÔNG tự xoá. DTO + luật id ở SourceImageDtos.cs. ──
+    /// <summary>Gốc kho ảnh gốc. <c>PUT/GET/HEAD/DELETE SourceImages + "/" + id</c> (auth Client): PUT body = bytes 1 ảnh
+    /// JPEG/PNG dùng được, ≤ <see cref="SourceImageLimits.MaxBytes"/> → 200 <see cref="SourceImagePutResponse"/> (id đã có ảnh
+    /// dùng được → <c>existed=true</c>, không ghi lại; có file hỏng → <c>replaced=true</c>); GET/HEAD → bytes gốc (404 nếu
+    /// chưa có); DELETE → xoá 1 ảnh (200 / 404). <c>DELETE SourceImages</c> body
+    /// <see cref="SourceImageDeleteAllRequest"/> → xoá SẠCH kho gốc (KHÔNG đụng kho ảnh tạm <see cref="PublicMedia"/>) →
+    /// <see cref="SourceImageDeleteAllResponse"/>. Client: <c>HubClient.PutSourceImageAsync</c> /
+    /// <c>DeleteAllSourceImagesAsync</c> (workspace).</summary>
+    public const string SourceImages = "/api/source-images";
+    /// <summary>POST <see cref="SourceImageIdsRequest"/> → <see cref="SourceImageMissingResponse"/>: các id kho gốc CHƯA có
+    /// ảnh dùng được (kể cả có file mà hỏng).
+    /// Client: <c>HubClient.GetMissingSourceImagesAsync</c> (workspace).</summary>
+    public const string SourceImagesMissing = "/api/source-images/missing";
+    /// <summary>POST <see cref="SourceImageLinksRequest"/> → <see cref="SourceImageLinksResponse"/>: link công khai
+    /// <see cref="PublicSourceImage"/> (đã ký) cho từng ảnh gốc theo shop. Không ghi gì. Client:
+    /// <c>HubClient.GetSourceImageLinksAsync</c> (workspace).</summary>
+    public const string SourceImagesLinks = "/api/source-images/links";
+    /// <summary>GET → <see cref="SourceImageStatsResponse"/>: dung lượng ổ đĩa Hub, kho gốc, kho ảnh tạm. Client:
+    /// <c>HubClient.GetSourceImageStatsAsync</c> (workspace).</summary>
+    public const string SourceImagesStats = "/api/source-images/stats";
+    /// <summary>GET/HEAD <c>PublicSourceImage + "/" + token + "." + jpg|png</c> KHÔNG auth (Shopee kéo ảnh): token MÃ HOÁ
+    /// (shop, id, dấu vân tay nội dung); Hub giải + kiểm, đổi MD5 ảnh gốc theo (shop, id) ngay lúc gọi rồi trả bytes. Token
+    /// sai / ảnh không có / ảnh đã bị thay / có query string → 404; quá tần suất → 429. Link lấy từ
+    /// <see cref="SourceImagesLinks"/>, KHÔNG tự ghép.</summary>
+    public const string PublicSourceImage = "/api/v";
 
     // ── Cấu hình BigSeller (client → hub upsert) ──
     /// <summary>Client đẩy (upsert) acc/shop BigSeller của máy mình lên hub — client giờ là nguồn phát sinh

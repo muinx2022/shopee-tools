@@ -29,6 +29,16 @@ var hubOptions = new HubOptions
 {
     DataDir = dataDir,
     AllowClientConfigPush = builder.Configuration.GetValue("Hub:AllowClientConfigPush", true),
+    // Kho ảnh công khai (/api/media): base URL để trả URL tuyệt đối + hạn + trần dung lượng.
+    PublicBaseUrl = Environment.GetEnvironmentVariable("HUB_PUBLIC_BASE_URL")
+                    ?? builder.Configuration["Hub:PublicBaseUrl"] ?? "",
+    MediaRetentionDays = builder.Configuration.GetValue("Hub:Media:RetentionDays", 7),
+    MediaMaxTotalBytes = builder.Configuration.GetValue("Hub:Media:MaxTotalMb", 20480L) * 1024 * 1024,
+    MediaMinFreeBytes = builder.Configuration.GetValue("Hub:Media:MinFreeMb", 5120L) * 1024 * 1024,
+    // Kho ẢNH GỐC (GĐ9, /api/source-images) — trần riêng; đĩa trống tối thiểu dùng chung MediaMinFreeBytes.
+    SourceImagesMaxTotalBytes = builder.Configuration.GetValue("Hub:SourceImages:MaxTotalMb", 15360L) * 1024 * 1024,
+    SourceImagePublicBurst = builder.Configuration.GetValue("Hub:SourceImages:PublicBurst", 3000),
+    SourceImagePublicRatePerMinute = builder.Configuration.GetValue("Hub:SourceImages:PublicRatePerMinute", 3000),
 };
 
 // Trần upload = 256MB (file nhập/xuất lớn qua API /files: cookie/ảnh/xlsx). Giống hub nhúng cũ (mặc định Kestrel ~28MB gây 413).
@@ -39,6 +49,14 @@ var db = new HubDatabase(dataDir);
 builder.Services.AddSingleton(db);
 builder.Services.AddSingleton(hubOptions);
 builder.Services.AddSingleton<FileStoreConfigService>();
+// Kho ảnh công khai có hạn (bước đăng SP Shopee) — MaintenanceService dọn ảnh hết hạn mỗi phút.
+builder.Services.AddSingleton<PublicMediaStore>();
+// Kho ảnh gốc + khoá ký link ảnh đổi MD5 (GĐ9). Không có việc dọn nền: ảnh gốc là dữ liệu lâu dài.
+builder.Services.AddSingleton<SourceImageStore>();
+builder.Services.AddSingleton<SourceImageLinkSigner>();
+// Giới hạn tần suất link ảnh công khai /api/v/… theo IP thật (SourceImageEndpoints.ClientIp) — chỉ route đó gắn policy.
+builder.Services.AddSingleton<PublicRateRejectLog>();
+builder.Services.AddRateLimiter(o => SourceImageEndpoints.ConfigurePublicRateLimit(o, hubOptions));
 builder.Services.AddSingleton<SearchBoardService>();
 builder.Services.AddSingleton<BigSellerLoginService>();
 // Rewrite tên chạy NGAY TRÊN HUB (hub quản toàn bộ dữ liệu Postgres) — 1 worker nền, resolve ProductDb tuỳ lúc
@@ -144,6 +162,8 @@ if (productDb is not null)
 }
 
 app.UseForwardedHeaders();
+// Sau UseForwardedHeaders: ClientIp đọc RemoteIpAddress đã được thay bằng IP thật (X-Forwarded-For từ proxy loopback).
+app.UseRateLimiter();
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -240,6 +260,15 @@ app.MapClientApi(db);
 
 // ── API kho sản phẩm (Postgres) — 503 pg-not-ready nếu chưa cấu hình/chưa migrate ──
 app.MapProductApi();
+
+// ── Kho ảnh công khai có hạn: PUT cần token Client, GET KHÔNG auth ──
+// Dựng store NGAY để kiểm Hub:PublicBaseUrl lúc khởi động (sai/thiếu → log cảnh báo 1 lần), không đợi upload đầu tiên.
+app.Services.GetRequiredService<PublicMediaStore>();
+app.MapPublicMediaApi();
+// Kho ảnh gốc (auth Client) + link ảnh đổi MD5 công khai /api/v/… (GĐ9). Ép dựng signer NGAY: khoá ký sinh lúc khởi
+// động (một lần trong đời Hub), không đợi request công khai đầu tiên.
+app.Services.GetRequiredService<SourceImageLinkSigner>();
+app.MapSourceImageApi();
 
 // ── Blazor UI (khoá sau cookie) ──
 app.MapRazorComponents<App>()
