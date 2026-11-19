@@ -29,6 +29,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Từ điển thuộc tính EN → VN cho Đăng Hàng Loạt (bản mặc định của AttributeDictionary). -->
+    <EmbeddedResource Include="MassUpload\AttributeDictionary.json" LogicalName="Shopee.Core.MassUpload.AttributeDictionary.json" />
+    <!-- GĐ8b: danh sách phân loại chuẩn (nhóm + giá trị → mã) của Shopee theo ngành cấp 1 (VariationStandard). -->
+    <EmbeddedResource Include="MassUpload\VariationStandard.json" LogicalName="Shopee.Core.MassUpload.VariationStandard.json" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Cho phép bộ test đọc thành viên `internal` của Core. -->
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
       <_Parameter1>Shopee.Core.Tests</_Parameter1>

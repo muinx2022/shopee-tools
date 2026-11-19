@@ -25,6 +25,18 @@ public static class IconGenerator
         {
             SavePngAndIco(harvestBmp, outputDir, "harvest-icon");
         }
+
+        GenerateUpload(outputDir);
+    }
+
+    /// <summary>Chỉ sinh upload-icon.{png,ico} (không đụng 3 icon kia).</summary>
+    public static void GenerateUpload(string outputDir)
+    {
+        Directory.CreateDirectory(outputDir);
+        using (var uploadBmp = RenderUploadIcon(1024))
+        {
+            SavePngAndIco(uploadBmp, outputDir, "upload-icon");
+        }
     }
 
     private static GraphicsPath CreateRoundedRect(RectangleF rect, float radius)
@@ -429,6 +441,119 @@ public static class IconGenerator
                 LineJoin = LineJoin.Round
             })
             {
+                g.DrawLines(headPen, new PointF[]
+                {
+                    new PointF(cx - wingW, wingY),
+                    new PointF(cx, arrowTip),
+                    new PointF(cx + wingW, wingY)
+                });
+            }
+        }
+        return bmp;
+    }
+
+    public static Bitmap RenderUploadIcon(int size)
+    {
+        var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
+        using (var g = Graphics.FromImage(bmp))
+        {
+            SetupGraphics(g);
+            g.Clear(Color.Transparent);
+
+            // Amber-Orange squircle (#FFB547 -> #F7801A -> #D35400) — warmer than the coral Scrape base
+            DrawSquircleBase(
+                g,
+                size,
+                Color.FromArgb(255, 255, 181, 71),
+                Color.FromArgb(255, 247, 128, 26),
+                Color.FromArgb(255, 211, 84, 0)
+            );
+
+            float cx = size / 2f;
+            float shOffY = 16f;
+            Color shColor = Color.FromArgb(70, 110, 40, 0);
+            Color deep = Color.FromArgb(255, 194, 65, 12);     // deep orange for arrow + handle slot
+
+            // Shopping bag body (white rounded rect, slightly wider at the bottom)
+            float bagTop = 372f;
+            float bagBottom = 836f;
+            float topHalfW = 238f;
+            float bottomHalfW = 268f;
+            float corner = 64f;
+
+            GraphicsPath BagPath(float offY)
+            {
+                var p = new GraphicsPath();
+                float d = corner * 2f;
+                p.AddArc(cx - topHalfW, bagTop + offY, d, d, 180, 90);
+                p.AddArc(cx + topHalfW - d, bagTop + offY, d, d, 270, 90);
+                p.AddArc(cx + bottomHalfW - d, bagBottom - d + offY, d, d, 0, 90);
+                p.AddArc(cx - bottomHalfW, bagBottom - d + offY, d, d, 90, 90);
+                p.CloseFigure();
+                return p;
+            }
+
+            // Handle (arched strap above the bag)
+            float handleHalfW = 128f;
+            float handleTopY = 200f;
+            var handleRect = new RectangleF(cx - handleHalfW, handleTopY, handleHalfW * 2f, (bagTop + 70f - handleTopY) * 2f);
+            float handleStroke = 56f;
+
+            // Drop shadow of bag + handle
+            using (var shBrush = new SolidBrush(shColor))
+            using (var shPath = BagPath(shOffY))
+            {
+                g.FillPath(shBrush, shPath);
+            }
+            using (var shHandle = new Pen(shColor, handleStroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                var r = handleRect;
+                r.Offset(0f, shOffY);
+                g.DrawArc(shHandle, r, 180, 180);
+            }
+
+            // White handle, drawn first so the bag body covers its feet
+            using (var handlePen = new Pen(Color.White, handleStroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            {
+                g.DrawArc(handlePen, handleRect, 180, 180);
+            }
+
+            // White bag body
+            using (var white = new SolidBrush(Color.White))
+            using (var bag = BagPath(0f))
+            {
+                g.FillPath(white, bag);
+            }
+
+            // Two strap rivets where the handle meets the bag
+            using (var rivet = new SolidBrush(Color.FromArgb(255, 253, 186, 116)))
+            {
+                float rr = 22f;
+                g.FillEllipse(rivet, cx - handleHalfW - rr, bagTop + 70f - rr, rr * 2f, rr * 2f);
+                g.FillEllipse(rivet, cx + handleHalfW - rr, bagTop + 70f - rr, rr * 2f, rr * 2f);
+            }
+
+            // Bold deep-orange upward arrow in the bag (upload)
+            float arrowTip = 470f;
+            float arrowBottom = 742f;
+            float wingW = 112f;
+            float wingY = arrowTip + 112f;
+            float stroke = 62f;
+
+            using (var arrowBrush = new LinearGradientBrush(
+                new PointF(cx, arrowTip - 40f),
+                new PointF(cx, arrowBottom + 40f),
+                Color.FromArgb(255, 247, 128, 26),
+                deep))
+            using (var shaftPen = new Pen(arrowBrush, stroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+            using (var headPen = new Pen(arrowBrush, stroke)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+                LineJoin = LineJoin.Round
+            })
+            {
+                g.DrawLine(shaftPen, cx, arrowTip + 20f, cx, arrowBottom);
                 g.DrawLines(headPen, new PointF[]
                 {
                     new PointF(cx - wingW, wingY),

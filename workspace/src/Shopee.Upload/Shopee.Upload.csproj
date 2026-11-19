@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Shopee.Upload</RootNamespace>
+    <AssemblyName>ShopeeUpload</AssemblyName>
+    <Version>1.0.0</Version>
+    <StartupObject>Shopee.Upload.Program</StartupObject>
+    <!-- Manifest DPI PerMonitorV2 dùng chung với các app khác (chỉ đọc, không sửa project Workspace). -->
+    <ApplicationManifest>..\Shopee.Workspace\app.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\assets\upload-icon.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <!-- SDK desktop không có sẵn System.IO + System.Net.Http trong implicit using. -->
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Using Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="..\..\assets\upload-icon.ico" Link="Assets\app-icon.ico" />
+  </ItemGroup>
+
+  <!-- CHỈ tham chiếu Shopee.Core (plan GĐ5a): không kéo Shopee.Workspace vào app đăng SP. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Shopee.Core\Shopee.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Shopee.Upload.Tests" />
+  </ItemGroup>
+</Project>

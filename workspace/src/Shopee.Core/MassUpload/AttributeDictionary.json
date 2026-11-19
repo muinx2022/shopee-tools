@@ -1,0 +1,44 @@
+{
+  "_ghi_chu": "Từ điển (mã thuộc tính, giá trị tiếng Anh trong get_pc) -> giá trị tiếng Việt của bản mẫu nâng cao Shopee. So khoá không phân biệt hoa thường. Giá trị VN phải ĐÚNG chữ trong bản mẫu (kể cả lỗi chính tả của Shopee như 'Binh thương'). Bổ sung: thêm cặp vào 'values' của mã thuộc tính; luật mẫu chung đặt ở 'patterns' (attrIds rỗng = mọi thuộc tính).",
+  "attributes": {
+    "100022": { "name": "Gender", "values": { "Female": "Nữ", "Male": "Nam", "Unisex": "Unisex" } },
+    "101219": { "name": "Custom Product", "values": { "Yes": "Đúng", "No": "Không" } },
+    "100185": { "values": { "Yes": "Có", "No": "Không" } },
+    "100186": { "values": { "Yes": "Có", "No": "Không" } },
+    "100037": {
+      "name": "Country of Origin",
+      "values": {
+        "China": "Trung Quốc", "Vietnam": "Việt Nam", "Japan": "Nhật Bản", "Korea": "Hàn Quốc", "Taiwan": "Đài Loan",
+        "Thailand": "Thái Lan", "Indonesia": "Indonesia", "India": "Ấn Độ", "USA": "Mỹ", "United States": "Mỹ",
+        "Others": "Khác"
+      }
+    },
+    "101067": { "name": "Manufacturer/trader name", "values": { "Updating": "Đang cập nhật" } },
+    "101068": { "name": "Manufacturer/trader address", "values": { "Updating": "Đang cập nhật" } },
+    "100134": {
+      "name": "Material",
+      "values": { "Others": "Khác", "Gold": "Vàng", "Silver": "Bạc", "Steel": "Thép", "Diamond": "Kim cương", "Pearl": "Ngọc trai" }
+    },
+    "100169": {
+      "name": "Style",
+      "values": {
+        "Elegant": "Thanh lịch", "Casual": "Binh thương", "Classic": "Cổ điển", "Retro": "Retro", "Vintage": "Retro",
+        "Ethnic": "Dân tộc", "Baroque": "Baroque"
+      }
+    },
+    "100155": {
+      "name": "Occasion",
+      "values": { "Birthday": "Sinh nhật", "Anniversary": "Ngày kỷ niệm", "Wedding": "lễ cưới", "Engagement": "Hôn ước" }
+    },
+    "100194": {
+      "name": "Necklace/Bracelet Style",
+      "values": {
+        "Chain & Link": "Dạng chuỗi", "Beaded": "Dạng Hạt", "Charmed": "Hạt Charmed", "Choker": "Vòng cổ choker",
+        "Pendant": "Mặt dây chuyền", "Others": "Khác"
+      }
+    }
+  },
+  "patterns": [
+    { "attrIds": [], "match": "^(\\d+) Months?$", "replace": "$1 tháng" }
+  ]
+}
